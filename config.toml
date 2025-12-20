@@ -1,0 +1,17 @@
+# Zerobha Trading Bot Configuration
+
+# Strategy to run: donchian, orb, ema_pullback, etc.
+strategy = "orb"
+
+# CSV file containing symbols to trade
+csv_file = "high_beta_stocks.csv"
+
+# Limit number of symbols to trade
+limit = 50
+
+# Candle timeframe (e.g. 1m, 5m, 1h)
+timeframe = "5m"
+
+# Zerodha API Credentials
+api_key = ""
+api_secret = ""

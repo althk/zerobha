@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zerobha | Live Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <h1>ZEROBHA</h1>
+                <span class="status-indicator online">LIVE</span>
+            </div>
+            <div class="last-update">
+                Last Update: <span id="last-update-time">--:--:--</span>
+            </div>
+        </header>
+
+        <!-- Metrics Grid -->
+        <section class="metrics">
+            <div class="card metric-card">
+                <h3>Available Cash</h3>
+                <div class="value" id="balance">₹ 0.00</div>
+            </div>
+            <div class="card metric-card">
+                <h3>Realized PnL</h3>
+                <div class="value pnl" id="pnl">₹ 0.00</div>
+            </div>
+            <div class="card metric-card">
+                <h3>Active Positions</h3>
+                <div class="value" id="active-positions-count">0</div>
+            </div>
+        </section>
+
+        <!-- Main Content -->
+        <main>
+            <!-- Positions Table -->
+            <section class="card table-card">
+                <h2>Open Positions</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Product</th>
+                            <th>Side</th>
+                            <th>Quantity</th>
+                            <th>Avg. Price</th>
+                            <th>LTP</th>
+                            <th>PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Orders Table -->
+            <section class="card table-card">
+                <h2>Open Orders</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Order ID</th>
+                            <th>Symbol</th>
+                            <th>Type</th>
+                            <th>Side</th>
+                            <th>Quantity</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orders-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </section>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
