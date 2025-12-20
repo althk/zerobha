@@ -1,62 +1,93 @@
 Company Name,Industry,Symbol,Series,ISIN Code
 Adani Enterprises Ltd.,Metals & Mining,ADANIENT,EQ,INE423A01024
-Adani Ports and Special Economic Zone Ltd.,Services,ADANIPORTS,EQ,INE742F01042
-Adani Total Gas Ltd.,Oil Gas & Consumable Fuels,ATGL,EQ,INE399L01023
 Aditya Birla Real Estate Ltd.,Forest Materials,ABREL,EQ,INE055A01016
-Aegis Logistics Ltd.,Oil Gas & Consumable Fuels,AEGISLOG,EQ,INE208C01025
-Aegis Vopak Terminals Ltd.,Oil Gas & Consumable Fuels,AEGISVOPAK,EQ,INE0INX01018
-Anant Raj Ltd.,Realty,ANANTRAJ,EQ,INE242C01024
-Bharat Petroleum Corporation Ltd.,Oil Gas & Consumable Fuels,BPCL,EQ,INE029A01011
-Blue Dart Express Ltd.,Services,BLUEDART,EQ,INE233B01017
-Brigade Enterprises Ltd.,Realty,BRIGADE,EQ,INE791I01019
-Castrol India Ltd.,Oil Gas & Consumable Fuels,CASTROLIND,EQ,INE172A01027
-Chennai Petroleum Corporation Ltd.,Oil Gas & Consumable Fuels,CHENNPETRO,EQ,INE178A01016
-Coal India Ltd.,Oil Gas & Consumable Fuels,COALINDIA,EQ,INE522F01014
-Container Corporation of India Ltd.,Services,CONCOR,EQ,INE111A01025
-DLF Ltd.,Realty,DLF,EQ,INE271C01023
-Delhivery Ltd.,Services,DELHIVERY,EQ,INE148O01028
-Firstsource Solutions Ltd.,Services,FSL,EQ,INE684F01012
-GAIL (India) Ltd.,Oil Gas & Consumable Fuels,GAIL,EQ,INE129A01019
-GMR Airports Ltd.,Services,GMRAIRPORT,EQ,INE776C01039
-Godrej Properties Ltd.,Realty,GODREJPROP,EQ,INE484J01027
+Affle 3i Ltd.,Information Technology,AFFLE,EQ,INE00WC01027
+Amara Raja Energy & Mobility Ltd.,Automobile and Auto Components,ARE&M,EQ,INE885A01032
+Apollo Tyres Ltd.,Automobile and Auto Components,APOLLOTYRE,EQ,INE438A01022
+Asahi India Glass Ltd.,Automobile and Auto Components,ASAHIINDIA,EQ,INE439A01020
+Ather Energy Ltd.,Automobile and Auto Components,ATHERENERG,EQ,INE0LEZ01016
+Bajaj Auto Ltd.,Automobile and Auto Components,BAJAJ-AUTO,EQ,INE917I01010
+Balkrishna Industries Ltd.,Automobile and Auto Components,BALKRISIND,EQ,INE787D01026
+Bharat Forge Ltd.,Automobile and Auto Components,BHARATFORG,EQ,INE465A01025
+Bharti Airtel Ltd.,Telecommunication,BHARTIARTL,EQ,INE397D01024
+Bharti Hexacom Ltd.,Telecommunication,BHARTIHEXA,EQ,INE343G01021
+Birlasoft Ltd.,Information Technology,BSOFT,EQ,INE836A01035
+Bosch Ltd.,Automobile and Auto Components,BOSCHLTD,EQ,INE323A01026
+C.E. Info Systems Ltd.,Information Technology,MAPMYINDIA,EQ,INE0BV301023
+Ceat Ltd.,Automobile and Auto Components,CEATLTD,EQ,INE482A01020
+Coforge Ltd.,Information Technology,COFORGE,EQ,INE591G01025
+Craftsman Automation Ltd.,Automobile and Auto Components,CRAFTSMAN,EQ,INE00LO01017
+Cyient Ltd.,Information Technology,CYIENT,EQ,INE136B01020
+Eicher Motors Ltd.,Automobile and Auto Components,EICHERMOT,EQ,INE066A01021
+Endurance Technologies Ltd.,Automobile and Auto Components,ENDURANCE,EQ,INE913H01037
+Exide Industries Ltd.,Automobile and Auto Components,EXIDEIND,EQ,INE302A01020
+Force Motors Ltd.,Automobile and Auto Components,FORCEMOT,EQ,INE451A01017
 Gravita India Ltd.,Metals & Mining,GRAVITA,EQ,INE024L01027
-Great Eastern Shipping Co. Ltd.,Services,GESHIP,EQ,INE017A01032
-Gujarat Gas Ltd.,Oil Gas & Consumable Fuels,GUJGASLTD,EQ,INE844O01030
 Gujarat Mineral Development Corporation Ltd.,Metals & Mining,GMDCLTD,EQ,INE131A01031
-Gujarat State Petronet Ltd.,Oil Gas & Consumable Fuels,GSPL,EQ,INE246F01010
+HCL Technologies Ltd.,Information Technology,HCLTECH,EQ,INE860A01027
+HFCL Ltd.,Telecommunication,HFCL,EQ,INE548A01028
+Happiest Minds Technologies Ltd.,Information Technology,HAPPSTMNDS,EQ,INE419U01012
+Hero MotoCorp Ltd.,Automobile and Auto Components,HEROMOTOCO,EQ,INE158A01026
+Hexaware Technologies Ltd.,Information Technology,HEXT,EQ,INE093A01041
 Hindalco Industries Ltd.,Metals & Mining,HINDALCO,EQ,INE038A01020
 Hindustan Copper Ltd.,Metals & Mining,HINDCOPPER,EQ,INE531E01026
-Hindustan Petroleum Corporation Ltd.,Oil Gas & Consumable Fuels,HINDPETRO,EQ,INE094A01015
 Hindustan Zinc Ltd.,Metals & Mining,HINDZINC,EQ,INE267A01025
-Indian Oil Corporation Ltd.,Oil Gas & Consumable Fuels,IOC,EQ,INE242A01010
-Indraprastha Gas Ltd.,Oil Gas & Consumable Fuels,IGL,EQ,INE203G01027
-InterGlobe Aviation Ltd.,Services,INDIGO,EQ,INE646L01027
-International Gemmological Institute (India) Ltd.,Services,IGIL,EQ,INE0Q9301021
-JSW Infrastructure Ltd.,Services,JSWINFRA,EQ,INE880J01026
+Hyundai Motor India Ltd.,Automobile and Auto Components,HYUNDAI,EQ,INE0V6F01027
+ITI Ltd.,Telecommunication,ITI,EQ,INE248A01017
+Indus Towers Ltd.,Telecommunication,INDUSTOWER,EQ,INE121J01017
+Infosys Ltd.,Information Technology,INFY,EQ,INE009A01021
+Intellect Design Arena Ltd.,Information Technology,INTELLECT,EQ,INE306R01017
+Inventurus Knowledge Solutions Ltd.,Information Technology,IKS,EQ,INE115Q01022
+JBM Auto Ltd.,Automobile and Auto Components,JBMA,EQ,INE927D01051
+JK Tyre & Industries Ltd.,Automobile and Auto Components,JKTYRE,EQ,INE573A01042
 JSW Steel Ltd.,Metals & Mining,JSWSTEEL,EQ,INE019A01038
 Jindal Stainless Ltd.,Metals & Mining,JSL,EQ,INE220G01021
 Jindal Steel Ltd.,Metals & Mining,JINDALSTEL,EQ,INE749A01030
+KPIT Technologies Ltd.,Information Technology,KPITTECH,EQ,INE04I401011
+L&T Technology Services Ltd.,Information Technology,LTTS,EQ,INE010V01017
+LTIMindtree Ltd.,Information Technology,LTIM,EQ,INE214T01019
+Latent View Analytics Ltd.,Information Technology,LATENTVIEW,EQ,INE0I7C01011
 Lloyds Metals And Energy Ltd.,Metals & Mining,LLOYDSME,EQ,INE281B01032
-Lodha Developers Ltd.,Realty,LODHA,EQ,INE670K01029
-MMTC Ltd.,Services,MMTC,EQ,INE123F01029
-Mahanagar Gas Ltd.,Oil Gas & Consumable Fuels,MGL,EQ,INE002S01010
-Mangalore Refinery & Petrochemicals Ltd.,Oil Gas & Consumable Fuels,MRPL,EQ,INE103A01014
+MRF Ltd.,Automobile and Auto Components,MRF,EQ,INE883A01011
+Mahindra & Mahindra Ltd.,Automobile and Auto Components,M&M,EQ,INE101A01026
+Maruti Suzuki India Ltd.,Automobile and Auto Components,MARUTI,EQ,INE585B01010
+Minda Corporation Ltd.,Automobile and Auto Components,MINDACORP,EQ,INE842C01021
+Motherson Sumi Wiring India Ltd.,Automobile and Auto Components,MSUMI,EQ,INE0FS801015
+MphasiS Ltd.,Information Technology,MPHASIS,EQ,INE356A01018
 NMDC Ltd.,Metals & Mining,NMDC,EQ,INE584A01023
 NMDC Steel Ltd.,Metals & Mining,NSLNISP,EQ,INE0NNS01018
 National Aluminium Co. Ltd.,Metals & Mining,NATIONALUM,EQ,INE139A01034
-Oberoi Realty Ltd.,Realty,OBEROIRLTY,EQ,INE093I01010
-Oil & Natural Gas Corporation Ltd.,Oil Gas & Consumable Fuels,ONGC,EQ,INE213A01029
-Oil India Ltd.,Oil Gas & Consumable Fuels,OIL,EQ,INE274J01014
-Petronet LNG Ltd.,Oil Gas & Consumable Fuels,PETRONET,EQ,INE347G01014
-Phoenix Mills Ltd.,Realty,PHOENIXLTD,EQ,INE211B01039
-Prestige Estates Projects Ltd.,Realty,PRESTIGE,EQ,INE811K01011
-Redington Ltd.,Services,REDINGTON,EQ,INE891D01026
-Reliance Industries Ltd.,Oil Gas & Consumable Fuels,RELIANCE,EQ,INE002A01018
+Netweb Technologies India Ltd.,Information Technology,NETWEB,EQ,INE0NT901020
+Newgen Software Technologies Ltd.,Information Technology,NEWGEN,EQ,INE619B01017
+Ola Electric Mobility Ltd.,Automobile and Auto Components,OLAELEC,BE,INE0LXG01040
+Olectra Greentech Ltd.,Automobile and Auto Components,OLECTRA,EQ,INE260D01016
+Oracle Financial Services Software Ltd.,Information Technology,OFSS,EQ,INE881D01027
+Persistent Systems Ltd.,Information Technology,PERSISTENT,EQ,INE262H01021
+Railtel Corporation Of India Ltd.,Telecommunication,RAILTEL,EQ,INE0DD101019
+Ramkrishna Forgings Ltd.,Automobile and Auto Components,RKFORGE,EQ,INE399G01023
+SKF India Ltd.,Automobile and Auto Components,SKFINDIA,EQ,INE640A01023
+Sagility Ltd.,Information Technology,SAGILITY,EQ,INE0W2G01015
+Samvardhana Motherson International Ltd.,Automobile and Auto Components,MOTHERSON,EQ,INE775A01035
 Sarda Energy and Minerals Ltd.,Metals & Mining,SARDAEN,EQ,INE385C01021
-Shipping Corporation of India Ltd.,Services,SCI,EQ,INE109A01011
-Signatureglobal (India) Ltd.,Realty,SIGNATURE,EQ,INE903U01023
-Sobha Ltd.,Realty,SOBHA,EQ,INE671H01015
+Schaeffler India Ltd.,Automobile and Auto Components,SCHAEFFLER,EQ,INE513A01022
+Sona BLW Precision Forgings Ltd.,Automobile and Auto Components,SONACOMS,EQ,INE073K01018
+Sonata Software Ltd.,Information Technology,SONATSOFTW,EQ,INE269A01021
 Steel Authority of India Ltd.,Metals & Mining,SAIL,EQ,INE114A01011
+Sundram Fasteners Ltd.,Automobile and Auto Components,SUNDRMFAST,EQ,INE387A01021
+TVS Motor Company Ltd.,Automobile and Auto Components,TVSMOTOR,EQ,INE494B01023
+Tata Communications Ltd.,Telecommunication,TATACOMM,EQ,INE151A01013
+Tata Consultancy Services Ltd.,Information Technology,TCS,EQ,INE467B01029
+Tata Elxsi Ltd.,Information Technology,TATAELXSI,EQ,INE670A01012
+Tata Motors Passenger Vehicles Ltd.,Automobile and Auto Components,TMPV,EQ,INE155A01022
 Tata Steel Ltd.,Metals & Mining,TATASTEEL,EQ,INE081A01020
+Tata Technologies Ltd.,Information Technology,TATATECH,EQ,INE142M01025
+Tata Teleservices (Maharashtra) Ltd.,Telecommunication,TTML,EQ,INE517B01013
+Tech Mahindra Ltd.,Information Technology,TECHM,EQ,INE669C01036
+Tejas Networks Ltd.,Telecommunication,TEJASNET,EQ,INE010J01012
+Tube Investments of India Ltd.,Automobile and Auto Components,TIINDIA,EQ,INE974X01010
+UNO Minda Ltd.,Automobile and Auto Components,UNOMINDA,EQ,INE405E01023
 Vedanta Ltd.,Metals & Mining,VEDL,EQ,INE205A01025
-eClerx Services Ltd.,Services,ECLERX,EQ,INE738I01010
+Vodafone Idea Ltd.,Telecommunication,IDEA,EQ,INE669E01016
+Wipro Ltd.,Information Technology,WIPRO,EQ,INE075A01022
+ZF Commercial Vehicle Control Systems India Ltd.,Automobile and Auto Components,ZFCVINDIA,EQ,INE342J01019
+Zensar Technolgies Ltd.,Information Technology,ZENSARTECH,EQ,INE520A01027
