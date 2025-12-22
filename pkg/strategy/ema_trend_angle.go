@@ -48,14 +48,16 @@ func (s *EmaTrendAngleState) CalculateTrendAngle(currentEma decimal.Decimal) flo
 }
 
 type EmaTrendAngle struct {
-	symbols []string
-	states  map[string]*EmaTrendAngleState
+	symbols   []string
+	states    map[string]*EmaTrendAngleState
+	Timeframe string
 }
 
-func NewEmaTrendAngle(symbols []string) *EmaTrendAngle {
+func NewEmaTrendAngle(symbols []string, timeframe string) *EmaTrendAngle {
 	return &EmaTrendAngle{
-		symbols: symbols,
-		states:  make(map[string]*EmaTrendAngleState),
+		symbols:   symbols,
+		states:    make(map[string]*EmaTrendAngleState),
+		Timeframe: timeframe,
 	}
 }
 
@@ -71,9 +73,9 @@ func (s *EmaTrendAngle) Init(provider core.DataProvider) error {
 		state := NewEmaTrendAngleState(sym)
 		s.states[sym] = state
 
-		// 2. Fetch History (Last 10 days for warmup)
-		// Using 15minute as per the backtest plan
-		candles, err := provider.History(sym, "15minute", 10)
+		// 2. Fetch History (Last 50 candles for warmup)
+		// Using configured timeframe
+		candles, err := provider.History(sym, s.Timeframe, 50)
 		if err != nil {
 			log.Printf("WARNING: Failed to fetch history for %s: %v", sym, err)
 			continue
@@ -122,11 +124,27 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 	}
 
 	// 4. Time Window Check (9:30 AM - 2:30 PM)
-	hour := candle.StartTime.Hour()
-	minute := candle.StartTime.Minute()
-	timeVal := hour*100 + minute
-	if timeVal < 930 || timeVal > 1430 {
-		return nil
+	// 4. Time Window Check (9:30 AM - 2:30 PM)
+	// Only applies if we are trading intraday on lower timeframes.
+	// For now, this logic is specific to intraday but we can leave it or make it smarter.
+	// Since we are moving to higher timeframes (1h, 1d), this check might skip valid candles.
+	// TODO: Make this smarter based on s.Timeframe.
+	// For "1h", the candle start times are e.g., 09:15, 10:15...
+	// 09:15 < 930 -> SKIP
+	// 10:15 > 930 -> OK
+	// ...
+	// 15:15 > 1430 -> SKIP
+	// If Timeframe is "1d", hour will be 0 or 9 (depending on data source).
+	// If 1d, we should skip this check entirely.
+	if s.Timeframe == "1d" {
+		// No time check for Daily
+	} else {
+		hour := candle.StartTime.Hour()
+		minute := candle.StartTime.Minute()
+		timeVal := hour*100 + minute
+		if timeVal < 930 || timeVal > 1430 {
+			return nil
+		}
 	}
 
 	// 5. Logic Implementation
@@ -137,7 +155,7 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 
 	// Condition B: Candle crosses up and closes above EMA 21
 	// We check if Open < EMA and Close > EMA (Body Cross)
-	crossUp := candle.Low.LessThan(ema21) && candle.Close.GreaterThan(ema21)
+	crossUp := candle.Open.LessThan(ema21) && candle.Close.GreaterThan(ema21)
 
 	var signal *models.Signal
 
@@ -152,11 +170,12 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 		target := candle.Close.Add(atrVal.Mul(decimal.NewFromFloat(5)))
 
 		signal = &models.Signal{
-			Symbol:   candle.Symbol,
-			Type:     models.BuySignal,
-			Price:    candle.Close,
-			StopLoss: stopLoss.Floor(),
-			Target:   target.Floor(),
+			Symbol:      candle.Symbol,
+			Type:        models.BuySignal,
+			Price:       candle.Close,
+			StopLoss:    stopLoss.Floor(),
+			Target:      target.Floor(),
+			ProductType: "CNC", // Delivery order
 			Metadata: map[string]string{
 				"Strategy":   s.Name(),
 				"EMA21":      ema21.StringFixed(2),

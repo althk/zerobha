@@ -187,6 +187,8 @@ func main() {
 		strat = strategy.NewEmaTrendRsi(watchlist)
 	case "adx_rsi_vwap":
 		strat = strategy.NewAdxRsiVwap(watchlist)
+	case "ema_trend_angle":
+		strat = strategy.NewEmaTrendAngle(watchlist, cfg.Timeframe)
 	default:
 		log.Printf("Using default strategy: Donchian Breakdown")
 		strat = strategy.NewDonchianBreakout(watchlist)

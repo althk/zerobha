@@ -113,7 +113,7 @@ func main() {
 		case "adx_rsi_vwap":
 			myStrategy = strategy.NewAdxRsiVwap([]string{sym})
 		case "ema_trend_angle":
-			myStrategy = strategy.NewEmaTrendAngle([]string{sym})
+			myStrategy = strategy.NewEmaTrendAngle([]string{sym}, *timeframe)
 		case "orb":
 			myStrategy = strategy.NewORBStrategy([]string{sym})
 		default:
