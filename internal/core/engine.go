@@ -33,7 +33,7 @@ func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *br
 
 func (e *Engine) loadLeverageMap() {
 	e.LeverageMap = make(map[string]float64)
-	file, err := os.Open("../../zerodha-mis-margins.csv")
+	file, err := os.Open("zerodha-mis-margins.csv")
 	if err != nil {
 		log.Printf("WARNING: Failed to open leverage CSV: %v", err)
 		return
