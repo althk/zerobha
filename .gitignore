@@ -113,11 +113,6 @@ logs/
 .old*
 .agent
 
-# project binaries
-main
-trader
-backtest
-
 # project local run outputs/testing files
 zerobha.db*
 backtest_journal.csv
