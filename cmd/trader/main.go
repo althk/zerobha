@@ -173,8 +173,8 @@ func main() {
 	// Broker Adapter (The Execution Arm)
 	kiteAdapter := broker.NewZerodhaAdapter(kc, symbolToToken)
 
-	// Risk Manager (The Gatekeeper) - Max Loss ₹5000, Max 10 Trades
-	riskMgr := risk.NewManager(decimal.NewFromInt(5000), 10)
+	// Risk Manager (The Gatekeeper) - Max Loss ₹5000, Max 10 Trades Total, Max 3 Per Stock
+	riskMgr := risk.NewManager(store, decimal.NewFromInt(5000), 10, 3)
 
 	// Strategy (The Brain)
 	var strat core.Strategy

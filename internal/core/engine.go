@@ -227,7 +227,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		}
 		// Update Risk Manager stats
 		// TODO: Handle actual pnl
-		e.Risk.UpdateTradeLog(decimal.Zero)
+		e.Risk.UpdateTradeLog(order.Symbol, decimal.Zero)
 	}
 }
 

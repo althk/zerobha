@@ -100,8 +100,8 @@ func main() {
 		initialCapital := decimal.NewFromInt(500000) // ₹5 Lakh
 		simBroker := broker.NewSimBroker(initialCapital)
 
-		// Risk: Max Loss ₹1000/day, Max 2 trades/day per stock
-		riskMgr := risk.NewManager(decimal.NewFromInt(1000), 2)
+		// Risk: Max Loss ₹1000/day, Max 20 trades/day Total, Max 2 trades/day per stock
+		riskMgr := risk.NewManager(nil, decimal.NewFromInt(1000), 20, 2)
 
 		// Strategy
 		var myStrategy core.Strategy
