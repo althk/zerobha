@@ -316,6 +316,8 @@ func main() {
 		loc, _ := time.LoadLocation("Asia/Kolkata")
 		now := time.Now().In(loc)
 
+		// Target Ticker Stop: 15:05 Today
+		targetTickerStop := time.Date(now.Year(), now.Month(), now.Day(), 15, 5, 0, 0, loc)
 		// Target SquareOff: 15:13 Today
 		targetSquareOff := time.Date(now.Year(), now.Month(), now.Day(), 15, 13, 0, 0, loc)
 		// Target Flush: 15:23 Today
@@ -323,44 +325,40 @@ func main() {
 		// Target Shutdown: 15:30 Today
 		targetShutdown := time.Date(now.Year(), now.Month(), now.Day(), 15, 30, 0, 0, loc)
 
+		// 0. Handle Ticker Stop
+		durationTickerStop := targetTickerStop.Sub(now)
+		log.Printf("Scheduled Ticker Stop in %v (at 15:05 IST)", durationTickerStop)
+		time.AfterFunc(durationTickerStop, func() {
+			log.Println("⏰ 15:05 PM Trigger: Stopping Ticker (Strategy signaling ends)...")
+			ticker.Stop()
+		})
+
 		// 1. Handle SquareOff
-		if now.Before(targetSquareOff) {
-			durationSquareOff := targetSquareOff.Sub(now)
-			log.Printf("Scheduled Auto-SquareOff in %v (at 15:13 IST)", durationSquareOff)
-			time.AfterFunc(durationSquareOff, func() {
-				log.Println("⏰ 15:13 PM Trigger: Initiating Auto-SquareOFF...")
-				engine.SquareOff()
-			})
-		} else {
-			log.Println("Started after 15:13, SquareOff scheduler skipped.")
-		}
+		durationSquareOff := targetSquareOff.Sub(now)
+		log.Printf("Scheduled Auto-SquareOff in %v (at 15:13 IST)", durationSquareOff)
+		time.AfterFunc(durationSquareOff, func() {
+			log.Println("⏰ 15:13 PM Trigger: Initiating Auto-SquareOFF...")
+			engine.SquareOff()
+		})
 
 		// 2. Handle Flush
-		if now.Before(targetFlush) {
-			durationFlush := targetFlush.Sub(now)
-			log.Printf("Scheduled EOD Flush in %v (at 15:23 IST)", durationFlush)
-			time.AfterFunc(durationFlush, func() {
-				log.Println("⏰ 15:23 PM Trigger: Flushing candles for EOD processing...")
-				for _, b := range builders {
-					b.Flush()
-				}
-			})
-		} else {
-			log.Println("Started after 15:23, EOD flush scheduler will skip today.")
-		}
+		durationFlush := targetFlush.Sub(now)
+		log.Printf("Scheduled EOD Flush in %v (at 15:23 IST)", durationFlush)
+		time.AfterFunc(durationFlush, func() {
+			log.Println("⏰ 15:23 PM Trigger: Flushing candles for EOD processing...")
+			for _, b := range builders {
+				b.Flush()
+			}
+		})
 
 		// 3. Handle Shutdown
-		if now.Before(targetShutdown) {
-			durationShutdown := targetShutdown.Sub(now)
-			log.Printf("Scheduled Auto-Shutdown in %v (at 15:30 IST)", durationShutdown)
-			time.AfterFunc(durationShutdown, func() {
-				log.Println("🛑 15:30 PM Trigger: Market Closed. Initiating Auto-Shutdown...")
-				// Send signal to stop channel to trigger graceful shutdown
-				stop <- syscall.SIGTERM
-			})
-		} else {
-			log.Println("Started after 15:30, Auto-shutdown scheduler skipped (assuming manual control).")
-		}
+		durationShutdown := targetShutdown.Sub(now)
+		log.Printf("Scheduled Auto-Shutdown in %v (at 15:30 IST)", durationShutdown)
+		time.AfterFunc(durationShutdown, func() {
+			log.Println("🛑 15:30 PM Trigger: Market Closed. Initiating Auto-Shutdown...")
+			// Send signal to stop channel to trigger graceful shutdown
+			stop <- syscall.SIGTERM
+		})
 	}()
 
 	go func() {
@@ -382,8 +380,6 @@ func main() {
 	} else {
 		log.Println("Web Server stopped gracefully")
 	}
-
-	ticker.Stop()
 
 	close(candleChan)
 	log.Println("Waiting for engine to finish processing...")
@@ -468,8 +464,8 @@ func isTradingTime() bool {
 
 	// Start: 08:55 AM
 	start := time.Date(now.Year(), now.Month(), now.Day(), 8, 55, 0, 0, loc)
-	// End: 15:30 PM
-	end := time.Date(now.Year(), now.Month(), now.Day(), 15, 30, 0, 0, loc)
+	// End: 15:05 PM
+	end := time.Date(now.Year(), now.Month(), now.Day(), 15, 05, 0, 0, loc)
 
 	if now.Before(start) || now.After(end) {
 		log.Printf("Current time %s is outside trading window (%s - %s)", now.Format("15:04"), start.Format("15:04"), end.Format("15:04"))

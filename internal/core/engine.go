@@ -67,17 +67,6 @@ func (e *Engine) loadLeverageMap() {
 // Execute is called whenever a candle closes
 func (e *Engine) Execute(candle models.Candle) {
 	// 1. Get Signal from Strategy
-	// CUTOFF TIME CHECK: 3:05 PM (15:05)
-	// We want to stop taking new trades after 3:05 PM to avoid square trade risks.
-	now := candle.EndTime // Use candle time or system time? System time is safer for "NOW"
-	// However, candle.EndTime is effectively "NOW" in live trading.
-	// But let's use actual system time for safety if available, but here we only have candle.
-	// Let's assume candle.EndTime is close enough.
-	if now.Hour() == 15 && now.Minute() > 5 {
-		log.Printf("Skipping signal logic: Time is past 15:05 (%s)", now.Format("15:04"))
-		return
-	}
-
 	signal := e.Strategy.OnCandle(candle)
 	if signal == nil {
 		return
