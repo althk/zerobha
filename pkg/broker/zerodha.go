@@ -265,7 +265,9 @@ func (z *ZerodhaAdapter) History(symbol string, timeframe string, days int) ([]m
 	to := time.Now()
 	from := to.AddDate(0, 0, -days) // Last 50 days
 
-	data, err := z.client.GetHistoricalData(int(token), timeframe, from, to, false, false)
+	// Zerodha API requires specific interval strings
+	kTimeframe := toZerodhaTimeframe(timeframe)
+	data, err := z.client.GetHistoricalData(int(token), kTimeframe, from, to, false, false)
 	if err != nil {
 		return nil, err
 	}
