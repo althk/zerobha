@@ -127,7 +127,7 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	// 4. Time Window Check (9:30 AM - 2:30 PM)
+	// 4. Time Window Check (9:30 AM - 2:00 PM)
 	// Only applies if we are trading intraday on lower timeframes.
 	// If Timeframe is "1d", hour will be 0 or 9 (depending on data source).
 	// If 1d, we should skip this check entirely.
@@ -137,16 +137,16 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 		hour := candle.StartTime.Hour()
 		minute := candle.StartTime.Minute()
 		timeVal := hour*100 + minute
-		if timeVal < 930 || timeVal > 1430 {
+		if timeVal < 930 || timeVal > 1400 {
 			return nil
 		}
 	}
 
 	// 5. Logic Implementation
 
-	// Condition A: Trend Angle > 25 degrees
+	// Condition A: Trend Angle > 35 degrees
 	angle := state.CalculateTrendAngle(ema21)
-	goodAngle := angle > 45.0
+	goodAngle := angle > 35.0
 
 	// Condition B: Candle crosses up and closes above EMA 21
 	// We check if Open < EMA and Close > EMA (Body Cross)
@@ -187,7 +187,7 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 
 	// Update History for next candle
 	state.EmaHistory = append(state.EmaHistory, ema21)
-	if len(state.EmaHistory) > 10 {
+	if len(state.EmaHistory) > 14 {
 		state.EmaHistory = state.EmaHistory[1:]
 	}
 
