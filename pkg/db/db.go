@@ -48,6 +48,7 @@ func (s *Store) initSchema() error {
 			quantity REAL,
 			price REAL,
 			status TEXT,
+			strategy TEXT,
 			timestamp DATETIME
 		);`,
 		// Signals Table
@@ -80,15 +81,26 @@ func (s *Store) initSchema() error {
 // --- Order Methods ---
 
 func (s *Store) SaveOrder(o models.Order, status string) error {
-	query := `INSERT INTO orders (order_id, symbol, side, quantity, price, status, timestamp)
-			  VALUES (?, ?, ?, ?, ?, ?, ?)
+	query := `INSERT INTO orders (order_id, symbol, side, quantity, price, status, strategy, timestamp)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			  ON CONFLICT(order_id) DO UPDATE SET status=excluded.status;`
 
 	qty, _ := o.Quantity.Float64()
 	price, _ := o.Price.Float64()
+	strategy := o.Metadata["Strategy"]
 
-	_, err := s.db.Exec(query, o.ID, o.Symbol, o.Side, qty, price, status, time.Now())
+	_, err := s.db.Exec(query, o.ID, o.Symbol, o.Side, qty, price, status, strategy, time.Now())
 	return err
+}
+
+func (s *Store) GetOrderStrategy(symbol string) (string, error) {
+	query := `SELECT strategy FROM orders WHERE symbol = ? AND strategy IS NOT NULL AND strategy != '' ORDER BY timestamp DESC LIMIT 1;`
+	var strategy string
+	err := s.db.QueryRow(query, symbol).Scan(&strategy)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return strategy, err
 }
 
 // --- Signal Methods ---

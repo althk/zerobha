@@ -144,6 +144,23 @@ tbody tr:last-child td {
 .text-green { color: var(--success-color); }
 .text-red { color: var(--danger-color); }
 
+.badge {
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.badge-open {
+    background: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.badge-closed {
+    background: rgba(148, 163, 184, 0.2);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
     width: 8px;

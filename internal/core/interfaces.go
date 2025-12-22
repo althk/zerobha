@@ -59,4 +59,7 @@ type Broker interface {
 
 	// GetOpenOrders returns all pending orders
 	GetOpenOrders() ([]models.Order, error)
+
+	// GetTrades returns all completed orders filtered by "ZEROBHA_BOT" tag
+	GetTrades() ([]models.Order, error)
 }

@@ -24,6 +24,21 @@ function updateSummary(summary) {
     const pnlEl = document.getElementById('pnl');
     pnlEl.textContent = formatCurrency(summary.pnl);
     pnlEl.className = `value ${summary.pnl >= 0 ? 'text-green' : 'text-red'}`;
+
+    // Breakdown
+    let breakdown = document.getElementById('pnl-breakdown');
+    if (!breakdown) {
+        breakdown = document.createElement('div');
+        breakdown.id = 'pnl-breakdown';
+        breakdown.style.fontSize = '0.8rem';
+        breakdown.style.marginTop = '0.5rem';
+        pnlEl.parentNode.appendChild(breakdown);
+    }
+    breakdown.innerHTML = `
+        <span class="${summary.realized_pnl >= 0 ? 'text-green' : 'text-red'}">R: ${formatCurrency(summary.realized_pnl)}</span>
+        <span style="margin: 0 0.5rem; color: var(--text-secondary)">|</span>
+        <span class="${summary.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}">U: ${formatCurrency(summary.unrealized_pnl)}</span>
+    `;
 }
 
 function updatePositions(positions) {
@@ -36,17 +51,24 @@ function updatePositions(positions) {
 
     document.getElementById('active-positions-count').textContent = positions.length;
 
-    tbody.innerHTML = positions.map(p => `
+    tbody.innerHTML = positions.map(p => {
+        const isOpen = p.net_quantity !== 0;
+        const statusBadge = isOpen ? '<span class="badge badge-open">OPEN</span>' : '<span class="badge badge-closed">CLOSED</span>';
+
+        return `
         <tr>
-            <td>${p.tradingsymbol}</td>
-            <td><span class="status-indicator" style="background: rgba(255,255,255,0.1); color: #fff;">${p.product}</span></td>
-            <td class="${p.quantity > 0 ? 'text-green' : 'text-red'}">${p.quantity > 0 ? 'LONG' : 'SHORT'}</td>
-            <td>${Math.abs(p.quantity)}</td>
-            <td>${p.average_price}</td>
-            <td>${p.last_price}</td>
-            <td class="${p.pnl >= 0 ? 'text-green' : 'text-red'}">${formatCurrency(p.pnl)}</td>
+            <td>
+                ${p.tradingsymbol}
+                ${p.strategy ? `<br><small class="text-muted" style="color: var(--text-secondary); font-size: 0.75rem;">${p.strategy}</small>` : ''}
+            </td>
+            <td><span class="status-indicator" style="background: rgba(255,255,255,0.05); color: var(--text-secondary); font-weight: normal; border: 1px solid rgba(255,255,255,0.1);">${p.product}</span></td>
+            <td>${statusBadge}</td>
+            <td>${p.net_quantity}</td>
+            <td>${formatCurrency(p.average_price)}</td>
+            <td>${formatCurrency(p.last_price)}</td>
+            <td class="${p.pnl >= 0 ? 'text-green' : 'text-red'}" style="font-weight: 600;">${formatCurrency(p.pnl)}</td>
         </tr>
-    `).join('');
+    `}).join('');
 }
 
 function updateOrders(orders) {

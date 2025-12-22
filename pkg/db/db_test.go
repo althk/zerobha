@@ -65,10 +65,20 @@ func TestDB(t *testing.T) {
 			Side:     models.BuySignal,
 			Quantity: decimal.NewFromInt(10),
 			Price:    decimal.NewFromFloat(1500),
+			Metadata: map[string]string{"Strategy": "TEST_STRAT"},
 		}
 
 		if err := store.SaveOrder(order, "COMPLETE"); err != nil {
 			t.Fatalf("SaveOrder failed: %v", err)
+		}
+
+		// Verify Strategy
+		strat, err := store.GetOrderStrategy("INFY")
+		if err != nil {
+			t.Fatalf("GetOrderStrategy failed: %v", err)
+		}
+		if strat != "TEST_STRAT" {
+			t.Errorf("Expected TEST_STRAT, got %s", strat)
 		}
 	})
 }

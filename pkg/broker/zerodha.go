@@ -289,8 +289,22 @@ func (z *ZerodhaAdapter) History(symbol string, timeframe string, days int) ([]m
 	return candles, nil
 }
 
-// GetPositions returns all open positions
+// GetPositions returns all open positions, filtered by the bot's tag.
 func (z *ZerodhaAdapter) GetPositions() ([]models.Position, error) {
+	// 1. Get all orders to identify bot trades
+	orders, err := z.client.GetOrders()
+	if err != nil {
+		return nil, err
+	}
+
+	botSymbols := make(map[string]bool)
+	for _, o := range orders {
+		if o.Tag == "ZEROBHA_BOT" {
+			botSymbols[o.TradingSymbol] = true
+		}
+	}
+
+	// 2. Fetch all positions from Broker
 	positions, err := z.client.GetPositions()
 	if err != nil {
 		return nil, err
@@ -299,7 +313,12 @@ func (z *ZerodhaAdapter) GetPositions() ([]models.Position, error) {
 	var result []models.Position
 	// Combine Net and Day positions
 	for _, p := range positions.Net {
-		if p.Quantity != 0 {
+		// Filter: Only show positions for symbols the bot has traded today
+		if !botSymbols[p.Tradingsymbol] {
+			continue
+		}
+
+		if p.Quantity != 0 || p.PnL != 0 {
 			result = append(result, models.Position{
 				Tradingsymbol: p.Tradingsymbol,
 				Exchange:      p.Exchange,
@@ -361,6 +380,39 @@ func (z *ZerodhaAdapter) CancelGTT(triggerID int) error {
 func (z *ZerodhaAdapter) CancelOrder(orderID string) error {
 	_, err := z.client.CancelOrder(kiteconnect.VarietyRegular, orderID, nil)
 	return err
+}
+
+// GetTrades returns all completed orders filtered by "ZEROBHA_BOT" tag
+func (z *ZerodhaAdapter) GetTrades() ([]models.Order, error) {
+	orders, err := z.client.GetOrders()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []models.Order
+	for _, o := range orders {
+		// Filter for bot-tagged orders that are completed
+		if o.Tag == "ZEROBHA_BOT" && (o.Status == "COMPLETE" || o.Status == "FILLED") {
+			result = append(result, models.Order{
+				ID:     o.OrderID,
+				Symbol: o.TradingSymbol,
+				Type:   o.OrderType,
+				Side: func() models.SignalType {
+					if o.TransactionType == "BUY" {
+						return models.BuySignal
+					}
+					return models.SellSignal
+				}(),
+				ProductType: o.Product,
+				Quantity:    decimal.NewFromFloat(o.Quantity),
+				Price:       decimal.NewFromFloat(o.AveragePrice), // Use AveragePrice for filled orders
+				Status:      models.OrderStatus(o.Status),
+				Timestamp:   o.OrderTimestamp.Time,
+				Metadata:    map[string]string{"Tag": o.Tag},
+			})
+		}
+	}
+	return result, nil
 }
 
 // GetOpenOrders returns all pending orders

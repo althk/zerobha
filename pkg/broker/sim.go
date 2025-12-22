@@ -246,3 +246,10 @@ func (s *SimBroker) CancelOrder(orderID string) error {
 func (s *SimBroker) GetOpenOrders() ([]models.Order, error) {
 	return []models.Order{}, nil
 }
+
+// GetTrades returns all completed orders (Stub)
+func (s *SimBroker) GetTrades() ([]models.Order, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Orders, nil
+}

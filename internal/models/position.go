@@ -11,4 +11,5 @@ type Position struct {
 	NetQuantity   int             `json:"net_quantity"` // Net open quantity
 	LastPrice     decimal.Decimal `json:"last_price"`
 	PnL           decimal.Decimal `json:"pnl"`
+	Strategy      string          `json:"strategy"`
 }
