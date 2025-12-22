@@ -1,4 +1,4 @@
-const REFRESH_INTERVAL = 2000; // 2 seconds
+const REFRESH_INTERVAL = 30000; // 30 seconds
 
 async function fetchData(endpoint) {
     try {
