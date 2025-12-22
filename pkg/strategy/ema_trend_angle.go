@@ -15,6 +15,7 @@ type EmaTrendAngleState struct {
 	Symbol     string
 	Ema21      *indicators.EMA // 21 Period
 	Atr        *indicators.ATR // 14 Period
+	Adx        *indicators.ADX // 14 Period
 	EmaHistory []decimal.Decimal
 }
 
@@ -23,6 +24,7 @@ func NewEmaTrendAngleState(symbol string) *EmaTrendAngleState {
 		Symbol:     symbol,
 		Ema21:      indicators.NewEMA(21),
 		Atr:        indicators.NewATR(14),
+		Adx:        indicators.NewADX(14),
 		EmaHistory: make([]decimal.Decimal, 0, 15), // Keep enough for 10 period lookback
 	}
 }
@@ -85,6 +87,7 @@ func (s *EmaTrendAngle) Init(provider core.DataProvider) error {
 		for _, c := range candles {
 			state.Ema21.Update(c.Close)
 			state.Atr.Update(c)
+			state.Adx.Update(c)
 
 			// Maintain History for Angle Calculation
 			if state.Ema21.IsReady() {
@@ -110,6 +113,7 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 	// 2. Update Indicators
 	ema21 := state.Ema21.Update(candle.Close)
 	atrVal := state.Atr.Update(candle)
+	adxVal := state.Adx.Update(candle)
 
 	// 3. Wait for warm-up
 	if !state.Ema21.IsReady() || atrVal.IsZero() {
@@ -124,16 +128,7 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 	}
 
 	// 4. Time Window Check (9:30 AM - 2:30 PM)
-	// 4. Time Window Check (9:30 AM - 2:30 PM)
 	// Only applies if we are trading intraday on lower timeframes.
-	// For now, this logic is specific to intraday but we can leave it or make it smarter.
-	// Since we are moving to higher timeframes (1h, 1d), this check might skip valid candles.
-	// TODO: Make this smarter based on s.Timeframe.
-	// For "1h", the candle start times are e.g., 09:15, 10:15...
-	// 09:15 < 930 -> SKIP
-	// 10:15 > 930 -> OK
-	// ...
-	// 15:15 > 1430 -> SKIP
 	// If Timeframe is "1d", hour will be 0 or 9 (depending on data source).
 	// If 1d, we should skip this check entirely.
 	if s.Timeframe == "1d" {
@@ -157,29 +152,33 @@ func (s *EmaTrendAngle) OnCandle(candle models.Candle) *models.Signal {
 	// We check if Open < EMA and Close > EMA (Body Cross)
 	crossUp := candle.Open.LessThan(ema21) && candle.Close.GreaterThan(ema21)
 
+	// Condition C: ADX > 25
+	goodAdx := adxVal.GreaterThan(decimal.NewFromInt(25))
+
 	var signal *models.Signal
 
-	if goodAngle && crossUp {
+	if goodAngle && crossUp && goodAdx {
 		// VALID SIGNAL FOUND
 
 		// 5. Calculate Dynamic Stops
 		// Stop Loss: Low - ATR
 		stopLoss := candle.Low.Sub(atrVal)
 
-		// Target: Close + ATR * 2
-		target := candle.Close.Add(atrVal.Mul(decimal.NewFromFloat(5)))
+		// Target: Close + ATR * 10
+		target := candle.Close.Add(atrVal.Mul(decimal.NewFromFloat(10)))
 
 		signal = &models.Signal{
 			Symbol:      candle.Symbol,
 			Type:        models.BuySignal,
 			Price:       candle.Close,
-			StopLoss:    stopLoss.Floor(),
-			Target:      target.Floor(),
-			ProductType: "CNC", // Delivery order
+			StopLoss:    stopLoss.Round(2),
+			Target:      target.Round(2),
+			ProductType: "MIS",
 			Metadata: map[string]string{
 				"Strategy":   s.Name(),
 				"EMA21":      ema21.StringFixed(2),
 				"ATR":        atrVal.StringFixed(2),
+				"ADX":        adxVal.StringFixed(2),
 				"TrendAngle": decimal.NewFromFloat(angle).StringFixed(2),
 				"CandleTime": candle.StartTime.Format("2006-01-02 15:04:05"),
 			},
