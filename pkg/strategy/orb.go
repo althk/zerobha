@@ -266,7 +266,7 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		if closePrice.GreaterThan(currentVwap) && volumeCondition && rsiVal.GreaterThan(decimal.NewFromInt(55)) {
 			// Stop Loss = Entry - 1 * ATR
 			// Target = Entry + 2 * ATR
-			// Fallback to range mid-point if ATR is zero (unlikely)
+			// Fallback to range mid-point if ATR is zero
 			stopLoss := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
 			target := closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(1.5)))
 
@@ -338,9 +338,6 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 
 	// Update LastClose for next iteration
 	state.LastClose = candle.Close
-	// Save state after important updates? OnCandle might be too frequent, but maybe okay.
-	// We only really need to save if LastClose changes which is every candle.
-	// For performance, maybe we don't save every time, but since this is 5min candles, it's fine.
 
 	return nil
 }
