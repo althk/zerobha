@@ -12,14 +12,11 @@ import (
 // Note: This implementation approximates "closing price" with the current price provided.
 func GetTickSize(symbol string, price decimal.Decimal) decimal.Decimal {
 	// 1. Derivatives (Options) logic
-	// Heuristic: Symbols ending with CE or PE or similar patterns for options.
-	// Typically, Zerodha/NSE option symbols look like "NIFTY25JAN23000CE"
-	// Suffix Check: Must end in "CE" or "PE" AND the character immediately preceding must be a DIGIT.
-	// This prevents matching stocks like "RELIANCE" or "BAJFINANCE".
+	// Options are identified by "CE" or "PE" suffix preceded by a digit (e.g., NIFTY25JAN23000CE).
+	// This distinguishes them from stocks like RELIANCE.
 	isOption := false
 	if strings.HasSuffix(symbol, "CE") || strings.HasSuffix(symbol, "PE") {
-		// Check for preceding digit
-		// Check length to avoid panic
+		// Check for preceding digit to confirm it's an option contract
 		if len(symbol) > 2 {
 			r := rune(symbol[len(symbol)-3])
 			if unicode.IsDigit(r) {
@@ -33,23 +30,16 @@ func GetTickSize(symbol string, price decimal.Decimal) decimal.Decimal {
 	}
 
 	// 2. Indices / Index Futures logic
-	// Heuristic: Check if symbol is a known index or index future.
-	// Zerodha Futures: NIFTY25JANFUT, BANKNIFTY25JANFUT
-	// Indices: ^NSEI (Nifty 50), ^NSEBANK (Bank Nifty)
-	// Simple check: Contains "NIFTY" or "BANK" (Might need refinement if stocks have these names, but unlikely for large caps)
-	// Better: explicit check for known indices or suffix "FUT" combined with index root.
+	// Identifies known indices (e.g. ^NSEI) or futures (suffix FUT).
 	isIndex := false
 	if symbol == "^NSEI" || symbol == "NSEI" || symbol == "NIFTY 50" ||
 		symbol == "^NSEBANK" || symbol == "NSEBANK" || symbol == "NIFTY BANK" {
 		isIndex = true
 	} else if strings.Contains(symbol, "NIFTY") || strings.Contains(symbol, "BANKNIFTY") {
-		// Likely an index future if it doesn't end in CE/PE (already handled)
-		// But wait, "NIFTYBEES" is an ETF (Equity).
-		// Let's assume strict naming for now or check suffix "FUT".
+		// Check for Index Futures (e.g. NIFTY25JANFUT)
 		if strings.HasSuffix(symbol, "FUT") {
 			isIndex = true
 		}
-		// If it is just "NIFTY 50" or "NIFTY", it's an index.
 	}
 
 	priceF, _ := price.Float64()
@@ -64,8 +54,8 @@ func GetTickSize(symbol string, price decimal.Decimal) decimal.Decimal {
 		}
 	}
 
-	// 3. Stocks / Stock Futures logic (Default for others)
-	// Futures also follow the stock tick size rules (except Index Futures).
+	// 3. Stocks / Stock Futures logic
+	// Default behavior for stocks and stock futures.
 	if priceF < 250 {
 		return decimal.NewFromFloat(0.01)
 	} else if priceF >= 250 && priceF <= 1000 {
@@ -88,8 +78,7 @@ func AdjustPriceToTick(price decimal.Decimal, tickSize decimal.Decimal) decimal.
 		tickSize = decimal.NewFromFloat(0.05)
 	}
 
-	// Formula: Round(Price / TickSize) * TickSize
-	// shopspring/decimal doesn't have a direct "RoundToNearest" for arbitrary steps easily without division.
+	// Round(Price / TickSize) * TickSize
 
 	div := price.Div(tickSize)
 	round := div.Round(0) // Round to nearest integer
