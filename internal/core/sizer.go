@@ -9,8 +9,6 @@ import (
 
 // CalculateQuantity determines how many shares to buy based on 1% Rule.
 func CalculateQuantity(capital decimal.Decimal, signal *models.Signal, leverage decimal.Decimal) decimal.Decimal {
-	// return decimal.NewFromInt(1)
-	// /*
 	log.Printf("Calculating quantity for %s at %s, total capital %d, leverage %s", signal.Symbol, signal.Price, capital.IntPart(), leverage.String())
 
 	// 1. Safety Check: Avoid division by zero
@@ -33,5 +31,4 @@ func CalculateQuantity(capital decimal.Decimal, signal *models.Signal, leverage 
 
 	// 5. Return the stricter limit
 	return decimal.Min(volatilityQty, capitalQty)
-	// */
 }
