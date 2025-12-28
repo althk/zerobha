@@ -166,8 +166,8 @@ func (e *Engine) Execute(candle models.Candle) {
 		log.Printf("Skipping signal for %s: Insufficient balance", signal.Symbol)
 		return
 	}
-	capital := decimal.Max(balance.Div(decimal.NewFromInt(5)), decimal.NewFromInt(20000))
-	capital = decimal.Min(capital, decimal.NewFromInt(30000))
+	capital := decimal.Max(balance.Div(decimal.NewFromInt(5)), decimal.NewFromInt(30000))
+	capital = decimal.Min(capital, decimal.NewFromInt(50000))
 
 	leverage := decimal.NewFromInt(1)
 	if signal.ProductType == "MIS" {
