@@ -189,9 +189,9 @@ func (e *Engine) Execute(candle models.Candle) {
 		Type:        "MARKET", // Only market orders supported
 		ProductType: signal.ProductType,
 		Quantity:    qty.Floor(),
-		Price:       signal.Price.Round(1),
-		StopLoss:    signal.StopLoss.Round(1),
-		Target:      signal.Target.Round(1),
+		Price:       AdjustPriceToTick(signal.Price, GetTickSize(signal.Symbol, signal.Price)),
+		StopLoss:    AdjustPriceToTick(signal.StopLoss, GetTickSize(signal.Symbol, signal.StopLoss)),
+		Target:      AdjustPriceToTick(signal.Target, GetTickSize(signal.Symbol, signal.Target)),
 		Metadata:    signal.Metadata,
 	}
 
