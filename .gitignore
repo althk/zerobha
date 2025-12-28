@@ -118,3 +118,4 @@ zerobha.db*
 backtest_journal.csv
 final_portfolio.csv
 test_symbol.csv
+zerobha.iml
