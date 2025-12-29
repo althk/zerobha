@@ -262,7 +262,7 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// LONG Signal
 	// Crossover: Close > RangeHigh AND PrevClose <= RangeHigh
 	if closePrice.GreaterThan(state.RangeHigh) && state.LastClose.LessThanOrEqual(state.RangeHigh) {
-		// Trend Filter: Price > VWAP AND RSI > 55
+		// Trend Filter: Price > VWAP AND RSI > 50
 		if closePrice.GreaterThan(currentVwap) && volumeCondition && rsiVal.GreaterThan(decimal.NewFromInt(50)) {
 			// Stop Loss = Entry - 1 * ATR
 			// Target = Entry + 2 * ATR
