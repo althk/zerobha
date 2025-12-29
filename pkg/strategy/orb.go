@@ -318,8 +318,8 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 				Type:        models.SellSignal,
 				ProductType: "MIS",
 				Price:       closePrice,
-				StopLoss:    stopLoss.Floor(),
-				Target:      target.Floor(),
+				StopLoss:    stopLoss.Round(2),
+				Target:      target.Round(2),
 				Metadata: map[string]string{
 					"Strategy":   "ORB_15min_Short",
 					"RangeHigh":  state.RangeHigh.StringFixed(2),
