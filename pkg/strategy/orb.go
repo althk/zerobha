@@ -242,16 +242,16 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// Condition A: Volume > Avg(3) (User modified)
 	volumeCondition := volume.GreaterThan(prevAvgVol)
 
-	// Condition B: ADX > 25 (Strong Trend)
-	if adxVal.LessThan(decimal.NewFromInt(25)) {
+	// Condition B: ADX > 30 (Strong Trend)
+	if adxVal.LessThan(decimal.NewFromInt(30)) {
 		return nil
 	}
 
 	// Condition C: Range Width Check
-	// Avoid choppy/small ranges (Range < 0.5 * ATR) and over-extended ranges (Range > 3 * ATR)
+	// Avoid choppy/small ranges (Range < 1 * ATR) and over-extended ranges (Range > 3 * ATR)
 	rangeSize := state.RangeHigh.Sub(state.RangeLow)
 	if !atrVal.IsZero() {
-		minRange := atrVal.Mul(decimal.NewFromFloat(0.5))
+		minRange := atrVal.Mul(decimal.NewFromFloat(1.0))
 		maxRange := atrVal.Mul(decimal.NewFromFloat(3.0))
 
 		if rangeSize.LessThan(minRange) || rangeSize.GreaterThan(maxRange) {
@@ -263,7 +263,7 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// Crossover: Close > RangeHigh AND PrevClose <= RangeHigh
 	if closePrice.GreaterThan(state.RangeHigh) && state.LastClose.LessThanOrEqual(state.RangeHigh) {
 		// Trend Filter: Price > VWAP AND RSI > 55
-		if closePrice.GreaterThan(currentVwap) && volumeCondition && rsiVal.GreaterThan(decimal.NewFromInt(55)) {
+		if closePrice.GreaterThan(currentVwap) && volumeCondition && rsiVal.GreaterThan(decimal.NewFromInt(50)) {
 			// Stop Loss = Entry - 1 * ATR
 			// Target = Entry + 2 * ATR
 			// Fallback to range mid-point if ATR is zero
