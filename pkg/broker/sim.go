@@ -74,7 +74,16 @@ func (s *SimBroker) PlaceOrder(order models.Order) (models.Order, error) {
 	// 3. Record the Order
 	order.ID = fmt.Sprintf("SIM-%d", len(s.Orders)+1)
 	order.Status = models.OrderFilled
-	order.Timestamp, _ = time.Parse("2006-01-02 15:04:05", order.Metadata["CandleTime"])
+
+	// Use existing Timestamp if set, otherwise try Metadata
+	if order.Timestamp.IsZero() {
+		if tStr, ok := order.Metadata["CandleTime"]; ok {
+			order.Timestamp, _ = time.Parse("2006-01-02 15:04:05", tStr)
+		} else {
+			order.Timestamp = time.Now() // Fallback to Now if neither is present
+		}
+	}
+
 	s.Orders = append(s.Orders, order)
 
 	return order, nil

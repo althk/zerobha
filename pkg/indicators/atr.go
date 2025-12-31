@@ -56,3 +56,7 @@ func (a *ATR) Update(candle models.Candle) decimal.Decimal {
 
 	return a.value
 }
+
+func (a *ATR) IsReady() bool {
+	return a.count >= a.period
+}

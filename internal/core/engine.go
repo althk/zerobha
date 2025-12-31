@@ -193,6 +193,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		StopLoss:    AdjustPriceToTick(signal.StopLoss, GetTickSize(signal.Symbol, signal.StopLoss)),
 		Target:      AdjustPriceToTick(signal.Target, GetTickSize(signal.Symbol, signal.Target)),
 		Metadata:    signal.Metadata,
+		Timestamp:   candle.StartTime, // Set Timestamp from Candle
 	}
 
 	// 6. Execute
