@@ -25,7 +25,7 @@ func main() {
 	// Parse command line flags
 	startDateStr := flag.String("start", "", "Start date for backtest (YYYY-MM-DD)")
 	endDateStr := flag.String("end", "", "End date for backtest (YYYY-MM-DD)")
-	strategyName := flag.String("strategy", "ema_pullback", "Strategy to run: ema_pullback, donchian, or ema_trend_rsi")
+	strategyName := flag.String("strategy", "orb", "Strategy to run: orb, donchian")
 	csvFile := flag.String("csv", "high_beta_stocks.csv", "CSV file containing symbols")
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
 	timeframe := flag.String("timeframe", "1d", "Timeframe for candles (e.g. 1d, 1h)")
@@ -108,8 +108,7 @@ func main() {
 		switch *strategyName {
 		case "donchian":
 			myStrategy = strategy.NewDonchianBreakout([]string{sym})
-		case "ema_trend_rsi":
-			myStrategy = strategy.NewEmaTrendRsi([]string{sym})
+
 		case "adx_rsi_vwap":
 			myStrategy = strategy.NewAdxRsiVwap([]string{sym})
 		case "ema_trend_angle":
