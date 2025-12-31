@@ -179,13 +179,13 @@ func main() {
 	// Strategy (The Brain)
 	var strat core.Strategy
 	switch cfg.Strategy {
+	case "donchian":
+		strat = strategy.NewDonchianBreakout(watchlist)
 	case "orb":
 		strat = strategy.NewORBStrategy(watchlist)
-	case "ema_trend_angle":
-		strat = strategy.NewEmaTrendAngle(watchlist, cfg.Timeframe)
 	default:
-		log.Printf("Using default strategy: Donchian Breakdown")
-		strat = strategy.NewDonchianBreakout(watchlist)
+		log.Printf("Using default strategy: ORB")
+		strat = strategy.NewORBStrategy(watchlist)
 	}
 
 	// Inject DB if Strategy supports it (Manual Dependency Injection)

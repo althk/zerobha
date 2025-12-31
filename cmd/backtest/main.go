@@ -108,9 +108,10 @@ func main() {
 		switch *strategyName {
 		case "donchian":
 			myStrategy = strategy.NewDonchianBreakout([]string{sym})
-		case "ema_trend_angle":
-			myStrategy = strategy.NewEmaTrendAngle([]string{sym}, *timeframe)
+		case "orb":
+			myStrategy = strategy.NewORBStrategy([]string{sym})
 		default:
+			log.Printf("Using default strategy: ORB")
 			myStrategy = strategy.NewORBStrategy([]string{sym})
 		}
 
