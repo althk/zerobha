@@ -181,8 +181,6 @@ func main() {
 	switch cfg.Strategy {
 	case "orb":
 		strat = strategy.NewORBStrategy(watchlist)
-	case "ema_pullback":
-		strat = strategy.NewEmaPullback(watchlist)
 	case "ema_trend_rsi":
 		strat = strategy.NewEmaTrendRsi(watchlist)
 	case "adx_rsi_vwap":

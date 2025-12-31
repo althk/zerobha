@@ -114,10 +114,8 @@ func main() {
 			myStrategy = strategy.NewAdxRsiVwap([]string{sym})
 		case "ema_trend_angle":
 			myStrategy = strategy.NewEmaTrendAngle([]string{sym}, *timeframe)
-		case "orb":
-			myStrategy = strategy.NewORBStrategy([]string{sym})
 		default:
-			myStrategy = strategy.NewEmaPullback([]string{sym})
+			myStrategy = strategy.NewORBStrategy([]string{sym})
 		}
 
 		// Journal
