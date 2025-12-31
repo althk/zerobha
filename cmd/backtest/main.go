@@ -108,9 +108,6 @@ func main() {
 		switch *strategyName {
 		case "donchian":
 			myStrategy = strategy.NewDonchianBreakout([]string{sym})
-
-		case "adx_rsi_vwap":
-			myStrategy = strategy.NewAdxRsiVwap([]string{sym})
 		case "ema_trend_angle":
 			myStrategy = strategy.NewEmaTrendAngle([]string{sym}, *timeframe)
 		default:
