@@ -173,6 +173,8 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	currentVwap := state.Vwap.Update(candle)
 	state.VolSma.Update(candle.Volume)
 	atrVal := state.Atr.Update(candle)
+	// Capture previous ADX before update
+	prevAdx := state.Adx.Value()
 	adxVal := state.Adx.Update(candle)
 	rsiVal := state.Rsi.Update(candle.Close)
 
@@ -242,8 +244,9 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// Condition A: Volume > Avg(3) (User modified)
 	volumeCondition := volume.GreaterThan(prevAvgVol)
 
-	// Condition B: ADX > 30 (Strong Trend)
-	if adxVal.LessThan(decimal.NewFromInt(30)) {
+	// Condition B: ADX > 20 (Up Trend)
+	// Condition B: ADX > 20 (Up Trend) AND ADX rising
+	if adxVal.LessThan(decimal.NewFromInt(20)) || adxVal.LessThanOrEqual(prevAdx) {
 		return nil
 	}
 
