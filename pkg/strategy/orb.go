@@ -237,10 +237,6 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 
 	// Entry Conditions
 	// "Entry Trigger 5-min Candle Close outside Range"
-
-	// Entry Conditions
-	// "Entry Trigger 5-min Candle Close outside Range"
-
 	// Condition A: Volume > Avg(3) (User modified)
 	volumeCondition := volume.GreaterThan(prevAvgVol)
 
