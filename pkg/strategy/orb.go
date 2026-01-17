@@ -228,7 +228,10 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 
 	// 5. Breakout Logic
 	// Only consider valid trading hours (e.g. stop before close)
-	if timeInMinutes >= 15*60 { // Stop trading after 3:00 PM
+	// Only consider valid trading hours (e.g. stop before close)
+	// Restrict entries to morning session (before 10:30 AM) for ORB
+	// 10:30 = 10*60 + 30 = 630 minutes
+	if timeInMinutes >= 10*60+30 {
 		return nil
 	}
 
@@ -265,13 +268,13 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		if closePrice.GreaterThan(currentVwap) && volumeCondition && rsiVal.GreaterThan(decimal.NewFromInt(50)) {
 			// Stop Loss = Entry - 1 * ATR
 			// Target = Entry + 2 * ATR
-			// Fallback to range mid-point if ATR is zero
 			stopLoss := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
-			target := closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(1.5)))
+			target := closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(2.0))) // Default fallback
 
 			if !atrVal.IsZero() {
-				stopLoss = closePrice.Sub(atrVal)
-				target = closePrice.Add(atrVal.Mul(decimal.NewFromInt(2)))
+				// Adjusted for High Beta: SL = 1.5 ATR, Target = 3.0 ATR (1:2 R:R)
+				stopLoss = closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(1.5)))
+				target = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(3.0)))
 			}
 
 			return &models.Signal{
@@ -305,11 +308,12 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 			// Stop Loss = Entry + 1 * ATR
 			// Target = Entry - 2 * ATR
 			stopLoss := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
-			target := closePrice.Sub(stopLoss.Sub(closePrice).Mul(decimal.NewFromFloat(1.5)))
+			target := closePrice.Sub(stopLoss.Sub(closePrice).Mul(decimal.NewFromFloat(2.0))) // Default fallback
 
 			if !atrVal.IsZero() {
-				stopLoss = closePrice.Add(atrVal)
-				target = closePrice.Sub(atrVal.Mul(decimal.NewFromInt(2)))
+				// Adjusted for High Beta: SL = 1.5 ATR, Target = 3.0 ATR (1:2 R:R)
+				stopLoss = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(1.5)))
+				target = closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(3.0)))
 			}
 
 			return &models.Signal{

@@ -262,3 +262,58 @@ func (s *SimBroker) GetTrades() ([]models.Order, error) {
 	defer s.mu.Unlock()
 	return s.Orders, nil
 }
+
+func (s *SimBroker) SquareOffAll(candle models.Candle) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.Orders {
+		o := &s.Orders[i]
+		if o.Status == models.OrderFilled {
+			var exitReason string = "EOD-SQUAREOFF"
+			var exitPrice decimal.Decimal = candle.Close
+
+			if o.Quantity.LessThanOrEqual(decimal.Zero) {
+				continue
+			}
+
+			// Calculate PnL
+			var realizedPnL decimal.Decimal
+			if o.Side == models.BuySignal {
+				revenue := exitPrice.Mul(o.Quantity)
+				s.Balance = s.Balance.Add(revenue)
+				realizedPnL = revenue.Sub(o.Price.Mul(o.Quantity))
+			} else {
+				buyBackCost := exitPrice.Mul(o.Quantity)
+				s.Balance = s.Balance.Sub(buyBackCost)
+				realizedPnL = o.Price.Mul(o.Quantity).Sub(buyBackCost) // (Entry - Exit) * Qty
+			}
+
+			o.Status = models.OrderClosed
+
+			trade := models.Trade{
+				Symbol:     o.Symbol,
+				EntryPrice: o.Price,
+				ExitPrice:  exitPrice,
+				Quantity:   o.Quantity,
+				Direction:  string(o.Side), // "LONG" or "SHORT" based on signal, but side is int/string?
+				// models.SignalType is int defined in models? Let's check models.
+				// Wait, in CheckExits it uses "LONG" and "SHORT" hardcoded string.
+				// Let's use logic to derive string.
+				PnL:        realizedPnL,
+				EntryTime:  o.Timestamp,
+				ExitTime:   candle.EndTime,
+				ExitReason: exitReason,
+			}
+
+			if o.Side == models.BuySignal {
+				trade.Direction = "LONG"
+			} else {
+				trade.Direction = "SHORT"
+			}
+
+			s.Trades = append(s.Trades, trade)
+			log.Printf(">>> EOD SQUAREOFF: %s | %s @ %s\n", o.Symbol, exitPrice, realizedPnL)
+		}
+	}
+}

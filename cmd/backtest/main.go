@@ -164,6 +164,21 @@ func main() {
 
 			simBroker.CheckExits(candle)
 			engine.Execute(candle)
+
+			// Force Square-off at 15:15
+			// Convert to IST
+			loc, _ := time.LoadLocation("Asia/Kolkata")
+			if loc == nil {
+				loc = time.FixedZone("IST", 5*3600+1800)
+			}
+			istTime := candle.StartTime.In(loc)
+			h, m, _ := istTime.Clock()
+			timeInMinutes := h*60 + m
+			squareOffTime := 15*60 + 15 // 15:15
+
+			if timeInMinutes >= squareOffTime {
+				simBroker.SquareOffAll(candle)
+			}
 		}
 
 		// 4. Report
