@@ -11,6 +11,7 @@ import (
 	"time"
 	"zerobha/pkg/statistics"
 
+	"zerobha/internal/config"
 	"zerobha/internal/core"
 	"zerobha/internal/models"
 	"zerobha/internal/risk"
@@ -109,10 +110,10 @@ func main() {
 		case "donchian":
 			myStrategy = strategy.NewDonchianBreakout([]string{sym})
 		case "orb":
-			myStrategy = strategy.NewORBStrategy([]string{sym})
+			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
 		default:
 			log.Printf("Using default strategy: ORB")
-			myStrategy = strategy.NewORBStrategy([]string{sym})
+			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
 		}
 
 		// Journal

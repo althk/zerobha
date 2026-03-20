@@ -182,10 +182,10 @@ func main() {
 	case "donchian":
 		strat = strategy.NewDonchianBreakout(watchlist)
 	case "orb":
-		strat = strategy.NewORBStrategy(watchlist)
+		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
 	default:
 		log.Printf("Using default strategy: ORB")
-		strat = strategy.NewORBStrategy(watchlist)
+		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
 	}
 
 	// Inject DB if Strategy supports it (Manual Dependency Injection)
@@ -212,6 +212,7 @@ func main() {
 
 	// Engine (The Orchestrator)
 	engine := core.NewEngine(strat, kiteAdapter, riskMgr, j, im, store)
+	engine.MaxConcurrent = cfg.ORB.MaxConcurrent
 
 	// Web Dashboard
 	webServer := web.NewServer(engine, 8080)

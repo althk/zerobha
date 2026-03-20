@@ -15,3 +15,25 @@ timeframe = "5m"
 # Zerodha API Credentials
 api_key = ""
 api_secret = ""
+
+[orb]
+# Entry window cutoff in minutes from midnight (default: 630 = 10:30 AM IST)
+entry_window_end = 630
+
+# RSI thresholds for long/short entries
+rsi_long_threshold = 50.0
+rsi_short_threshold = 40.0
+
+# ADX threshold for trend confirmation
+adx_threshold = 20.0
+
+# Opening range size filter (as ATR multiples)
+min_range_atr = 1.0
+max_range_atr = 3.0
+
+# Stop-loss and target as ATR multiples
+sl_multiplier = 1.5
+target_multiplier = 3.0
+
+# Max simultaneous open positions (used for capital allocation)
+max_concurrent = 5

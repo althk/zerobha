@@ -23,10 +23,11 @@ type Engine struct {
 	InstrumentManager *broker.InstrumentManager
 	DB                *db.Store
 	LeverageMap       map[string]float64
+	MaxConcurrent     int
 }
 
 func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *broker.InstrumentManager, d *db.Store) *Engine {
-	e := &Engine{Strategy: s, Broker: b, Risk: r, Journal: j, InstrumentManager: im, DB: d}
+	e := &Engine{Strategy: s, Broker: b, Risk: r, Journal: j, InstrumentManager: im, DB: d, MaxConcurrent: 5}
 	e.loadLeverageMap()
 	return e
 }
@@ -66,6 +67,12 @@ func (e *Engine) loadLeverageMap() {
 
 // Execute is called whenever a candle closes
 func (e *Engine) Execute(candle models.Candle) {
+	// Stop accepting new signals after 15:05 (new trade cutoff)
+	h, m, _ := candle.EndTime.Clock()
+	if h*60+m >= 15*60+5 {
+		return
+	}
+
 	// 1. Get Signal from Strategy
 	signal := e.Strategy.OnCandle(candle)
 	if signal == nil {
@@ -166,7 +173,16 @@ func (e *Engine) Execute(candle models.Candle) {
 		log.Printf("Skipping signal for %s: Insufficient balance", signal.Symbol)
 		return
 	}
-	capital := decimal.Max(balance.Div(decimal.NewFromInt(5)), decimal.NewFromInt(30000))
+
+	// Divide available balance by remaining open slots so we don't over-deploy capital.
+	openPositions, _ := e.Broker.GetPositions()
+	openCount := int64(len(openPositions))
+	maxConcurrent := int64(e.MaxConcurrent)
+	remainingSlots := decimal.NewFromInt(maxConcurrent - openCount)
+	if remainingSlots.LessThanOrEqual(decimal.Zero) {
+		remainingSlots = decimal.NewFromInt(1)
+	}
+	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(30000))
 	capital = decimal.Min(capital, decimal.NewFromInt(50000))
 
 	leverage := decimal.NewFromInt(1)
