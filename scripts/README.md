@@ -144,25 +144,156 @@ pip install pandas yfinance
 
 ### 2. find_high_beta.py
 
-Identifies high beta stocks from a given universe for volatile trading opportunities.
+Identifies high beta stocks from a given universe, with optional sector filtering and per-stock relative strength scoring.
 
-*(Additional documentation to be added)*
+#### Usage
+
+```bash
+# All Nifty 500 stocks
+python3 scripts/find_high_beta.py
+
+# Filter to specific industries + minimum beta
+python3 scripts/find_high_beta.py --sectors "Healthcare,Metals & Mining" --min-beta 1.2 --limit 30
+
+# Custom date range
+python3 scripts/find_high_beta.py --start-date 2025-01-01 --end-date 2025-03-01
+```
+
+#### Command-Line Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--symbols` | string | `ind_nifty500list.csv` | CSV with 'Symbol' column (and optional 'Industry') |
+| `--output` | string | `high_beta_stocks.csv` | Output CSV path |
+| `--start-date` | string | 60 days ago | Start date (YYYY-MM-DD) |
+| `--end-date` | string | today | End date (YYYY-MM-DD) |
+| `--workers` | int | CPU count | Parallel download workers |
+| `--sectors` | string | all | Comma-separated industry filter (e.g. `"Healthcare,Realty"`) |
+| `--min-beta` | float | none | Minimum beta threshold |
+| `--limit` | int | none | Max stocks to output |
+
+#### Output Columns
+
+`symbol, industry, beta, last_price, rs_1m`
+
+- `rs_1m`: 1-month relative strength vs Nifty 50 (%). Positive = outperforming.
 
 ---
 
 ### 3. sector_momentum_analyzer.py
 
-Analyzes NSE sectoral indices for relative strength ranking against Nifty 50.
+RRG-style (Relative Rotation Graph) analysis of NSE sectoral indices vs Nifty 50. Classifies sectors into four quadrants and detects momentum-of-momentum.
 
-*(Additional documentation to be added)*
+#### Features
+
+- **1W/1M/3M windows** with weights 30%/40%/30% — tuned for short-term momentum trading
+- **RRG quadrant classification**: LEADING, WEAKENING, IMPROVING, LAGGING
+- **Momentum-of-momentum (MoM)**: Detects whether the composite score itself is accelerating or decelerating by comparing current vs 1-week-ago composite
+- **Sector-to-industry mapping**: Maps each NSE index to Nifty 500 industry names for downstream stock filtering
+
+#### Usage
+
+```bash
+python3 scripts/sector_momentum_analyzer.py
+python3 scripts/sector_momentum_analyzer.py --output top_sectors.csv --top 5
+```
+
+#### Command-Line Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--output` | string | `top_sectors.csv` | Output CSV path |
+| `--benchmark` | string | `^NSEI` | Benchmark ticker |
+| `--top` | int | `4` | Number of top sectors to highlight |
+
+#### Output Columns
+
+`Sector, Ticker, 1W_RS, 1M_RS, 3M_RS, Composite, Mom_of_Mom, Quadrant`
+
+#### Quadrant Interpretation
+
+| Quadrant | RS Level | Momentum | Action |
+|----------|----------|----------|--------|
+| **LEADING** | Positive | Rising | Trade — strongest sector |
+| **WEAKENING** | Positive | Falling | Trim — losing steam |
+| **IMPROVING** | Negative | Rising | Watch — potential turnaround |
+| **LAGGING** | Negative | Falling | Avoid |
 
 ---
 
-### 4. data_downloader.py
+### 4. build_watchlist.py
 
-Utility script for downloading historical market data.
+End-to-end pipeline that chains sector momentum analysis with stock selection. This is the recommended way to generate the trading watchlist.
 
-*(Additional documentation to be added)*
+#### Pipeline Flow
+
+```
+Sector Momentum Analyzer
+    → Top LEADING/IMPROVING sectors
+        → Map to Nifty 500 industry names
+            → find_high_beta.py (filtered to those industries)
+                → high_beta_stocks.csv (ranked watchlist)
+```
+
+#### Usage
+
+```bash
+# Default: top 4 sectors, beta >= 1.0, max 50 stocks
+python3 scripts/build_watchlist.py
+
+# Customize
+python3 scripts/build_watchlist.py --top-sectors 3 --min-beta 1.2 --limit 30
+
+# Use all top sectors even if none are LEADING/IMPROVING
+python3 scripts/build_watchlist.py --include-all-if-no-leaders
+```
+
+#### Command-Line Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--symbols` | string | `ind_nifty500list.csv` | Nifty 500 CSV |
+| `--output` | string | `high_beta_stocks.csv` | Final watchlist CSV |
+| `--top-sectors` | int | `4` | Number of top sectors |
+| `--min-beta` | float | `1.0` | Minimum beta |
+| `--limit` | int | `50` | Max stocks in watchlist |
+| `--workers` | int | CPU count | Parallel workers |
+| `--sector-output` | string | `top_sectors.csv` | Sector report CSV |
+| `--include-all-if-no-leaders` | flag | - | Fall back to top sectors by score if no LEADING/IMPROVING |
+
+---
+
+### 5. premarket_filter.py
+
+Pre-market stock screener that filters the input universe down to stocks suitable for intraday ORB trading. Run before market open (~8:30 AM IST).
+
+#### Filters Applied
+
+1. Price between ₹100 and ₹5,000
+2. ADTV (avg daily traded value) > ₹50 Cr over last 20 days
+3. ATR(14) as % of closing price > 1.5%
+4. Beta > 1.2
+
+#### Usage
+
+```bash
+python3 scripts/premarket_filter.py
+python3 scripts/premarket_filter.py --input ind_nifty500list.csv --output filtered_watchlist.csv
+```
+
+#### Output Columns
+
+`symbol, beta, last_price, atr_pct, adtv_cr` — sorted by `atr_pct` descending.
+
+---
+
+### 6. data_downloader.py
+
+Downloads historical OHLCV data from Yahoo Finance into `test/data/` for backtesting.
+
+```bash
+python3 scripts/data_downloader.py
+```
 
 ---
 
