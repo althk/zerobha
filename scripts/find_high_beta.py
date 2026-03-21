@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+Find High Beta Stocks.
+
+Calculates beta and 1-month relative strength for stocks, optionally filtered
+by industry sectors. Outputs a ranked CSV for use as a trading watchlist.
+"""
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -22,57 +29,61 @@ DEFAULT_STOCKS = [
 
 
 def calculate_beta(stock_returns, market_returns):
-    # Align data (inner join on dates)
+    """Calculate beta of a stock relative to the market."""
     data = pd.concat([stock_returns, market_returns], axis=1, join='inner')
     data.columns = ['Stock', 'Market']
 
-    if len(data) < 30:  # Need enough data points
+    if len(data) < 30:
         return None
 
-    # Calculate Covariance and Variance
     covariance = data['Stock'].cov(data['Market'])
     variance = data['Market'].var()
 
     if variance == 0:
         return None
 
-    beta = covariance / variance
-    return beta
+    return covariance / variance
 
 
 def process_symbol(args):
     """
-    Worker function to download data and calculate beta for a single symbol.
-    args: (symbol, start_str, end_str, market_returns)
+    Worker: download data, calculate beta and RS for a single symbol.
+    args: (symbol, industry, start_str, end_str, market_returns, market_perf_1m)
     """
-    sym, start_str, end_str, market_returns = args
+    sym, industry, start_str, end_str, market_returns, market_perf_1m = args
     try:
-        # Download stock data
         stock_data = yf.download(sym, start=start_str,
                                  end=end_str, progress=False, auto_adjust=True)
 
         if stock_data.empty:
             return None
 
-        # Calculate Returns
-        stock_returns = stock_data['Close'].pct_change().dropna()
+        close = stock_data['Close']
+        if hasattr(close, 'iloc') and len(close.shape) > 1:
+            close = close.iloc[:, 0]
 
-        # Calculate Beta
+        stock_returns = close.pct_change().dropna()
         beta = calculate_beta(stock_returns, market_returns)
 
-        # Get Last Price
-        last_price = stock_data['Close'].iloc[-1]
+        last_price = close.iloc[-1]
         if hasattr(last_price, 'iloc'):
             last_price = last_price.iloc[0]
+
+        # 1-month relative strength (stock return - benchmark return)
+        rs_1m = None
+        if len(close) >= 21 and market_perf_1m is not None:
+            stock_perf_1m = (close.iloc[-1] / close.iloc[-21]) - 1
+            rs_1m = float(round((stock_perf_1m - market_perf_1m) * 100, 2))
 
         if beta is not None:
             return {
                 "symbol": sym,
+                "industry": industry,
                 "beta": float(round(beta, 2)),
-                "last_price": float(round(last_price, 2))
+                "last_price": float(round(last_price, 2)),
+                "rs_1m": rs_1m,
             }
-    except Exception as e:
-        # print(f"Failed {sym}: {e}") # Reduce noise in multiprocessing
+    except Exception:
         return None
     return None
 
@@ -82,12 +93,19 @@ def main():
     parser.add_argument("--symbols", type=str, default="ind_nifty500list.csv",
                         help="Path to CSV file containing symbols (column name 'Symbol')")
     parser.add_argument(
-        "--output", type=str, default="high_beta_stocks.csv", help="Output JSON/CSV file")
+        "--output", type=str, default="high_beta_stocks.csv", help="Output CSV file")
     parser.add_argument("--start-date", type=str,
                         help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument("--workers", type=int,
                         default=os.cpu_count(), help="Number of worker processes")
+    parser.add_argument("--sectors", type=str, default=None,
+                        help="Comma-separated list of industries to filter "
+                             "(e.g. 'Healthcare,Metals & Mining')")
+    parser.add_argument("--min-beta", type=float, default=None,
+                        help="Minimum beta threshold (e.g. 1.2)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Max number of stocks to output")
     args = parser.parse_args()
 
     # Determine date range
@@ -95,58 +113,84 @@ def main():
     if args.end_date:
         end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
-    start_date = end_date - timedelta(days=60)  # Default to 60 days back
+    start_date = end_date - timedelta(days=60)
     if args.start_date:
         start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
 
     print(
-        f"Calculating Beta using data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        f"Calculating Beta from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+    # Parse sector filter
+    sector_filter = None
+    if args.sectors:
+        sector_filter = [s.strip() for s in args.sectors.split(',')]
+        print(f"Filtering to industries: {sector_filter}")
 
     # Load symbols
-    symbols = []
+    symbols_with_industry = []
     if args.symbols and os.path.exists(args.symbols):
         try:
             df = pd.read_csv(args.symbols)
-            symbols = df['Symbol'].tolist()
-            # Ensure .NS suffix
-            symbols = [s if s.endswith('.NS') else f"{s}.NS" for s in symbols]
+            has_industry = 'Industry' in df.columns
+
+            if sector_filter and has_industry:
+                df = df[df['Industry'].isin(sector_filter)]
+                print(f"  {len(df)} stocks match sector filter")
+
+            for _, row in df.iterrows():
+                sym = row['Symbol']
+                sym = sym if sym.endswith('.NS') else f"{sym}.NS"
+                industry = row['Industry'] if has_industry else ''
+                symbols_with_industry.append((sym, industry))
         except Exception as e:
             print(f"Error reading symbols file: {e}")
             return
     else:
         print("Using default sample list (Nifty 500 subset)...")
-        symbols = DEFAULT_STOCKS
+        symbols_with_industry = [(s, '') for s in DEFAULT_STOCKS]
 
     print(f"Fetching market data (^NSEI)...")
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = (end_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Fetch Market Data ONCE
     market_data = yf.download("^NSEI", start=start_str,
                               end=end_str, progress=False, auto_adjust=True)
     if market_data.empty:
-        print("Error: No market data fetched. Check your date range.")
+        print("Error: No market data fetched.")
         return
 
-    # Pre-calculate market returns to pass to workers
-    market_returns = market_data['Close'].pct_change().dropna()
+    market_close = market_data['Close']
+    if hasattr(market_close, 'iloc') and len(market_close.shape) > 1:
+        market_close = market_close.iloc[:, 0]
+
+    market_returns = market_close.pct_change().dropna()
+
+    # 1-month market performance for RS calculation
+    market_perf_1m = None
+    if len(market_close) >= 21:
+        market_perf_1m = (market_close.iloc[-1] / market_close.iloc[-21]) - 1
 
     results = []
-    print(f"Processing {len(symbols)} stocks using {args.workers} workers...")
+    print(f"Processing {len(symbols_with_industry)} stocks using {args.workers} workers...")
 
-    # Prepare arguments for multiprocessing
-    # We pass market_returns to each worker. DataFrame/Series pickle overhead is acceptable for this size.
-    tasks = [(sym, start_str, end_str, market_returns) for sym in symbols]
+    tasks = [(sym, ind, start_str, end_str, market_returns, market_perf_1m)
+             for sym, ind in symbols_with_industry]
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
-        # Map returns results in order
         for result in executor.map(process_symbol, tasks):
             if result:
                 results.append(result)
-            # Progress indicator could be added here
 
-    # Sort by Beta descending
+    # Apply min-beta filter
+    if args.min_beta is not None:
+        results = [r for r in results if r['beta'] >= args.min_beta]
+
+    # Sort by beta descending
     results.sort(key=lambda x: x['beta'], reverse=True)
+
+    # Apply limit
+    if args.limit:
+        results = results[:args.limit]
 
     # Save to file
     if args.output.endswith('.csv'):
@@ -158,9 +202,10 @@ def main():
 
     print(f"\nTop 10 High Beta Stocks:")
     for item in results[:10]:
-        print(f"{item['symbol']}: {item['beta']}")
+        rs_str = f"  RS_1M: {item['rs_1m']:+.2f}%" if item.get('rs_1m') is not None else ""
+        print(f"  {item['symbol']}: beta={item['beta']}{rs_str}")
 
-    print(f"\nSaved full list to {args.output}")
+    print(f"\nSaved {len(results)} stocks to {args.output}")
 
 
 if __name__ == "__main__":
