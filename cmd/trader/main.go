@@ -181,6 +181,8 @@ func main() {
 	switch cfg.Strategy {
 	case "donchian":
 		strat = strategy.NewDonchianBreakout(watchlist)
+	case "cprvwap":
+		strat = strategy.NewCPRVWAPStrategy(watchlist, cfg.CPRVWAP)
 	case "orb":
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
 	default:
@@ -189,9 +191,11 @@ func main() {
 	}
 
 	// Inject DB if Strategy supports it (Manual Dependency Injection)
-	// Currently only ORBStrategy supports it
 	if orbStrat, ok := strat.(*strategy.ORBStrategy); ok {
 		orbStrat.SetDB(store)
+	}
+	if cprvwapStrat, ok := strat.(*strategy.CPRVWAPStrategy); ok {
+		cprvwapStrat.SetDB(store)
 	}
 
 	strat.Init(kiteAdapter)
@@ -212,7 +216,12 @@ func main() {
 
 	// Engine (The Orchestrator)
 	engine := core.NewEngine(strat, kiteAdapter, riskMgr, j, im, store)
-	engine.MaxConcurrent = cfg.ORB.MaxConcurrent
+	switch cfg.Strategy {
+	case "cprvwap":
+		engine.MaxConcurrent = cfg.CPRVWAP.MaxConcurrent
+	default:
+		engine.MaxConcurrent = cfg.ORB.MaxConcurrent
+	}
 
 	// Web Dashboard
 	webServer := web.NewServer(engine, 8080)

@@ -20,14 +20,29 @@ type ORBConfig struct {
 	RelVolThreshold   float64 `toml:"rel_vol_threshold"`   // min ratio of opening-range vol to avg morning vol, default 1.5
 }
 
+type CPRVWAPConfig struct {
+	EntryWindowStart  int     `toml:"entry_window_start"`  // minutes from midnight, default 570 (9:30 AM)
+	EntryWindowEnd    int     `toml:"entry_window_end"`    // minutes from midnight, default 840 (2:00 PM)
+	RSILongThreshold  float64 `toml:"rsi_long_threshold"`  // default 50
+	RSIShortThreshold float64 `toml:"rsi_short_threshold"` // default 50
+	ADXThreshold      float64 `toml:"adx_threshold"`       // default 20
+	SLMultiplier      float64 `toml:"sl_multiplier"`       // default 1.5
+	TargetMultiplier  float64 `toml:"target_multiplier"`   // default 3.0
+	MaxConcurrent     int     `toml:"max_concurrent"`      // max simultaneous positions, default 5
+	MinCPRWidthPct    float64 `toml:"min_cpr_width_pct"`   // min CPR width as % of price, default 0.3
+	MaxCPRWidthPct    float64 `toml:"max_cpr_width_pct"`   // max CPR width as % of price, default 2.0
+	MaxEMADistPct     float64 `toml:"max_ema_dist_pct"`    // max % distance from EMA9, default 0.5
+}
+
 type Config struct {
-	Strategy  string    `toml:"strategy"`
-	CSVFile   string    `toml:"csv_file"`
-	Limit     int       `toml:"limit"`
-	Timeframe string    `toml:"timeframe"`
-	APIKey    string    `toml:"api_key"`
-	APISecret string    `toml:"api_secret"`
-	ORB       ORBConfig `toml:"orb"`
+	Strategy  string       `toml:"strategy"`
+	CSVFile   string       `toml:"csv_file"`
+	Limit     int          `toml:"limit"`
+	Timeframe string       `toml:"timeframe"`
+	APIKey    string       `toml:"api_key"`
+	APISecret string       `toml:"api_secret"`
+	ORB       ORBConfig    `toml:"orb"`
+	CPRVWAP   CPRVWAPConfig `toml:"cprvwap"`
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -103,5 +118,57 @@ func LoadConfig(path string) (*Config, error) {
 		config.ORB.RelVolThreshold = defaults.RelVolThreshold
 	}
 
+	// CPRVWAP defaults
+	cprvwapDefaults := DefaultCPRVWAPConfig()
+	if config.CPRVWAP.EntryWindowStart == 0 {
+		config.CPRVWAP.EntryWindowStart = cprvwapDefaults.EntryWindowStart
+	}
+	if config.CPRVWAP.EntryWindowEnd == 0 {
+		config.CPRVWAP.EntryWindowEnd = cprvwapDefaults.EntryWindowEnd
+	}
+	if config.CPRVWAP.RSILongThreshold == 0 {
+		config.CPRVWAP.RSILongThreshold = cprvwapDefaults.RSILongThreshold
+	}
+	if config.CPRVWAP.RSIShortThreshold == 0 {
+		config.CPRVWAP.RSIShortThreshold = cprvwapDefaults.RSIShortThreshold
+	}
+	if config.CPRVWAP.ADXThreshold == 0 {
+		config.CPRVWAP.ADXThreshold = cprvwapDefaults.ADXThreshold
+	}
+	if config.CPRVWAP.SLMultiplier == 0 {
+		config.CPRVWAP.SLMultiplier = cprvwapDefaults.SLMultiplier
+	}
+	if config.CPRVWAP.TargetMultiplier == 0 {
+		config.CPRVWAP.TargetMultiplier = cprvwapDefaults.TargetMultiplier
+	}
+	if config.CPRVWAP.MaxConcurrent == 0 {
+		config.CPRVWAP.MaxConcurrent = cprvwapDefaults.MaxConcurrent
+	}
+	if config.CPRVWAP.MinCPRWidthPct == 0 {
+		config.CPRVWAP.MinCPRWidthPct = cprvwapDefaults.MinCPRWidthPct
+	}
+	if config.CPRVWAP.MaxCPRWidthPct == 0 {
+		config.CPRVWAP.MaxCPRWidthPct = cprvwapDefaults.MaxCPRWidthPct
+	}
+	if config.CPRVWAP.MaxEMADistPct == 0 {
+		config.CPRVWAP.MaxEMADistPct = cprvwapDefaults.MaxEMADistPct
+	}
+
 	return &config, nil
+}
+
+func DefaultCPRVWAPConfig() CPRVWAPConfig {
+	return CPRVWAPConfig{
+		EntryWindowStart:  9*60 + 30, // 9:30 AM
+		EntryWindowEnd:    14 * 60,   // 2:00 PM
+		RSILongThreshold:  50,
+		RSIShortThreshold: 50,
+		ADXThreshold:      20,
+		SLMultiplier:      1.5,
+		TargetMultiplier:  3.0,
+		MaxConcurrent:     5,
+		MinCPRWidthPct:    0.3,
+		MaxCPRWidthPct:    2.0,
+		MaxEMADistPct:     0.5,
+	}
 }
