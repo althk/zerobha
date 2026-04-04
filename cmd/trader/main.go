@@ -51,7 +51,7 @@ func fetchRequestToken(loginURL string) (string, error) {
 	// Run a temporary server to listen for callback
 	srv := &http.Server{Addr: ":9880"}
 	var requestToken string
-	http.HandleFunc("/zerobha/cb/rt", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/auth/kite/callback", func(w http.ResponseWriter, r *http.Request) {
 		requestToken = r.URL.Query()["request_token"][0]
 		log.Println("request token", requestToken)
 		go func() {
