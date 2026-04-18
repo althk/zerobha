@@ -27,6 +27,10 @@ type ORBState struct {
 	AvgMorningVol decimal.Decimal // Avg opening-range (9:15–9:30) volume from historical days
 	RangeVolume   decimal.Decimal // Accumulated volume during today's opening range
 	RelVolSkip    bool            // True if today's opening-range volume failed the RelVol filter
+	VolSma5       *indicators.SMA // 5 period volume SMA for recent surge
+	PrevDayClose  decimal.Decimal // Closing price of the previous trading day
+	GapChecked    bool            // True once gap filter has been evaluated for today
+	BreakoutFired bool            // True once a signal has been emitted today (prevents re-entry)
 }
 
 func NewORBState(symbol string) *ORBState {
@@ -37,10 +41,12 @@ func NewORBState(symbol string) *ORBState {
 		Atr:       indicators.NewATR(14),
 		Adx:       indicators.NewADX(9),
 		Rsi:       indicators.NewRSI(9),
+		VolSma5:   indicators.NewSMA(5),
 		RangeHigh: decimal.Zero,
 		RangeLow:  decimal.Zero,
 		RangeSet:  false,
 		LastClose: decimal.Zero,
+		PrevDayClose: decimal.Zero,
 	}
 }
 
@@ -149,20 +155,37 @@ func (s *ORBStrategy) Init(provider core.DataProvider) error {
 
 		// Accumulate opening-range volume per historical day to compute AvgMorningVol
 		morningVolByDay := make(map[string]decimal.Decimal)
+		var lastDate string
+		var lastClose decimal.Decimal
 		for _, c := range candles {
 			state.Vwap.Update(c)
 			state.VolSma.Update(c.Volume)
+			state.VolSma5.Update(c.Volume)
 			state.Atr.Update(c)
 			state.Adx.Update(c)
 			state.Rsi.Update(c.Close)
 
+			// Capture PrevDayClose: The close of the last candle of the previous day
 			istTime := c.StartTime.In(loc)
+			dateKey := istTime.Format("2006-01-02")
+			
+			// If we see a new date, the previous date's last candle was the close
+			if lastDate != "" && dateKey != lastDate {
+				state.PrevDayClose = lastClose
+			}
+			lastDate = dateKey
+			lastClose = c.Close
+
 			h, m, _ := istTime.Clock()
 			tMin := h*60 + m
 			if tMin >= 9*60+15 && tMin < 9*60+30 {
-				dateKey := c.StartTime.Format("2006-01-02")
 				morningVolByDay[dateKey] = morningVolByDay[dateKey].Add(c.Volume)
 			}
+		}
+
+		// Fallback for PrevDayClose if only one day of history (though we requested 10)
+		if state.PrevDayClose.IsZero() && lastClose.GreaterThan(decimal.Zero) {
+			state.PrevDayClose = lastClose
 		}
 
 		if len(morningVolByDay) > 0 {
@@ -196,6 +219,8 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		state.LastDate = currentDate
 		state.RangeVolume = decimal.Zero
 		state.RelVolSkip = false
+		state.GapChecked = false
+		state.BreakoutFired = false
 		s.SaveState(candle.Symbol)
 	}
 
@@ -204,12 +229,12 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	// 2. Capture Previous Volume Average (for "Avg of last 5 bars" check)
-	prevAvgVol := state.VolSma.Value()
-
 	// 3. Update Indicators
 	currentVwap := state.Vwap.Update(candle)
+	prevAvgVol := state.VolSma.Value()
 	state.VolSma.Update(candle.Volume)
+	prevRecentVol := state.VolSma5.Value()
+	state.VolSma5.Update(candle.Volume)
 	atrVal := state.Atr.Update(candle)
 	prevAdx := state.Adx.Value()
 	adxVal := state.Adx.Update(candle)
@@ -276,9 +301,31 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	// 5. Breakout Logic
+	// 5. Gap Check — evaluate once on the first post-range candle using that candle's open
+	if !state.GapChecked && !state.PrevDayClose.IsZero() {
+		state.GapChecked = true
+		gapPct := candle.Open.Sub(state.PrevDayClose).Div(state.PrevDayClose).Abs().Mul(decimal.NewFromInt(100))
+		if gapPct.GreaterThan(decimal.NewFromFloat(s.cfg.MaxGapPct)) {
+			log.Printf("[%s] Gap filter: Gap=%.2f%% > %.2f%% — skipping today", state.Symbol, gapPct.InexactFloat64(), s.cfg.MaxGapPct)
+			state.RelVolSkip = true
+			return nil
+		}
+	}
+
+	// 6. Breakout Logic
 	// Restrict entries to morning session (configurable, default 10:30 AM)
 	if timeInMinutes >= s.cfg.EntryWindowEnd {
+		return nil
+	}
+
+	// One signal per symbol per day — prevent false re-entries after pullbacks
+	if state.BreakoutFired {
+		return nil
+	}
+
+	// VWAP Distance Check
+	vwapDistPct := candle.Close.Sub(currentVwap).Div(currentVwap).Abs().Mul(decimal.NewFromInt(100))
+	if vwapDistPct.GreaterThan(decimal.NewFromFloat(s.cfg.MaxVWAPDistPct)) {
 		return nil
 	}
 
@@ -289,8 +336,11 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// Condition A: Volume > Avg(9)
 	volumeCondition := volume.GreaterThan(prevAvgVol)
 
-	// Condition B: ADX > threshold AND ADX rising
-	if adxVal.LessThan(decimal.NewFromFloat(s.cfg.ADXThreshold)) || adxVal.LessThanOrEqual(prevAdx) {
+	// Condition B: ADX > threshold AND (ADX rising OR above a stronger level)
+	// Allow flat ADX if it's sufficiently above threshold (strong trend already established)
+	adxStrong := adxVal.GreaterThanOrEqual(decimal.NewFromFloat(s.cfg.ADXThreshold * 1.5))
+	adxRising := adxVal.GreaterThan(prevAdx)
+	if adxVal.LessThan(decimal.NewFromFloat(s.cfg.ADXThreshold)) || (!adxRising && !adxStrong) {
 		return nil
 	}
 
@@ -309,15 +359,38 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// Crossover: Close > RangeHigh AND PrevClose <= RangeHigh
 	if closePrice.GreaterThan(state.RangeHigh) && state.LastClose.LessThanOrEqual(state.RangeHigh) {
 		// Trend Filter: Price > VWAP AND RSI > threshold
-		if closePrice.GreaterThan(currentVwap) && volumeCondition && rsiVal.GreaterThan(decimal.NewFromFloat(s.cfg.RSILongThreshold)) {
-			stopLoss := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
-			target := closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(2.0))) // Default fallback
+		// Additional Filters: Recent Volume Surge AND Body Strength
+		bodySize := candle.High.Sub(candle.Low)
+		bodyStrength := decimal.Zero
+		if !bodySize.IsZero() {
+			bodyStrength = closePrice.Sub(candle.Low).Div(bodySize)
+		}
 
-			if !atrVal.IsZero() {
-				stopLoss = closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(s.cfg.SLMultiplier)))
-				target = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.TargetMultiplier)))
+		recentVolSurge := volume.GreaterThan(prevRecentVol.Mul(decimal.NewFromFloat(1.2)))
+
+		if closePrice.GreaterThan(currentVwap) && volumeCondition && recentVolSurge &&
+			rsiVal.GreaterThan(decimal.NewFromFloat(s.cfg.RSILongThreshold)) &&
+			bodyStrength.GreaterThanOrEqual(decimal.NewFromFloat(s.cfg.BodyStrengthThreshold)) {
+
+			// Structural SL: Max(RangeMid, RangeLow, Entry - SLMultiplier*ATR)
+			rangeMid := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
+			stopLoss := rangeMid
+			if state.RangeLow.GreaterThan(stopLoss) {
+				stopLoss = state.RangeLow
 			}
 
+			var target decimal.Decimal
+			if !atrVal.IsZero() {
+				atrSL := closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(s.cfg.SLMultiplier)))
+				if atrSL.GreaterThan(stopLoss) {
+					stopLoss = atrSL
+				}
+				target = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.TargetMultiplier)))
+			} else {
+				target = closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(2.0)))
+			}
+
+			state.BreakoutFired = true
 			return &models.Signal{
 				Symbol:      candle.Symbol,
 				Type:        models.BuySignal,
@@ -335,8 +408,8 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 					"RSI":           rsiVal.StringFixed(2),
 					"Volume":        volume.StringFixed(0),
 					"AvgVol":        prevAvgVol.StringFixed(0),
-					"RangeVolume":   state.RangeVolume.StringFixed(0),
-					"AvgMorningVol": state.AvgMorningVol.StringFixed(0),
+					"RecentAvgVol":  prevRecentVol.StringFixed(0),
+					"BodyStrength":  bodyStrength.StringFixed(2),
 					"CandleTime":    candle.StartTime.Format("2006-01-02 15:04:05"),
 				},
 			}
@@ -347,15 +420,35 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	// Crossover: Close < RangeLow AND PrevClose >= RangeLow
 	if closePrice.LessThan(state.RangeLow) && state.LastClose.GreaterThanOrEqual(state.RangeLow) {
 		// Trend Filter: Price < VWAP AND RSI < threshold
-		if closePrice.LessThan(currentVwap) && volumeCondition && rsiVal.LessThan(decimal.NewFromFloat(s.cfg.RSIShortThreshold)) {
-			stopLoss := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
-			target := closePrice.Sub(stopLoss.Sub(closePrice).Mul(decimal.NewFromFloat(2.0))) // Default fallback
+		// Additional Filters: Recent Volume Surge AND Body Strength
+		bodySize := candle.High.Sub(candle.Low)
+		bodyStrength := decimal.Zero
+		if !bodySize.IsZero() {
+			bodyStrength = candle.High.Sub(closePrice).Div(bodySize)
+		}
 
+		recentVolSurge := volume.GreaterThan(prevRecentVol.Mul(decimal.NewFromFloat(1.2)))
+
+		if closePrice.LessThan(currentVwap) && volumeCondition && recentVolSurge &&
+			rsiVal.LessThan(decimal.NewFromFloat(s.cfg.RSIShortThreshold)) &&
+			bodyStrength.GreaterThanOrEqual(decimal.NewFromFloat(s.cfg.BodyStrengthThreshold)) {
+
+			// Structural SL: RangeHigh is the invalidation level for shorts.
+			// Tighten with ATR-based SL if it gives a closer ceiling.
+			stopLoss := state.RangeHigh
+
+			var target decimal.Decimal
 			if !atrVal.IsZero() {
-				stopLoss = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.SLMultiplier)))
+				atrSL := closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.SLMultiplier)))
+				if atrSL.LessThan(stopLoss) {
+					stopLoss = atrSL
+				}
 				target = closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(s.cfg.TargetMultiplier)))
+			} else {
+				target = closePrice.Sub(state.RangeHigh.Sub(closePrice).Mul(decimal.NewFromFloat(2.0)))
 			}
 
+			state.BreakoutFired = true
 			return &models.Signal{
 				Symbol:      candle.Symbol,
 				Type:        models.SellSignal,
@@ -373,8 +466,8 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 					"RSI":           rsiVal.StringFixed(2),
 					"Volume":        volume.StringFixed(0),
 					"AvgVol":        prevAvgVol.StringFixed(0),
-					"RangeVolume":   state.RangeVolume.StringFixed(0),
-					"AvgMorningVol": state.AvgMorningVol.StringFixed(0),
+					"RecentAvgVol":  prevRecentVol.StringFixed(0),
+					"BodyStrength":  bodyStrength.StringFixed(2),
 					"CandleTime":    candle.StartTime.Format("2006-01-02 15:04:05"),
 				},
 			}

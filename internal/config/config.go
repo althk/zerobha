@@ -17,7 +17,10 @@ type ORBConfig struct {
 	SLMultiplier      float64 `toml:"sl_multiplier"`       // default 1.5
 	TargetMultiplier  float64 `toml:"target_multiplier"`   // default 3.0
 	MaxConcurrent     int     `toml:"max_concurrent"`      // max simultaneous positions, default 5
-	RelVolThreshold   float64 `toml:"rel_vol_threshold"`   // min ratio of opening-range vol to avg morning vol, default 1.5
+	RelVolThreshold      float64 `toml:"rel_vol_threshold"`   // min ratio of opening-range vol to avg morning vol, default 1.5
+	BodyStrengthThreshold float64 `toml:"body_strength_threshold"` // default 0.6
+	MaxGapPct            float64 `toml:"max_gap_pct"`             // default 3.0
+	MaxVWAPDistPct       float64 `toml:"max_vwap_dist_pct"`       // default 1.5
 }
 
 type CPRVWAPConfig struct {
@@ -57,6 +60,9 @@ func DefaultORBConfig() ORBConfig {
 		TargetMultiplier:  3.0,
 		MaxConcurrent:     5,
 		RelVolThreshold:   1.5,
+		BodyStrengthThreshold: 0.6,
+		MaxGapPct:            3.0,
+		MaxVWAPDistPct:       1.5,
 	}
 }
 
@@ -116,6 +122,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.ORB.RelVolThreshold == 0 {
 		config.ORB.RelVolThreshold = defaults.RelVolThreshold
+	}
+	if config.ORB.BodyStrengthThreshold == 0 {
+		config.ORB.BodyStrengthThreshold = defaults.BodyStrengthThreshold
+	}
+	if config.ORB.MaxGapPct == 0 {
+		config.ORB.MaxGapPct = defaults.MaxGapPct
+	}
+	if config.ORB.MaxVWAPDistPct == 0 {
+		config.ORB.MaxVWAPDistPct = defaults.MaxVWAPDistPct
 	}
 
 	// CPRVWAP defaults

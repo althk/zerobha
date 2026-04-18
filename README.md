@@ -7,7 +7,7 @@ It features a modular architecture with pluggable strategies, robust risk manage
 ## ✨ Features
 
 -   **Multi-Strategy Support**:
-    -   **ORB (Opening Range Breakout)**: Capitalizes on early morning volatility with configurable RSI/ADX thresholds, ATR-based range validation, volume filters, and concurrent position limits.
+    -   **ORB (Opening Range Breakout)**: Capitalizes on early morning volatility with configurable RSI/ADX thresholds, ATR-based range validation, and advanced filters: candle body strength, recent volume surges, gap analysis, and VWAP distance limits. Includes structural SL logic for optimized risk management.
     -   **CPR + VWAP**: Intraday mean-reversion strategy using Central Pivot Range levels, VWAP confluence, EMA9 proximity, and ADX trend filters.
     -   **Donchian Breakout**: Trend following system based on price channels.
     -   **EMA Pullback**: Trend following strategy on pullbacks.
