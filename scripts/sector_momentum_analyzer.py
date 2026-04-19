@@ -15,36 +15,41 @@ from datetime import datetime, timedelta
 # Sector index to Nifty 500 industry mapping.
 # Used by build_watchlist.py to filter stocks belonging to top sectors.
 SECTOR_INDUSTRY_MAP = {
-    'Nifty Bank': ['Financial Services'],
-    'Nifty IT': ['Information Technology'],
-    'Nifty FMCG': ['Fast Moving Consumer Goods'],
-    'Nifty Pharma': ['Healthcare'],
-    'Nifty Auto': ['Automobile and Auto Components'],
-    'Nifty Metal': ['Metals & Mining'],
-    'Nifty Reality': ['Realty'],
-    'Nifty Media': ['Media Entertainment & Publication'],
-    'Nifty Energy': ['Oil Gas & Consumable Fuels', 'Power'],
-    'Nifty Infra': ['Construction', 'Capital Goods'],
-    'Nifty PSU Bank': ['Financial Services'],
-    'Nifty Private Bank': ['Financial Services'],
-    'Nifty Consumption': ['Consumer Durables', 'Consumer Services'],
-    'Nifty Commodities': ['Chemicals', 'Forest Materials'],
+    "Nifty Bank": ["Financial Services"],
+    "Nifty IT": ["Information Technology"],
+    "Nifty FMCG": ["Fast Moving Consumer Goods"],
+    "Nifty Pharma": ["Healthcare"],
+    "Nifty Auto": ["Automobile and Auto Components"],
+    "Nifty Metal": ["Metals & Mining"],
+    "Nifty Reality": ["Realty"],
+    "Nifty Media": ["Media Entertainment & Publication"],
+    "Nifty Energy": ["Oil Gas & Consumable Fuels", "Power"],
+    "Nifty Infra": ["Construction", "Capital Goods"],
+    "Nifty PSU Bank": ["Financial Services"],
+    "Nifty Private Bank": ["Financial Services"],
+    "Nifty Consumption": ["Consumer Durables"],
+    "Nifty Service Sector": ["Consumer Services"],
+    "Nifty Commodities": ["Chemicals", "Forest Materials"],
 }
 
 # Default NSE sectoral indices (Yahoo Finance tickers)
 NSE_SECTORS = {
-    'Nifty Bank': '^NSEBANK',
-    'Nifty IT': '^CNXIT',
-    'Nifty FMCG': '^CNXFMCG',
-    'Nifty Pharma': '^CNXPHARMA',
-    'Nifty Auto': '^CNXAUTO',
-    'Nifty Metal': '^CNXMETAL',
-    'Nifty Reality': '^CNXREALTY',
-    'Nifty Media': '^CNXMEDIA',
-    'Nifty Energy': '^CNXENERGY',
-    'Nifty Infra': '^CNXINFRA',
-    'Nifty PSU Bank': '^CNXPSUBANK',
-    'Nifty Private Bank': 'NIFTY_PVT_BANK.NS',
+    "Nifty Bank": "^NSEBANK",
+    "Nifty IT": "^CNXIT",
+    "Nifty FMCG": "^CNXFMCG",
+    "Nifty Pharma": "^CNXPHARMA",
+    "Nifty Auto": "^CNXAUTO",
+    "Nifty Consumption": "^CNXCONSUM",
+    "Nifty PSE": "^CNXPSE",
+    "Nifty Service Sector": "^CNXSERVICE",
+    "Nifty Metal": "^CNXMETAL",
+    "Nifty Reality": "^CNXREALTY",
+    "Nifty Media": "^CNXMEDIA",
+    "Nifty Energy": "^CNXENERGY",
+    "Nifty Infra": "^CNXINFRA",
+    "Nifty PSU Bank": "^CNXPSUBANK",
+    "Nifty Private Bank": "NIFTY_PVT_BANK.NS",
+    "Nifty Finserv 25 50": "^CNXFIN",
 }
 
 # Weights for composite score
@@ -54,9 +59,9 @@ WEIGHT_3M = 0.30
 
 # Trading days per period
 WINDOWS = {
-    '1W': 5,
-    '1M': 21,
-    '3M': 63,
+    "1W": 5,
+    "1M": 21,
+    "3M": 63,
 }
 
 
@@ -74,35 +79,37 @@ def classify_quadrant(rs_ratio_positive, rs_momentum_positive):
       Improving  = weak RS + rising momentum    (watch for entry)
     """
     if rs_ratio_positive and rs_momentum_positive:
-        return 'LEADING'
+        return "LEADING"
     elif rs_ratio_positive and not rs_momentum_positive:
-        return 'WEAKENING'
+        return "WEAKENING"
     elif not rs_ratio_positive and rs_momentum_positive:
-        return 'IMPROVING'
+        return "IMPROVING"
     else:
-        return 'LAGGING'
+        return "LAGGING"
 
 
-def calculate_sector_momentum(sectors, benchmark='^NSEI'):
+def calculate_sector_momentum(sectors, benchmark="^NSEI"):
     """
     Calculates Composite Relative Strength Score for NSE sectors.
 
     Uses 1W/1M/3M windows with RRG quadrant classification and
     momentum-of-momentum detection.
     """
-    weights = {'1W': WEIGHT_1W, '1M': WEIGHT_1M, '3M': WEIGHT_3M}
+    weights = {"1W": WEIGHT_1W, "1M": WEIGHT_1M, "3M": WEIGHT_3M}
 
     # Need enough history for 3M + buffer for previous period (for momentum-of-momentum)
-    max_lookback = WINDOWS['3M'] + WINDOWS['1M'] + 20
-    start_date = (datetime.now() -
-                  timedelta(days=int(max_lookback * 1.5))).strftime('%Y-%m-%d')
+    max_lookback = WINDOWS["3M"] + WINDOWS["1M"] + 20
+    start_date = (datetime.now() - timedelta(days=int(max_lookback * 1.5))).strftime(
+        "%Y-%m-%d"
+    )
 
     tickers = [benchmark] + list(sectors.values())
     print(f"Fetching data for {len(tickers)} symbols from {start_date}...")
 
     try:
-        data = yf.download(tickers, start=start_date,
-                           interval='1d', auto_adjust=True)['Close']
+        data = yf.download(tickers, start=start_date, interval="1d", auto_adjust=True)[
+            "Close"
+        ]
     except Exception as e:
         print(f"Error fetching data: {e}")
         return pd.DataFrame()
@@ -168,7 +175,7 @@ def calculate_sector_momentum(sectors, benchmark='^NSEI'):
             prev_composite = sum(weights[k] * rs_scores_prev[k] for k in WINDOWS) * 100
 
         # RS momentum: is short-term RS improving vs medium-term?
-        rs_momentum_positive = rs_scores['1W'] > rs_scores['1M']
+        rs_momentum_positive = rs_scores["1W"] > rs_scores["1M"]
 
         # Momentum-of-momentum: is the composite score itself rising?
         mom_of_mom = None
@@ -178,32 +185,47 @@ def calculate_sector_momentum(sectors, benchmark='^NSEI'):
         # RRG quadrant
         quadrant = classify_quadrant(composite > 0, rs_momentum_positive)
 
-        results.append({
-            'Sector': sector_name,
-            'Ticker': ticker,
-            '1W_RS': round(rs_scores['1W'] * 100, 2),
-            '1M_RS': round(rs_scores['1M'] * 100, 2),
-            '3M_RS': round(rs_scores['3M'] * 100, 2),
-            'Composite': round(composite, 2),
-            'Mom_of_Mom': round(mom_of_mom, 2) if mom_of_mom is not None else None,
-            'Quadrant': quadrant,
-        })
+        results.append(
+            {
+                "Sector": sector_name,
+                "Ticker": ticker,
+                "1W_RS": round(rs_scores["1W"] * 100, 2),
+                "1M_RS": round(rs_scores["1M"] * 100, 2),
+                "3M_RS": round(rs_scores["3M"] * 100, 2),
+                "Composite": round(composite, 2),
+                "Mom_of_Mom": round(mom_of_mom, 2) if mom_of_mom is not None else None,
+                "Quadrant": quadrant,
+            }
+        )
 
     df = pd.DataFrame(results)
     if not df.empty:
-        df = df.sort_values('Composite', ascending=False).reset_index(drop=True)
+        df = df.sort_values("Composite", ascending=False).reset_index(drop=True)
     return df
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='NSE Sector Momentum Analyzer (RRG-style)')
-    parser.add_argument('--output', type=str, default='top_sectors.csv',
-                        help='Output CSV path (default: top_sectors.csv)')
-    parser.add_argument('--benchmark', type=str, default='^NSEI',
-                        help='Benchmark ticker (default: ^NSEI)')
-    parser.add_argument('--top', type=int, default=4,
-                        help='Number of top sectors to highlight (default: 4)')
+        description="NSE Sector Momentum Analyzer (RRG-style)"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="top_sectors.csv",
+        help="Output CSV path (default: top_sectors.csv)",
+    )
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default="^NSEI",
+        help="Benchmark ticker (default: ^NSEI)",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=4,
+        help="Number of top sectors to highlight (default: 4)",
+    )
     args = parser.parse_args()
 
     report = calculate_sector_momentum(NSE_SECTORS, benchmark=args.benchmark)
@@ -219,25 +241,29 @@ def main():
     # Display
     print(f"\n{'='*80}")
     print(f"SECTOR RELATIVE STRENGTH RANKING (vs Nifty 50)")
-    print(f"Weights: 1W={WEIGHT_1W*100:.0f}% | 1M={WEIGHT_1M*100:.0f}% | 3M={WEIGHT_3M*100:.0f}%")
+    print(
+        f"Weights: 1W={WEIGHT_1W*100:.0f}% | 1M={WEIGHT_1M*100:.0f}% | 3M={WEIGHT_3M*100:.0f}%"
+    )
     print(f"{'='*80}\n")
 
     for _, row in report.iterrows():
         quad_icon = {
-            'LEADING': '+',
-            'IMPROVING': '~',
-            'WEAKENING': '-',
-            'LAGGING': 'x',
-        }.get(row['Quadrant'], '?')
+            "LEADING": "+",
+            "IMPROVING": "~",
+            "WEAKENING": "-",
+            "LAGGING": "x",
+        }.get(row["Quadrant"], "?")
 
-        mom = f"  MoM: {row['Mom_of_Mom']:+.2f}" if pd.notna(row['Mom_of_Mom']) else ""
+        mom = f"  MoM: {row['Mom_of_Mom']:+.2f}" if pd.notna(row["Mom_of_Mom"]) else ""
 
-        print(f"  [{quad_icon}] {row['Sector']:<20s}  "
-              f"1W: {row['1W_RS']:+6.2f}%  "
-              f"1M: {row['1M_RS']:+6.2f}%  "
-              f"3M: {row['3M_RS']:+6.2f}%  "
-              f"Composite: {row['Composite']:+6.2f}  "
-              f"{row['Quadrant']:<11s}{mom}")
+        print(
+            f"  [{quad_icon}] {row['Sector']:<20s}  "
+            f"1W: {row['1W_RS']:+6.2f}%  "
+            f"1M: {row['1M_RS']:+6.2f}%  "
+            f"3M: {row['3M_RS']:+6.2f}%  "
+            f"Composite: {row['Composite']:+6.2f}  "
+            f"{row['Quadrant']:<11s}{mom}"
+        )
 
     print(f"\n{'='*80}")
     print("Quadrants:  [+] LEADING (trade)  [~] IMPROVING (watch)")
@@ -245,15 +271,17 @@ def main():
     print(f"{'='*80}")
 
     # Show recommended sectors
-    top = report[report['Quadrant'].isin(['LEADING', 'IMPROVING'])].head(args.top)
+    top = report[report["Quadrant"].isin(["LEADING", "IMPROVING"])].head(args.top)
     if not top.empty:
         print(f"\nRecommended sectors for stock selection:")
         for _, row in top.iterrows():
-            industries = SECTOR_INDUSTRY_MAP.get(row['Sector'], [])
-            print(f"  {row['Sector']} ({row['Quadrant']}) -> Industries: {', '.join(industries)}")
+            industries = SECTOR_INDUSTRY_MAP.get(row["Sector"], [])
+            print(
+                f"  {row['Sector']} ({row['Quadrant']}) -> Industries: {', '.join(industries)}"
+            )
     else:
         print("\nNo sectors in LEADING/IMPROVING quadrant. Consider reducing exposure.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
