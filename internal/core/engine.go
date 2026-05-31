@@ -32,6 +32,7 @@ type Engine struct {
 	niftyEMA200    *indicators.EMA
 	niftyUptrendOK bool   // cached result of today's uptrend check
 	niftyCheckDate string // "YYYY-MM-DD" of last uptrend evaluation
+	niftySeeded    bool   // true once the uptrend filter has valid EMA data
 }
 
 func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *broker.InstrumentManager, d *db.Store) *Engine {
@@ -62,12 +63,12 @@ func (e *Engine) InitNiftyEMAs() {
 	// Fetch enough history to warm up EMA200 (200 + buffer)
 	candles, err := e.DataProvider.History("NIFTY 50", "1d", 300)
 	if err != nil {
-		log.Printf("WARNING: Could not fetch NIFTY 50 history for uptrend filter: %v", err)
+		log.Printf("WARNING: Could not fetch NIFTY 50 history for uptrend filter: %v — uptrend filter NOT seeded", err)
 		return
 	}
 
 	if len(candles) == 0 {
-		log.Printf("WARNING: No NIFTY 50 historical candles returned for uptrend filter")
+		log.Printf("WARNING: No NIFTY 50 historical candles returned for uptrend filter — uptrend filter NOT seeded")
 		return
 	}
 
@@ -79,8 +80,10 @@ func (e *Engine) InitNiftyEMAs() {
 
 	// Evaluate uptrend using the most recent completed daily candle
 	last := candles[len(candles)-1]
+	e.advanceNiftyEMAs(last)
 	e.niftyUptrendOK = e.isNiftyUptrend(last)
 	e.niftyCheckDate = last.StartTime.Format("2006-01-02")
+	e.niftySeeded = true
 
 	log.Printf("Uptrend filter initialised from %s: EMA50=%.2f EMA200=%.2f → uptrend=%v",
 		e.niftyCheckDate,
@@ -89,15 +92,20 @@ func (e *Engine) InitNiftyEMAs() {
 		e.niftyUptrendOK)
 }
 
-// isNiftyUptrend returns true when NIFTY 50 close is above EMA50 and EMA50 > EMA200.
+// advanceNiftyEMAs feeds a daily NIFTY 50 close into the EMA indicators, mutating them.
+// Call exactly once per daily candle before reading via isNiftyUptrend.
+func (e *Engine) advanceNiftyEMAs(niftyCandle models.Candle) {
+	e.niftyEMA50.Update(niftyCandle.Close)
+	e.niftyEMA200.Update(niftyCandle.Close)
+}
+
+// isNiftyUptrend is a pure read: it returns true when the NIFTY 50 close is above
+// EMA50 and EMA50 > EMA200. It does not mutate the EMAs — call advanceNiftyEMAs first.
 func (e *Engine) isNiftyUptrend(niftyCandle models.Candle) bool {
 	if !e.niftyEMA50.IsReady() || !e.niftyEMA200.IsReady() {
 		log.Println("Uptrend filter: EMAs not yet ready, allowing trade")
 		return true
 	}
-
-	e.niftyEMA50.Update(niftyCandle.Close)
-	e.niftyEMA200.Update(niftyCandle.Close)
 
 	ema50 := e.niftyEMA50.Value()
 	ema200 := e.niftyEMA200.Value()
@@ -161,15 +169,21 @@ func (e *Engine) Execute(candle models.Candle) {
 		if isNifty && isDaily {
 			dateKey := candle.StartTime.Format("2006-01-02")
 			if dateKey != e.niftyCheckDate {
+				e.advanceNiftyEMAs(candle)
 				e.niftyUptrendOK = e.isNiftyUptrend(candle)
 				e.niftyCheckDate = dateKey
+				e.niftySeeded = true
 				log.Printf("Uptrend filter updated for %s: %v", dateKey, e.niftyUptrendOK)
 			}
 			// NIFTY daily candles don't trigger strategy signals
 			return
 		}
 
-		if !e.niftyUptrendOK {
+		// Fail open: if the filter never seeded (history fetch failed at startup),
+		// allow trades rather than silently halting for the whole day — but log loudly.
+		if !e.niftySeeded {
+			log.Printf("WARNING: Uptrend filter not seeded — allowing signal for %s without trend check", candle.Symbol)
+		} else if !e.niftyUptrendOK {
 			log.Printf("Uptrend filter: NIFTY not in uptrend, skipping signal for %s", candle.Symbol)
 			return
 		}
@@ -270,14 +284,24 @@ func (e *Engine) Execute(candle models.Candle) {
 	}
 
 	// 4. Order Conversion (Position Sizing)
-	balance, _ := e.Broker.GetBalance()
+	balance, err := e.Broker.GetBalance()
+	if err != nil {
+		log.Printf("Skipping signal for %s: failed to fetch balance: %v", signal.Symbol, err)
+		return
+	}
 	if balance.LessThan(decimal.NewFromInt(3000)) {
 		log.Printf("Skipping signal for %s: Insufficient balance", signal.Symbol)
 		return
 	}
 
 	// Divide available balance by remaining open slots so we don't over-deploy capital.
-	openPositions, _ := e.Broker.GetPositions()
+	// Fail closed: if we can't read positions we can't size safely, so skip rather than
+	// assume all slots are free and risk over-deploying capital.
+	openPositions, err := e.Broker.GetPositions()
+	if err != nil {
+		log.Printf("Skipping signal for %s: failed to fetch positions: %v", signal.Symbol, err)
+		return
+	}
 	openCount := int64(len(openPositions))
 	maxConcurrent := int64(e.MaxConcurrent)
 	remainingSlots := decimal.NewFromInt(maxConcurrent - openCount)

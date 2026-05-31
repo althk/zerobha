@@ -12,6 +12,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// istLocation is the IST timezone, loaded once and reused to avoid repeated
+// tz-database lookups on the per-candle hot path.
+var istLocation = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		return time.FixedZone("IST", 5*3600+1800)
+	}
+	return loc
+}()
+
 type ORBState struct {
 	Symbol        string
 	Vwap          *indicators.VWAP
@@ -130,10 +140,7 @@ func (s *ORBStrategy) LoadState(symbol string) {
 func (s *ORBStrategy) Init(provider core.DataProvider) error {
 	log.Println("Initializing ORB Strategy...")
 
-	loc, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		loc = time.FixedZone("IST", 5*3600+1800)
-	}
+	loc := istLocation
 
 	for _, sym := range s.symbols {
 		state := NewORBState(sym)
@@ -216,11 +223,7 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	rsiVal := state.Rsi.Update(candle.Close)
 
 	// 4. Time Window Logic (9:15 - 9:30)
-	loc, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		loc = time.FixedZone("IST", 5*3600+1800)
-	}
-	istTime := candle.StartTime.In(loc)
+	istTime := candle.StartTime.In(istLocation)
 	h, m, _ := istTime.Clock()
 	timeInMinutes := h*60 + m
 	rangeStart := 9*60 + 15
@@ -252,16 +255,23 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		if !state.RangeHigh.IsZero() {
 			state.RangeSet = true
 
-			// Relative Volume filter: opening-range volume must be >= threshold × AvgMorningVol
-			if !state.AvgMorningVol.IsZero() {
-				threshold := state.AvgMorningVol.Mul(decimal.NewFromFloat(s.cfg.RelVolThreshold))
-				if state.RangeVolume.LessThan(threshold) {
-					log.Printf("[%s] RelVol filter: RangeVol=%s < %.1fx AvgMorningVol=%s — skipping today",
-						state.Symbol, state.RangeVolume.StringFixed(0), s.cfg.RelVolThreshold, state.AvgMorningVol.StringFixed(0))
-					state.RelVolSkip = true
-					s.SaveState(candle.Symbol)
-					return nil
-				}
+			// Relative Volume filter: opening-range volume must be >= threshold × AvgMorningVol.
+			// If AvgMorningVol is zero (warmup history was unavailable for this symbol) we have no
+			// baseline to validate against — skip the symbol for the day rather than trade it unfiltered.
+			if state.AvgMorningVol.IsZero() {
+				log.Printf("[%s] RelVol filter: no AvgMorningVol baseline (missing warmup data) — skipping today", state.Symbol)
+				state.RelVolSkip = true
+				s.SaveState(candle.Symbol)
+				return nil
+			}
+
+			threshold := state.AvgMorningVol.Mul(decimal.NewFromFloat(s.cfg.RelVolThreshold))
+			if state.RangeVolume.LessThan(threshold) {
+				log.Printf("[%s] RelVol filter: RangeVol=%s < %.1fx AvgMorningVol=%s — skipping today",
+					state.Symbol, state.RangeVolume.StringFixed(0), s.cfg.RelVolThreshold, state.AvgMorningVol.StringFixed(0))
+				state.RelVolSkip = true
+				s.SaveState(candle.Symbol)
+				return nil
 			}
 
 			s.SaveState(candle.Symbol)
