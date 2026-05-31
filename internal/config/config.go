@@ -34,16 +34,23 @@ type CPRVWAPConfig struct {
 	MaxEMADistPct     float64 `toml:"max_ema_dist_pct"`    // max % distance from EMA9, default 0.5
 }
 
+type EMA20PullbackConfig struct {
+	SLMultiplier float64 `toml:"sl_multiplier"` // default 2.0
+	TPMultiplier float64 `toml:"tp_multiplier"` // default 2.0
+	MaxConcurrent int    `toml:"max_concurrent"` // default 5
+}
+
 type Config struct {
-	Strategy    string        `toml:"strategy"`
-	CSVFile     string        `toml:"csv_file"`
-	Limit       int           `toml:"limit"`
-	Timeframe   string        `toml:"timeframe"`
-	APIKey      string        `toml:"api_key"`
-	APISecret   string        `toml:"api_secret"`
-	UptrendOnly *bool         `toml:"uptrend_only"`
-	ORB         ORBConfig     `toml:"orb"`
-	CPRVWAP     CPRVWAPConfig `toml:"cprvwap"`
+	Strategy      string               `toml:"strategy"`
+	CSVFile       string               `toml:"csv_file"`
+	Limit         int                  `toml:"limit"`
+	Timeframe     string               `toml:"timeframe"`
+	APIKey        string               `toml:"api_key"`
+	APISecret     string               `toml:"api_secret"`
+	UptrendOnly   *bool                `toml:"uptrend_only"`
+	ORB           ORBConfig            `toml:"orb"`
+	CPRVWAP       CPRVWAPConfig        `toml:"cprvwap"`
+	EMA20Pullback EMA20PullbackConfig  `toml:"ema20_pullback"`
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -161,7 +168,27 @@ func LoadConfig(path string) (*Config, error) {
 		config.CPRVWAP.MaxEMADistPct = cprvwapDefaults.MaxEMADistPct
 	}
 
+	// EMA20Pullback defaults
+	ema20Defaults := DefaultEMA20PullbackConfig()
+	if config.EMA20Pullback.SLMultiplier == 0 {
+		config.EMA20Pullback.SLMultiplier = ema20Defaults.SLMultiplier
+	}
+	if config.EMA20Pullback.TPMultiplier == 0 {
+		config.EMA20Pullback.TPMultiplier = ema20Defaults.TPMultiplier
+	}
+	if config.EMA20Pullback.MaxConcurrent == 0 {
+		config.EMA20Pullback.MaxConcurrent = ema20Defaults.MaxConcurrent
+	}
+
 	return &config, nil
+}
+
+func DefaultEMA20PullbackConfig() EMA20PullbackConfig {
+	return EMA20PullbackConfig{
+		SLMultiplier:  2.0,
+		TPMultiplier:  2.0,
+		MaxConcurrent: 5,
+	}
 }
 
 func DefaultCPRVWAPConfig() CPRVWAPConfig {

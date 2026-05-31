@@ -185,6 +185,8 @@ func main() {
 		strat = strategy.NewCPRVWAPStrategy(watchlist, cfg.CPRVWAP)
 	case "orb":
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
+	case "ema20_pullback":
+		strat = strategy.NewEMA20Pullback(watchlist, cfg.EMA20Pullback)
 	default:
 		log.Printf("Using default strategy: ORB")
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)

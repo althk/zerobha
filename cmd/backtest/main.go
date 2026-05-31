@@ -113,6 +113,8 @@ func main() {
 			myStrategy = strategy.NewCPRVWAPStrategy([]string{sym}, config.DefaultCPRVWAPConfig())
 		case "orb":
 			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
+		case "ema20_pullback":
+			myStrategy = strategy.NewEMA20Pullback([]string{sym}, config.DefaultEMA20PullbackConfig())
 		default:
 			log.Printf("Using default strategy: ORB")
 			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
