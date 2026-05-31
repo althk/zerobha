@@ -16,6 +16,7 @@ Usage:
   python scripts/build_watchlist.py --top-sectors 3 --min-beta 1.2 --limit 30
   python scripts/build_watchlist.py --output my_watchlist.csv
 """
+
 import argparse
 import os
 import sys
@@ -27,29 +28,63 @@ import pandas as pd
 # Add scripts dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sector_momentum_analyzer import (
-    calculate_sector_momentum, NSE_SECTORS, SECTOR_INDUSTRY_MAP
+    calculate_sector_momentum,
+    NSE_SECTORS,
+    SECTOR_INDUSTRY_MAP,
 )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Build trading watchlist from sector momentum + high beta analysis')
-    parser.add_argument('--symbols', type=str, default='ind_nifty500list.csv',
-                        help='Nifty 500 CSV with Symbol and Industry columns')
-    parser.add_argument('--output', type=str, default='high_beta_stocks.csv',
-                        help='Final watchlist output CSV')
-    parser.add_argument('--top-sectors', type=int, default=4,
-                        help='Number of top sectors to pick (default: 4)')
-    parser.add_argument('--min-beta', type=float, default=1.0,
-                        help='Minimum beta threshold (default: 1.0)')
-    parser.add_argument('--limit', type=int, default=50,
-                        help='Max stocks in final watchlist (default: 50)')
-    parser.add_argument('--workers', type=int, default=os.cpu_count(),
-                        help='Parallel workers for stock data download')
-    parser.add_argument('--sector-output', type=str, default='top_sectors.csv',
-                        help='Sector analysis output CSV')
-    parser.add_argument('--include-all-if-no-leaders', action='store_true',
-                        help='Fall back to all sectors if no LEADING/IMPROVING found')
+        description="Build trading watchlist from sector momentum + high beta analysis"
+    )
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        default="ind_nifty500list.csv",
+        help="Nifty 500 CSV with Symbol and Industry columns",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="watchlist.csv",
+        help="Final watchlist output CSV",
+    )
+    parser.add_argument(
+        "--top-sectors",
+        type=int,
+        default=5,
+        help="Number of top sectors to pick (default: 5)",
+    )
+    parser.add_argument(
+        "--min-beta",
+        type=float,
+        default=1.0,
+        help="Minimum beta threshold (default: 1.0)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Max stocks in final watchlist (default: 50)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Parallel workers for stock data download",
+    )
+    parser.add_argument(
+        "--sector-output",
+        type=str,
+        default="top_sectors.csv",
+        help="Sector analysis output CSV",
+    )
+    parser.add_argument(
+        "--include-all-if-no-leaders",
+        action="store_true",
+        help="Fall back to all sectors if no LEADING/IMPROVING found",
+    )
     args = parser.parse_args()
 
     print(f"{'='*70}")
@@ -72,7 +107,7 @@ def main():
 
     # Prefer LEADING and IMPROVING quadrants
     actionable = sector_report[
-        sector_report['Quadrant'].isin(['LEADING', 'IMPROVING'])
+        sector_report["Quadrant"].isin(["LEADING", "IMPROVING"])
     ].head(args.top_sectors)
 
     if actionable.empty:
@@ -81,11 +116,13 @@ def main():
             actionable = sector_report.head(args.top_sectors)
         else:
             print("  No LEADING/IMPROVING sectors found.")
-            print("  Use --include-all-if-no-leaders to fall back to top sectors by score.")
+            print(
+                "  Use --include-all-if-no-leaders to fall back to top sectors by score."
+            )
             # Still produce a watchlist from top composite sectors
             actionable = sector_report.head(args.top_sectors)
 
-    selected_sectors = actionable['Sector'].tolist()
+    selected_sectors = actionable["Sector"].tolist()
     print(f"  Selected sectors: {selected_sectors}")
 
     # Map to Nifty 500 industry names
@@ -106,19 +143,25 @@ def main():
     print(f"\n[Step 3/3] Finding high-beta stocks in selected sectors...")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    find_beta_script = os.path.join(script_dir, 'find_high_beta.py')
+    find_beta_script = os.path.join(script_dir, "find_high_beta.py")
 
     cmd = [
-        sys.executable, find_beta_script,
-        '--symbols', args.symbols,
-        '--output', args.output,
-        '--workers', str(args.workers),
-        '--min-beta', str(args.min_beta),
-        '--limit', str(args.limit),
+        sys.executable,
+        find_beta_script,
+        "--symbols",
+        args.symbols,
+        "--output",
+        args.output,
+        "--workers",
+        str(args.workers),
+        "--min-beta",
+        str(args.min_beta),
+        "--limit",
+        str(args.limit),
     ]
 
     if industries:
-        cmd.extend(['--sectors', ','.join(sorted(industries))])
+        cmd.extend(["--sectors", ",".join(sorted(industries))])
 
     result = subprocess.run(cmd, capture_output=False)
 
@@ -139,18 +182,22 @@ def main():
         if not df.empty:
             print(f"\n  Top 10 stocks:")
             for _, row in df.head(10).iterrows():
-                industry = row.get('industry', '')
-                rs = row.get('rs_1m')
+                industry = row.get("industry", "")
+                rs = row.get("rs_1m")
                 rs_str = f"  RS: {rs:+.2f}%" if pd.notna(rs) else ""
-                print(f"    {row['symbol']:<20s} beta={row['beta']:.2f}  "
-                      f"{industry}{rs_str}")
+                print(
+                    f"    {row['symbol']:<20s} beta={row['beta']:.2f}  "
+                    f"{industry}{rs_str}"
+                )
 
     # Display sector context
     print(f"\n  Sector context:")
     for _, row in actionable.iterrows():
-        print(f"    {row['Sector']:<20s} {row['Quadrant']:<11s} "
-              f"Composite={row['Composite']:+.2f}")
+        print(
+            f"    {row['Sector']:<20s} {row['Quadrant']:<11s} "
+            f"Composite={row['Composite']:+.2f}"
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
