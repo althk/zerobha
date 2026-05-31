@@ -34,6 +34,9 @@ func main() {
 	baseline := flag.Bool("baseline", false, "ORB only: revert the new robustness/signal knobs to original behavior for A/B comparison")
 	costBps := flag.Float64("cost-bps", 0.0, "Round-trip transaction cost in basis points of turnover, deducted per trade (e.g. 6 = 0.06%)")
 	knobs := flag.String("knobs", "", "ORB ablation: start from baseline and enable only these new knobs (comma list of: onetrade,stopfloor,vwapdist,thrust,adxeps)")
+	tpMult := flag.Float64("tp-mult", 0, "ema20_pullback: override target multiplier (0 = use config default)")
+	slMult := flag.Float64("sl-mult", 0, "ema20_pullback: override stop-loss multiplier (0 = use config default)")
+	pullbackEMA := flag.Int("pullback-ema", 0, "ema20_pullback: override pullback EMA (20 or 50; 0 = use config default)")
 	flag.Parse()
 
 	var startDate, endDate time.Time
@@ -129,7 +132,17 @@ func main() {
 			}
 			myStrategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
 		case "ema20_pullback":
-			myStrategy = strategy.NewEMA20Pullback([]string{sym}, config.DefaultEMA20PullbackConfig())
+			emaCfg := config.DefaultEMA20PullbackConfig()
+			if *tpMult > 0 {
+				emaCfg.TPMultiplier = *tpMult
+			}
+			if *slMult > 0 {
+				emaCfg.SLMultiplier = *slMult
+			}
+			if *pullbackEMA > 0 {
+				emaCfg.PullbackEMA = *pullbackEMA
+			}
+			myStrategy = strategy.NewEMA20Pullback([]string{sym}, emaCfg)
 		default:
 			log.Printf("Using default strategy: ORB")
 			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
@@ -238,8 +251,15 @@ func main() {
 		tradesNet := applyCosts(simBroker.Trades, *costBps)
 
 		stats := statistics.Analyze(tradesNet, initialCapital)
-		fmt.Printf("Symbol: %s | Total Trades: %d | Win Rate: %.2f%% | Sharpe: %.3f | Net Profit: %s\n",
-			sym, stats.TotalTrades, stats.WinRate, stats.Sharpe, stats.NetProfit)
+		// Per-symbol Sharpe is unreliable below ~20 trades (tiny-sample stddev
+		// collapse produces absurd values), so show "n/a" there. The pooled
+		// aggregate Sharpe at the end is the trustworthy figure.
+		sharpeStr := "n/a"
+		if stats.TotalTrades >= 20 {
+			sharpeStr = fmt.Sprintf("%.3f", stats.Sharpe)
+		}
+		fmt.Printf("Symbol: %s | Total Trades: %d | Win Rate: %.2f%% | Sharpe: %s | Net Profit: %s\n",
+			sym, stats.TotalTrades, stats.WinRate, sharpeStr, stats.NetProfit)
 
 		allTrades = append(allTrades, tradesNet...)
 

@@ -118,10 +118,16 @@ func (s *EMA20Pullback) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	// Pullback entry: previous close was at or below 20 EMA (touched/crossed below),
-	// current close crosses back above 20 EMA — the bounce off the pullback.
-	touchedEMA := prevClose.LessThanOrEqual(ema20)
-	crossedAbove := candle.Close.GreaterThan(ema20)
+	// Pullback entry: previous close was at or below the pullback EMA
+	// (touched/crossed below), current close crosses back above it — the bounce.
+	// The pullback reference EMA is configurable (20 = shallower/faster,
+	// 50 = deeper/less frequent); trend filters above are unchanged.
+	pullbackEMA := ema20
+	if s.cfg.PullbackEMA == 50 {
+		pullbackEMA = ema50
+	}
+	touchedEMA := prevClose.LessThanOrEqual(pullbackEMA)
+	crossedAbove := candle.Close.GreaterThan(pullbackEMA)
 
 	if !touchedEMA || !crossedAbove {
 		return nil

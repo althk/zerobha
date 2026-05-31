@@ -78,6 +78,10 @@ type EMA20PullbackConfig struct {
 	SLMultiplier  float64 `toml:"sl_multiplier"`  // default 2.0
 	TPMultiplier  float64 `toml:"tp_multiplier"`  // default 2.0
 	MaxConcurrent int     `toml:"max_concurrent"` // default 5
+	// PullbackEMA selects which EMA the entry waits for a pullback touch to:
+	// 20 (default, faster/shallower) or 50 (deeper, less frequent). The trend
+	// filters (EMA50 > SMA200, EMA20 > EMA50) are unchanged.
+	PullbackEMA int `toml:"pullback_ema"` // default 20
 }
 
 type Config struct {
@@ -163,9 +167,10 @@ func DefaultEMA20PullbackConfig() EMA20PullbackConfig {
 		Timeframe:     "day",
 		CSVFile:       "high_beta_stocks.csv",
 		Limit:         50,
-		SLMultiplier:  2.0,
-		TPMultiplier:  2.0,
+		SLMultiplier:  3.0,
+		TPMultiplier:  4.0,
 		MaxConcurrent: 5,
+		PullbackEMA:   20,
 	}
 }
 
@@ -316,6 +321,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.EMA20Pullback.MaxConcurrent == 0 {
 		config.EMA20Pullback.MaxConcurrent = ema20D.MaxConcurrent
+	}
+	if config.EMA20Pullback.PullbackEMA == 0 {
+		config.EMA20Pullback.PullbackEMA = ema20D.PullbackEMA
 	}
 
 	return &config, nil
