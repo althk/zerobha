@@ -29,6 +29,23 @@ type ORBConfig struct {
 	TargetMultiplier  float64 `toml:"target_multiplier"`   // default 3.0
 	MaxConcurrent     int     `toml:"max_concurrent"`      // max simultaneous positions, default 5
 	RelVolThreshold   float64 `toml:"rel_vol_threshold"`   // min ratio of opening-range vol to avg morning vol, default 1.5
+
+	// VolThrustMult requires the breakout candle's volume to exceed
+	// VolThrustMult × the trailing volume SMA. Default 1.0 preserves the
+	// original "volume > avg" behavior; values >1 demand a genuine thrust.
+	VolThrustMult float64 `toml:"vol_thrust_mult"` // default 1.0
+	// MaxVWAPDistATR caps how far (in ATR units) the breakout close may be
+	// from VWAP, to avoid chasing extended moves. 0 disables the filter.
+	MaxVWAPDistATR float64 `toml:"max_vwap_dist_atr"` // default 0 (disabled)
+	// ADXRisingEps relaxes the strict "ADX rising" requirement: a signal is
+	// allowed when adx > prevADX - ADXRisingEps. 0 keeps the strict check.
+	ADXRisingEps float64 `toml:"adx_rising_eps"` // default 0
+	// OneTradePerDay blocks any further signals for a symbol once it has
+	// fired one signal that day, capping the per-symbol whipsaw loss tail.
+	OneTradePerDay *bool `toml:"one_trade_per_day"` // default true
+	// StopFloorAtRange floors a long stop at RangeLow and caps a short stop
+	// at RangeHigh, so the ATR stop never sits inside the opening range.
+	StopFloorAtRange *bool `toml:"stop_floor_at_range"` // default true
 }
 
 type CPRVWAPConfig struct {
@@ -104,8 +121,15 @@ func DefaultORBConfig() ORBConfig {
 		TargetMultiplier:  3.0,
 		MaxConcurrent:     5,
 		RelVolThreshold:   1.5,
+		VolThrustMult:     1.0,
+		MaxVWAPDistATR:    1.5,
+		ADXRisingEps:      0,
+		OneTradePerDay:    boolPtr(true),
+		StopFloorAtRange:  boolPtr(true),
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func DefaultCPRVWAPConfig() CPRVWAPConfig {
 	return CPRVWAPConfig{
@@ -204,6 +228,16 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.ORB.RelVolThreshold == 0 {
 		config.ORB.RelVolThreshold = orbD.RelVolThreshold
+	}
+	if config.ORB.VolThrustMult == 0 {
+		config.ORB.VolThrustMult = orbD.VolThrustMult
+	}
+	// MaxVWAPDistATR and ADXRisingEps default to 0 (disabled/strict), so no fill needed.
+	if config.ORB.OneTradePerDay == nil {
+		config.ORB.OneTradePerDay = orbD.OneTradePerDay
+	}
+	if config.ORB.StopFloorAtRange == nil {
+		config.ORB.StopFloorAtRange = orbD.StopFloorAtRange
 	}
 
 	// CPRVWAP defaults

@@ -31,6 +31,9 @@ func main() {
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
 	timeframe := flag.String("timeframe", "1d", "Timeframe for candles (e.g. 1d, 1h)")
 	limit := flag.Int("limit", -1, "Limit number of symbols to process (default -1: all)")
+	baseline := flag.Bool("baseline", false, "ORB only: revert the new robustness/signal knobs to original behavior for A/B comparison")
+	costBps := flag.Float64("cost-bps", 0.0, "Round-trip transaction cost in basis points of turnover, deducted per trade (e.g. 6 = 0.06%)")
+	knobs := flag.String("knobs", "", "ORB ablation: start from baseline and enable only these new knobs (comma list of: onetrade,stopfloor,vwapdist,thrust,adxeps)")
 	flag.Parse()
 
 	var startDate, endDate time.Time
@@ -92,6 +95,11 @@ func main() {
 	}
 	var results []Result
 
+	// Pool every closed trade across all symbols so we can compute one
+	// portfolio-level Sharpe at the end (averaging per-symbol Sharpes would be
+	// dominated by symbols that traded only once or twice).
+	var allTrades []models.Trade
+
 	for _, sym := range symbols {
 		fmt.Printf("\n--------------------------------------------------\n")
 		fmt.Printf("TESTING SYMBOL: %s\n", sym)
@@ -112,7 +120,14 @@ func main() {
 		case "cprvwap":
 			myStrategy = strategy.NewCPRVWAPStrategy([]string{sym}, config.DefaultCPRVWAPConfig())
 		case "orb":
-			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
+			orbCfg := config.DefaultORBConfig()
+			if *baseline {
+				orbCfg = orbConfigToBaseline(orbCfg)
+			}
+			if *knobs != "" {
+				orbCfg = orbConfigWithKnobs(*knobs)
+			}
+			myStrategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
 		case "ema20_pullback":
 			myStrategy = strategy.NewEMA20Pullback([]string{sym}, config.DefaultEMA20PullbackConfig())
 		default:
@@ -139,12 +154,13 @@ func main() {
 			}
 		}
 
-		records := readCSV(filename)
+		header, records := readCSV(filename)
+		colIdx := buildColumnIndex(header)
 
 		// 3. The Backtest Loop
 		var lastDate string
 		for _, record := range records {
-			candle := parseCandle(record, sym, *timeframe)
+			candle := parseCandle(record, colIdx, sym, *timeframe)
 
 			// Filter by date
 			// if !startDate.IsZero() && candle.StartTime.Before(startDate) {
@@ -217,9 +233,15 @@ func main() {
 		}
 		fmt.Println("-----------------")
 
-		stats := statistics.Analyze(simBroker.Trades, initialCapital)
-		fmt.Printf("Symbol: %s | Total Trades: %d | Win Rate: %.2f%% | Net Profit: %s\n",
-			sym, stats.TotalTrades, stats.WinRate, stats.NetProfit)
+		// Deduct round-trip transaction costs (brokerage + STT + exchange/GST/etc.)
+		// from each trade so baseline and updated runs are compared net of costs.
+		tradesNet := applyCosts(simBroker.Trades, *costBps)
+
+		stats := statistics.Analyze(tradesNet, initialCapital)
+		fmt.Printf("Symbol: %s | Total Trades: %d | Win Rate: %.2f%% | Sharpe: %.3f | Net Profit: %s\n",
+			sym, stats.TotalTrades, stats.WinRate, stats.Sharpe, stats.NetProfit)
+
+		allTrades = append(allTrades, tradesNet...)
 
 		// Collect result
 		// stats.NetProfit, GrossProfit, GrossLoss are decimal.Decimal.
@@ -291,16 +313,81 @@ func main() {
 		aggProfitFactor = 999.0 // Infinite
 	}
 
+	// Portfolio-level Sharpe over the pooled trade series. (Note: the pooled
+	// drawdown is not meaningful here because trades are grouped by symbol, not
+	// time-ordered into a single equity curve — so we report only Sharpe.)
+	portfolio := statistics.Analyze(allTrades, decimal.NewFromInt(500000))
+
 	fmt.Println("\n=== AGGREGATE STATS (ALL STOCKS) ===")
 	fmt.Printf("Total Net Profit: ₹%s\n", aggNetProfit.StringFixed(2))
 	fmt.Printf("Total Trades:     %d\n", aggTotalTrades)
 	fmt.Printf("Win Rate:         %.2f%%\n", aggWinRate)
 	fmt.Printf("Profit Factor:    %.2f\n", aggProfitFactor)
+	fmt.Printf("Sharpe (per-trade): %.3f\n", portfolio.Sharpe)
 
 	fmt.Println("\n=== BACKTEST COMPLETE ===")
 }
 
-func readCSV(path string) [][]string {
+// applyCosts returns a copy of the trades with a round-trip transaction cost
+// subtracted from each PnL. The cost is costBps basis points applied to the
+// turnover of both legs (entry notional + exit notional), which approximates
+// Indian intraday equity costs (brokerage + STT + exchange + GST + stamp).
+func applyCosts(trades []models.Trade, costBps float64) []models.Trade {
+	if costBps <= 0 {
+		return trades
+	}
+	rate := decimal.NewFromFloat(costBps / 10000.0)
+	out := make([]models.Trade, len(trades))
+	for i, t := range trades {
+		turnover := t.EntryPrice.Mul(t.Quantity).Add(t.ExitPrice.Mul(t.Quantity))
+		cost := turnover.Mul(rate)
+		t.PnL = t.PnL.Sub(cost)
+		out[i] = t
+	}
+	return out
+}
+
+// orbConfigToBaseline reverts the robustness/signal knobs added during the
+// 2026-05 review back to their original pre-review behavior, so a --baseline
+// run can be compared head-to-head against the new defaults on the same data.
+func orbConfigToBaseline(c config.ORBConfig) config.ORBConfig {
+	off := false
+	c.VolThrustMult = 1.0   // volume > avg (no thrust requirement)
+	c.MaxVWAPDistATR = 0    // extension filter disabled
+	c.ADXRisingEps = 0      // strict "ADX rising"
+	c.OneTradePerDay = &off // allow re-entries (old behavior)
+	c.StopFloorAtRange = &off
+	return c
+}
+
+// orbConfigWithKnobs starts from the baseline (all new knobs off) and enables
+// only the knobs named in the comma-separated list, for single-knob ablation.
+// Recognized: onetrade, stopfloor, vwapdist, thrust, adxeps.
+func orbConfigWithKnobs(list string) config.ORBConfig {
+	c := orbConfigToBaseline(config.DefaultORBConfig())
+	on := true
+	for _, k := range strings.Split(list, ",") {
+		switch strings.TrimSpace(strings.ToLower(k)) {
+		case "onetrade":
+			c.OneTradePerDay = &on
+		case "stopfloor":
+			c.StopFloorAtRange = &on
+		case "vwapdist":
+			c.MaxVWAPDistATR = 1.5
+		case "thrust":
+			c.VolThrustMult = 1.5
+		case "adxeps":
+			c.ADXRisingEps = 2.0
+		default:
+			log.Printf("WARNING: unknown knob %q ignored", k)
+		}
+	}
+	return c
+}
+
+// readCSV returns the header row and the data rows separately, so callers can
+// map columns by name (the downloader writes columns in a non-OHLC order).
+func readCSV(path string) ([]string, [][]string) {
 	f, err := os.Open(path)
 	if err != nil {
 		panic(err)
@@ -314,7 +401,30 @@ func readCSV(path string) [][]string {
 	if err != nil {
 		panic(err)
 	}
-	return records[1:] // Skip header
+	if len(records) == 0 {
+		return nil, nil
+	}
+	return records[0], records[1:]
+}
+
+// buildColumnIndex maps canonical OHLCV field names to their column position
+// using the CSV header. Falls back to the conventional
+// timestamp,open,high,low,close,volume order for any field the header is
+// missing, so older fixed-order files still parse.
+func buildColumnIndex(header []string) map[string]int {
+	idx := map[string]int{
+		"timestamp": 0, "open": 1, "high": 2, "low": 3, "close": 4, "volume": 5,
+	}
+	for i, col := range header {
+		key := strings.ToLower(strings.TrimSpace(col))
+		if key == "datetime" || key == "date" {
+			key = "timestamp"
+		}
+		if _, ok := idx[key]; ok {
+			idx[key] = i
+		}
+	}
+	return idx
 }
 
 func parseDuration(tf string) time.Duration {
@@ -333,27 +443,35 @@ func parseDuration(tf string) time.Duration {
 	return d
 }
 
-func parseCandle(record []string, sym string, timeframe string) models.Candle {
-	// CSV: timestamp,open,high,low,close,volume
-	// Fix: Handle +0000 format which is not strict RFC3339
+func parseCandle(record []string, col map[string]int, sym string, timeframe string) models.Candle {
+	field := func(name string) string {
+		i, ok := col[name]
+		if !ok || i >= len(record) {
+			return ""
+		}
+		return record[i]
+	}
+
+	// Handle +0000 format which is not strict RFC3339
+	tsStr := field("timestamp")
 	layout := "2006-01-02T15:04:05+0000"
-	t, err := time.Parse(layout, record[0])
+	t, err := time.Parse(layout, tsStr)
 	if err != nil {
 		// Fallback to RFC3339
-		t, err = time.Parse(time.RFC3339, record[0])
+		t, err = time.Parse(time.RFC3339, tsStr)
 		if err != nil {
 			// Fallback to format without timezone (assume UTC or local, here assuming UTC for simplicity)
-			t, err = time.Parse("2006-01-02T15:04:05", record[0])
+			t, err = time.Parse("2006-01-02T15:04:05", tsStr)
 			if err != nil {
-				fmt.Printf("ERROR parsing date '%s': %v\n", record[0], err)
+				fmt.Printf("ERROR parsing date '%s': %v\n", tsStr, err)
 			}
 		}
 	}
-	o, _ := decimal.NewFromString(record[1])
-	h, _ := decimal.NewFromString(record[2])
-	l, _ := decimal.NewFromString(record[3])
-	c, _ := decimal.NewFromString(record[4])
-	v, _ := decimal.NewFromString(record[5])
+	o, _ := decimal.NewFromString(field("open"))
+	h, _ := decimal.NewFromString(field("high"))
+	l, _ := decimal.NewFromString(field("low"))
+	c, _ := decimal.NewFromString(field("close"))
+	v, _ := decimal.NewFromString(field("volume"))
 
 	return models.Candle{
 		Symbol:    sym,
