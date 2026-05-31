@@ -180,18 +180,23 @@ func main() {
 
 	// Strategy (The Brain)
 	var strat core.Strategy
+	var maxConcurrent int
 	switch cfg.Strategy {
 	case "donchian":
 		strat = strategy.NewDonchianBreakout(watchlist)
 	case "cprvwap":
 		strat = strategy.NewCPRVWAPStrategy(watchlist, cfg.CPRVWAP)
+		maxConcurrent = cfg.CPRVWAP.MaxConcurrent
 	case "orb":
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
+		maxConcurrent = cfg.ORB.MaxConcurrent
 	case "ema20_pullback":
 		strat = strategy.NewEMA20Pullback(watchlist, cfg.EMA20Pullback)
+		maxConcurrent = cfg.EMA20Pullback.MaxConcurrent
 	default:
 		log.Printf("Using default strategy: ORB")
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
+		maxConcurrent = 5 // Default
 	}
 
 	// Inject DB if Strategy supports it (Manual Dependency Injection)
@@ -220,12 +225,7 @@ func main() {
 
 	// Engine (The Orchestrator)
 	engine := core.NewEngine(strat, kiteAdapter, riskMgr, j, im, store)
-	switch cfg.Strategy {
-	case "cprvwap":
-		engine.MaxConcurrent = cfg.CPRVWAP.MaxConcurrent
-	default:
-		engine.MaxConcurrent = cfg.ORB.MaxConcurrent
-	}
+	engine.MaxConcurrent = maxConcurrent
 	engine.UptrendOnly = *cfg.UptrendOnly
 	engine.DataProvider = kiteAdapter
 	engine.InitNiftyEMAs()

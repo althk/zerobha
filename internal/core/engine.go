@@ -431,11 +431,23 @@ func (e *Engine) SquareOff() {
 		}
 
 		// Execute
-		_, err := e.Broker.PlaceOrder(order)
+		placedOrder, err := e.Broker.PlaceOrder(order)
 		if err != nil {
 			log.Printf("SquareOff Error: Failed to close position %s: %v", p.Tradingsymbol, err)
+			if e.Journal != nil {
+				e.Journal.LogOrder(order, "FAILED", err.Error())
+			}
+			if e.DB != nil {
+				_ = e.DB.SaveOrder(order, "FAILED")
+			}
 		} else {
 			log.Printf("SquareOff: Successfully submitted close order for %s", p.Tradingsymbol)
+			if e.Journal != nil {
+				e.Journal.LogOrder(placedOrder, "SUCCESS", fmt.Sprintf("OrderID: %s | Reason: AutoSquareOff", placedOrder.ID))
+			}
+			if e.DB != nil {
+				_ = e.DB.SaveOrder(placedOrder, "SUBMITTED")
+			}
 		}
 	}
 
