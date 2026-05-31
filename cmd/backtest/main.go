@@ -37,6 +37,7 @@ func main() {
 	tpMult := flag.Float64("tp-mult", 0, "ema20_pullback: override target multiplier (0 = use config default)")
 	slMult := flag.Float64("sl-mult", 0, "ema20_pullback: override stop-loss multiplier (0 = use config default)")
 	pullbackEMA := flag.Int("pullback-ema", 0, "ema20_pullback: override pullback EMA (20 or 50; 0 = use config default)")
+	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
 	flag.Parse()
 
 	var startDate, endDate time.Time
@@ -103,6 +104,24 @@ func main() {
 	// dominated by symbols that traded only once or twice).
 	var allTrades []models.Trade
 
+	// When the uptrend filter is engaged, load NIFTY-50 daily candles keyed by
+	// date so we can feed the matching index candle into the engine before each
+	// stock candle — that updates the filter's per-day uptrend state.
+	niftyByDate := map[string]models.Candle{}
+	if *uptrend {
+		nf := "test/data/1d/nsei_real.csv"
+		if _, err := os.Stat(nf); os.IsNotExist(err) {
+			log.Fatalf("--uptrend requires NIFTY data at %s (download ^NSEI 1d first)", nf)
+		}
+		nh, nrows := readCSV(nf)
+		ncol := buildColumnIndex(nh)
+		for _, r := range nrows {
+			c := parseCandle(r, ncol, "NIFTY 50", "1d")
+			niftyByDate[c.StartTime.Format("2006-01-02")] = c
+		}
+		fmt.Printf("Uptrend filter ENGAGED: loaded %d NIFTY-50 daily candles.\n", len(niftyByDate))
+	}
+
 	for _, sym := range symbols {
 		fmt.Printf("\n--------------------------------------------------\n")
 		fmt.Printf("TESTING SYMBOL: %s\n", sym)
@@ -152,8 +171,10 @@ func main() {
 		j, _ := journal.NewJournal("backtest_journal.csv")
 		defer j.Close()
 
-		// 4. Create Engine
+		// 4. Create Engine. Only engage the uptrend filter when requested; with
+		// it off we disable it explicitly so the engine doesn't fail-open + warn.
 		engine := core.NewEngine(myStrategy, simBroker, riskMgr, j, nil, nil)
+		engine.UptrendOnly = *uptrend
 
 		// 2. Load Data
 		// Try timeframe specific folder first
@@ -194,6 +215,14 @@ func main() {
 			if !startDate.IsZero() && candle.StartTime.Before(startDate) {
 				myStrategy.OnCandle(candle)
 				continue
+			}
+
+			// Feed the matching NIFTY-50 daily candle first so the uptrend
+			// filter reflects this date before the stock signal is evaluated.
+			if *uptrend {
+				if nifty, ok := niftyByDate[currentDate]; ok {
+					engine.Execute(nifty)
+				}
 			}
 
 			simBroker.CheckExits(candle)
