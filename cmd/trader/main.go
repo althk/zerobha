@@ -222,6 +222,9 @@ func main() {
 	default:
 		engine.MaxConcurrent = cfg.ORB.MaxConcurrent
 	}
+	engine.UptrendOnly = *cfg.UptrendOnly
+	engine.DataProvider = kiteAdapter
+	engine.InitNiftyEMAs()
 
 	// Web Dashboard
 	webServer := web.NewServer(engine, 8080)

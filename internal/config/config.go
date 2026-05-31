@@ -35,14 +35,15 @@ type CPRVWAPConfig struct {
 }
 
 type Config struct {
-	Strategy  string       `toml:"strategy"`
-	CSVFile   string       `toml:"csv_file"`
-	Limit     int          `toml:"limit"`
-	Timeframe string       `toml:"timeframe"`
-	APIKey    string       `toml:"api_key"`
-	APISecret string       `toml:"api_secret"`
-	ORB       ORBConfig    `toml:"orb"`
-	CPRVWAP   CPRVWAPConfig `toml:"cprvwap"`
+	Strategy    string        `toml:"strategy"`
+	CSVFile     string        `toml:"csv_file"`
+	Limit       int           `toml:"limit"`
+	Timeframe   string        `toml:"timeframe"`
+	APIKey      string        `toml:"api_key"`
+	APISecret   string        `toml:"api_secret"`
+	UptrendOnly *bool         `toml:"uptrend_only"`
+	ORB         ORBConfig     `toml:"orb"`
+	CPRVWAP     CPRVWAPConfig `toml:"cprvwap"`
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -69,6 +70,12 @@ func LoadConfig(path string) (*Config, error) {
 	// Validate required fields
 	if config.APIKey == "" || config.APISecret == "" {
 		return nil, fmt.Errorf("api_key and api_secret are required in config file")
+	}
+
+	// UptrendOnly defaults to true when absent from config
+	if config.UptrendOnly == nil {
+		t := true
+		config.UptrendOnly = &t
 	}
 
 	// Set defaults if empty
