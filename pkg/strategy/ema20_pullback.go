@@ -33,7 +33,9 @@ func NewEMA20PullbackState(symbol string) *EMA20PullbackState {
 // EMA20Pullback is a daily swing strategy that enters on a pullback to the 20 EMA.
 // Entry: close crosses back above 20 EMA after touching it (pullback touch), confirmed by trend filters.
 // Trend filters: 50 EMA > 200 SMA (medium-term uptrend), 20 EMA > 50 EMA (short-term uptrend).
-// Risk: SL = 2×ATR(14) below entry; TP = 2×ATR(14) above entry (1:1 RR with 2×ATR sizing).
+// Risk: SL = SLMultiplier×ATR(14) below entry; TP = TPMultiplier×ATR(14) above
+// entry (defaults 3×/4× ATR ≈ 1:1.33 RR). The pullback reference EMA, SL, and TP
+// multipliers are all configurable via [ema20_pullback] in config.toml.
 type EMA20Pullback struct {
 	symbols []string
 	states  map[string]*EMA20PullbackState

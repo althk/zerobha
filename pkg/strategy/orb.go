@@ -37,6 +37,9 @@ type ORBState struct {
 	AvgMorningVol decimal.Decimal // Avg opening-range (9:15–9:30) volume from historical days
 	RangeVolume   decimal.Decimal // Accumulated volume during today's opening range
 	RelVolSkip    bool            // True if today's opening-range volume failed the RelVol filter
+	VolSma5       *indicators.SMA // 5 period volume SMA for recent surge
+	PrevDayClose  decimal.Decimal // Closing price of the previous trading day
+	GapChecked    bool            // True once gap filter has been evaluated for today
 	Traded        bool            // True once a signal has fired for this symbol today (one-trade-per-day guard)
 
 	// Rolling baseline of opening-range volume, updated as each day's range
@@ -254,6 +257,7 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		state.RangeVolume = decimal.Zero
 		state.RelVolSkip = false
 		state.Traded = false
+		state.GapChecked = false
 		s.SaveState(candle.Symbol)
 	}
 
@@ -368,11 +372,6 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	// One signal per symbol per day — prevent false re-entries after pullbacks
-	if state.BreakoutFired {
-		return nil
-	}
-
 	// VWAP Distance Check
 	vwapDistPct := candle.Close.Sub(currentVwap).Div(currentVwap).Abs().Mul(decimal.NewFromInt(100))
 	if vwapDistPct.GreaterThan(decimal.NewFromFloat(s.cfg.MaxVWAPDistPct)) {
@@ -438,16 +437,28 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 			rsiVal.GreaterThan(decimal.NewFromFloat(s.cfg.RSILongThreshold)) &&
 			bodyStrength.GreaterThanOrEqual(decimal.NewFromFloat(s.cfg.BodyStrengthThreshold)) {
 
-			// Structural SL: Max(RangeMid, RangeLow, Entry - SLMultiplier*ATR)
+			// Structural SL: start at RangeMid, widen down to RangeLow.
 			rangeMid := state.RangeHigh.Add(state.RangeLow).Div(decimal.NewFromInt(2))
 			stopLoss := rangeMid
 			if state.RangeLow.GreaterThan(stopLoss) {
 				stopLoss = state.RangeLow
 			}
 
-			// Floor the long stop at RangeLow: the bottom of the opening range is
-			// the structural invalidation level. An ATR stop sitting above it would
-			// be hit by a routine pullback into the range. min() widens to RangeLow.
+			var target decimal.Decimal
+			if !atrVal.IsZero() {
+				atrSL := closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(s.cfg.SLMultiplier)))
+				if atrSL.GreaterThan(stopLoss) {
+					stopLoss = atrSL
+				}
+				target = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.TargetMultiplier)))
+			} else {
+				target = closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(2.0)))
+			}
+
+			// Floor the long stop at or below RangeLow. The opening-range bottom is
+			// the structural invalidation level; the ATR widen above can raise the
+			// stop up into the range, where a routine pullback would hit it. Applied
+			// last so it overrides the ATR adjustment.
 			if s.cfg.StopFloorAtRange != nil && *s.cfg.StopFloorAtRange {
 				stopLoss = decimal.Min(stopLoss, state.RangeLow)
 			}
@@ -511,9 +522,10 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 				target = closePrice.Sub(state.RangeHigh.Sub(closePrice).Mul(decimal.NewFromFloat(2.0)))
 			}
 
-			// Cap the short stop at RangeHigh: the top of the opening range is the
-			// structural invalidation level. An ATR stop below it would be hit by a
-			// routine pullback into the range. max() widens to RangeHigh.
+			// Floor the short stop at or above RangeHigh. The opening-range top is
+			// the structural invalidation level; the ATR tighten above can lower the
+			// stop down into the range, where a routine pullback would hit it. Applied
+			// last so it overrides the ATR adjustment.
 			if s.cfg.StopFloorAtRange != nil && *s.cfg.StopFloorAtRange {
 				stopLoss = decimal.Max(stopLoss, state.RangeHigh)
 			}

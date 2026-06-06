@@ -46,6 +46,16 @@ type ORBConfig struct {
 	// StopFloorAtRange floors a long stop at RangeLow and caps a short stop
 	// at RangeHigh, so the ATR stop never sits inside the opening range.
 	StopFloorAtRange *bool `toml:"stop_floor_at_range"` // default true
+
+	// BodyStrengthThreshold requires the breakout candle's body to be at
+	// least this fraction of its full range (|close-open| / (high-low)).
+	BodyStrengthThreshold float64 `toml:"body_strength_threshold"` // default 0.6
+	// MaxGapPct rejects symbols that gapped more than this percent from the
+	// previous day's close, avoiding exhausted overnight moves.
+	MaxGapPct float64 `toml:"max_gap_pct"` // default 3.0
+	// MaxVWAPDistPct caps how far (in percent) the breakout close may sit
+	// from VWAP, to avoid chasing extended moves.
+	MaxVWAPDistPct float64 `toml:"max_vwap_dist_pct"` // default 1.5
 }
 
 type CPRVWAPConfig struct {
