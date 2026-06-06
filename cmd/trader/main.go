@@ -111,10 +111,7 @@ func main() {
 
 	// 1. Initialization
 	log.Println("=== ZEROBHA LIVE TRADING SYSTEM STARTING ===")
-	log.Println("=== STRATEGY: ", cfg.Strategy)
-	log.Println("=== TIMEFRAME: ", tf)
-	log.Println("=== CSV FILE: ", ss.CSVFile)
-	log.Println("=== LIMIT: ", ss.Limit)
+	logConfig(cfg, ss, tf)
 
 	// Initialize Kite Client (REST API)
 	kc := kiteconnect.New(apiKey)
@@ -399,6 +396,51 @@ func main() {
 	wg.Wait()
 
 	log.Println("Zerobha Shutdown Complete.")
+}
+
+func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration) {
+	log.Println("=== STRATEGY:", cfg.Strategy)
+	log.Println("=== UPTREND ONLY:", *cfg.UptrendOnly)
+	log.Printf("=== TIMEFRAME: %s | CSV: %s | LIMIT: %d", tf, ss.CSVFile, ss.Limit)
+
+	switch cfg.Strategy {
+	case "orb":
+		c := cfg.ORB
+		log.Printf("--- ORB CONFIG ---")
+		log.Printf("  Entry Window End : %d min from midnight (%02d:%02d)", c.EntryWindowEnd, c.EntryWindowEnd/60, c.EntryWindowEnd%60)
+		log.Printf("  RSI Long/Short   : %.1f / %.1f", c.RSILongThreshold, c.RSIShortThreshold)
+		log.Printf("  ADX Threshold    : %.1f  (Rising Eps: %.2f)", c.ADXThreshold, c.ADXRisingEps)
+		log.Printf("  ATR Range        : %.2f – %.2f", c.MinRangeATR, c.MaxRangeATR)
+		log.Printf("  SL/Target Mult   : %.2fx / %.2fx", c.SLMultiplier, c.TargetMultiplier)
+		log.Printf("  Max Concurrent   : %d", c.MaxConcurrent)
+		log.Printf("  Rel Vol Thresh   : %.2f  Vol Thrust Mult: %.2f", c.RelVolThreshold, c.VolThrustMult)
+		log.Printf("  Max VWAP Dist    : %.2f ATR / %.2f%%", c.MaxVWAPDistATR, c.MaxVWAPDistPct)
+		log.Printf("  Body Strength    : %.2f  Max Gap Pct: %.2f%%", c.BodyStrengthThreshold, c.MaxGapPct)
+		log.Printf("  One Trade/Day    : %v  Stop Floor At Range: %v", *c.OneTradePerDay, *c.StopFloorAtRange)
+	case "cprvwap":
+		c := cfg.CPRVWAP
+		log.Printf("--- CPRVWAP CONFIG ---")
+		log.Printf("  Entry Window     : %d–%d min from midnight (%02d:%02d – %02d:%02d)",
+			c.EntryWindowStart, c.EntryWindowEnd,
+			c.EntryWindowStart/60, c.EntryWindowStart%60,
+			c.EntryWindowEnd/60, c.EntryWindowEnd%60)
+		log.Printf("  RSI Long/Short   : %.1f / %.1f", c.RSILongThreshold, c.RSIShortThreshold)
+		log.Printf("  ADX Threshold    : %.1f", c.ADXThreshold)
+		log.Printf("  SL/Target Mult   : %.2fx / %.2fx", c.SLMultiplier, c.TargetMultiplier)
+		log.Printf("  Max Concurrent   : %d", c.MaxConcurrent)
+		log.Printf("  CPR Width Pct    : %.2f%% – %.2f%%", c.MinCPRWidthPct, c.MaxCPRWidthPct)
+		log.Printf("  Max EMA Dist Pct : %.2f%%", c.MaxEMADistPct)
+	case "donchian":
+		log.Printf("--- DONCHIAN CONFIG ---")
+		log.Printf("  (no extra parameters)")
+	case "ema20_pullback":
+		c := cfg.EMA20Pullback
+		log.Printf("--- EMA20 PULLBACK CONFIG ---")
+		log.Printf("  Pullback EMA     : %d", c.PullbackEMA)
+		log.Printf("  SL/TP Mult       : %.2fx / %.2fx", c.SLMultiplier, c.TPMultiplier)
+		log.Printf("  Max Concurrent   : %d", c.MaxConcurrent)
+	}
+	log.Println("==========================================")
 }
 
 func isMarketClosed() bool {
