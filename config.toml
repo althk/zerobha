@@ -1,22 +1,17 @@
 # Zerobha Trading Bot Configuration
 
-# Strategy to run: donchian, orb, ema_pullback, etc.
+# Strategy to run: orb, cprvwap, donchian, ema20_pullback
 strategy = "orb"
-
-# CSV file containing symbols to trade
-csv_file = "high_beta_stocks.csv"
-
-# Limit number of symbols to trade
-limit = 50
-
-# Candle timeframe (e.g. 1m, 5m, 1h)
-timeframe = "5m"
 
 # Zerodha API Credentials
 api_key = ""
 api_secret = ""
 
 [orb]
+timeframe = "5m"
+csv_file = "high_beta_stocks.csv"
+limit = 50
+
 # Entry window cutoff in minutes from midnight (default: 630 = 10:30 AM IST)
 entry_window_end = 630
 
@@ -35,5 +30,41 @@ max_range_atr = 3.0
 sl_multiplier = 1.5
 target_multiplier = 3.0
 
-# Max simultaneous open positions (used for capital allocation)
+# Max simultaneous open positions
+max_concurrent = 5
+
+[cprvwap]
+timeframe = "5m"
+csv_file = "high_beta_stocks.csv"
+limit = 50
+
+# Entry window in minutes from midnight (9:30 AM – 2:00 PM IST)
+entry_window_start = 570
+entry_window_end = 840
+
+rsi_long_threshold = 50.0
+rsi_short_threshold = 50.0
+adx_threshold = 20.0
+sl_multiplier = 1.5
+target_multiplier = 3.0
+max_concurrent = 5
+min_cpr_width_pct = 0.3
+max_cpr_width_pct = 2.0
+max_ema_dist_pct = 0.5
+
+[donchian]
+timeframe = "day"
+csv_file = "high_beta_stocks.csv"
+limit = 50
+
+[ema20_pullback]
+timeframe = "day"
+csv_file = "high_beta_stocks.csv"
+limit = 50
+
+# Stop-loss and take-profit as ATR(14) multiples
+sl_multiplier = 2.0
+tp_multiplier = 2.0
+
+# Max simultaneous open positions
 max_concurrent = 5

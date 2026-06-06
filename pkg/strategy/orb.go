@@ -12,6 +12,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// istLocation is the IST timezone, loaded once and reused to avoid repeated
+// tz-database lookups on the per-candle hot path.
+var istLocation = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		return time.FixedZone("IST", 5*3600+1800)
+	}
+	return loc
+}()
+
 type ORBState struct {
 	Symbol        string
 	Vwap          *indicators.VWAP
@@ -27,25 +37,29 @@ type ORBState struct {
 	AvgMorningVol decimal.Decimal // Avg opening-range (9:15–9:30) volume from historical days
 	RangeVolume   decimal.Decimal // Accumulated volume during today's opening range
 	RelVolSkip    bool            // True if today's opening-range volume failed the RelVol filter
-	VolSma5       *indicators.SMA // 5 period volume SMA for recent surge
-	PrevDayClose  decimal.Decimal // Closing price of the previous trading day
-	GapChecked    bool            // True once gap filter has been evaluated for today
-	BreakoutFired bool            // True once a signal has been emitted today (prevents re-entry)
+	Traded        bool            // True once a signal has fired for this symbol today (one-trade-per-day guard)
+
+	// Rolling baseline of opening-range volume, updated as each day's range
+	// locks. This lets the strategy self-seed AvgMorningVol when Init() was not
+	// called (e.g. the backtest harness feeds candles directly), and keeps the
+	// baseline adapting over time in live trading.
+	MorningVolSum  decimal.Decimal // Sum of past days' opening-range volumes
+	MorningVolDays int64           // Count of past days contributing to MorningVolSum
 }
 
 func NewORBState(symbol string) *ORBState {
 	return &ORBState{
-		Symbol:    symbol,
-		Vwap:      indicators.NewVWAP(),
-		VolSma:    indicators.NewSMA(9),
-		Atr:       indicators.NewATR(14),
-		Adx:       indicators.NewADX(9),
-		Rsi:       indicators.NewRSI(9),
-		VolSma5:   indicators.NewSMA(5),
-		RangeHigh: decimal.Zero,
-		RangeLow:  decimal.Zero,
-		RangeSet:  false,
-		LastClose: decimal.Zero,
+		Symbol:       symbol,
+		Vwap:         indicators.NewVWAP(),
+		VolSma:       indicators.NewSMA(9),
+		Atr:          indicators.NewATR(14),
+		Adx:          indicators.NewADX(9),
+		Rsi:          indicators.NewRSI(9),
+		VolSma5:      indicators.NewSMA(5),
+		RangeHigh:    decimal.Zero,
+		RangeLow:     decimal.Zero,
+		RangeSet:     false,
+		LastClose:    decimal.Zero,
 		PrevDayClose: decimal.Zero,
 	}
 }
@@ -84,11 +98,16 @@ func (s *ORBStrategy) SaveState(symbol string) {
 
 	// Create a persistent version of state (subset)
 	pState := map[string]interface{}{
-		"RangeHigh": state.RangeHigh,
-		"RangeLow":  state.RangeLow,
-		"RangeSet":  state.RangeSet,
-		"LastDate":  state.LastDate,
-		"LastClose": state.LastClose,
+		"RangeHigh":      state.RangeHigh,
+		"RangeLow":       state.RangeLow,
+		"RangeSet":       state.RangeSet,
+		"LastDate":       state.LastDate,
+		"LastClose":      state.LastClose,
+		"RelVolSkip":     state.RelVolSkip,
+		"RangeVolume":    state.RangeVolume,
+		"Traded":         state.Traded,
+		"MorningVolSum":  state.MorningVolSum,
+		"MorningVolDays": state.MorningVolDays,
 	}
 
 	if err := s.db.SetState("ORB_"+symbol, pState); err != nil {
@@ -101,11 +120,16 @@ func (s *ORBStrategy) LoadState(symbol string) {
 		return
 	}
 	var pState struct {
-		RangeHigh decimal.Decimal
-		RangeLow  decimal.Decimal
-		RangeSet  bool
-		LastDate  string
-		LastClose decimal.Decimal
+		RangeHigh      decimal.Decimal
+		RangeLow       decimal.Decimal
+		RangeSet       bool
+		LastDate       string
+		LastClose      decimal.Decimal
+		RelVolSkip     bool
+		RangeVolume    decimal.Decimal
+		Traded         bool
+		MorningVolSum  decimal.Decimal
+		MorningVolDays int64
 	}
 
 	if err := s.db.GetState("ORB_"+symbol, &pState); err != nil {
@@ -130,16 +154,21 @@ func (s *ORBStrategy) LoadState(symbol string) {
 	state.RangeSet = pState.RangeSet
 	state.LastDate = pState.LastDate
 	state.LastClose = pState.LastClose
-	log.Printf("LOADED STATE for %s: High=%s Low=%s Set=%v", symbol, state.RangeHigh, state.RangeLow, state.RangeSet)
+	state.RelVolSkip = pState.RelVolSkip
+	state.RangeVolume = pState.RangeVolume
+	state.Traded = pState.Traded
+	state.MorningVolSum = pState.MorningVolSum
+	state.MorningVolDays = pState.MorningVolDays
+	if pState.MorningVolDays > 0 {
+		state.AvgMorningVol = pState.MorningVolSum.Div(decimal.NewFromInt(pState.MorningVolDays))
+	}
+	log.Printf("LOADED STATE for %s: High=%s Low=%s Set=%v Traded=%v", symbol, state.RangeHigh, state.RangeLow, state.RangeSet, state.Traded)
 }
 
 func (s *ORBStrategy) Init(provider core.DataProvider) error {
 	log.Println("Initializing ORB Strategy...")
 
-	loc, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		loc = time.FixedZone("IST", 5*3600+1800)
-	}
+	loc := istLocation
 
 	for _, sym := range s.symbols {
 		state := NewORBState(sym)
@@ -168,7 +197,7 @@ func (s *ORBStrategy) Init(provider core.DataProvider) error {
 			// Capture PrevDayClose: The close of the last candle of the previous day
 			istTime := c.StartTime.In(loc)
 			dateKey := istTime.Format("2006-01-02")
-			
+
 			// If we see a new date, the previous date's last candle was the close
 			if lastDate != "" && dateKey != lastDate {
 				state.PrevDayClose = lastClose
@@ -193,7 +222,12 @@ func (s *ORBStrategy) Init(provider core.DataProvider) error {
 			for _, v := range morningVolByDay {
 				total = total.Add(v)
 			}
-			state.AvgMorningVol = total.Div(decimal.NewFromInt(int64(len(morningVolByDay))))
+			// Seed both the average and the rolling-baseline accumulators so the
+			// per-day folding in OnCandle extends this history rather than
+			// overwriting it.
+			state.MorningVolSum = total
+			state.MorningVolDays = int64(len(morningVolByDay))
+			state.AvgMorningVol = total.Div(decimal.NewFromInt(state.MorningVolDays))
 			log.Printf("[%s] AvgMorningVol (9:15-9:30) over %d days: %s", sym, len(morningVolByDay), state.AvgMorningVol.StringFixed(0))
 		}
 	}
@@ -219,13 +253,16 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		state.LastDate = currentDate
 		state.RangeVolume = decimal.Zero
 		state.RelVolSkip = false
-		state.GapChecked = false
-		state.BreakoutFired = false
+		state.Traded = false
 		s.SaveState(candle.Symbol)
 	}
 
-	// Skip for the day if RelVol filter already fired
+	// Skip for the day if RelVol filter already fired, or if we've already
+	// taken our one allowed trade for this symbol today.
 	if state.RelVolSkip {
+		return nil
+	}
+	if state.Traded && s.cfg.OneTradePerDay != nil && *s.cfg.OneTradePerDay {
 		return nil
 	}
 
@@ -241,11 +278,7 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	rsiVal := state.Rsi.Update(candle.Close)
 
 	// 4. Time Window Logic (9:15 - 9:30)
-	loc, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		loc = time.FixedZone("IST", 5*3600+1800)
-	}
-	istTime := candle.StartTime.In(loc)
+	istTime := candle.StartTime.In(istLocation)
 	h, m, _ := istTime.Clock()
 	timeInMinutes := h*60 + m
 	rangeStart := 9*60 + 15
@@ -277,19 +310,36 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		if !state.RangeHigh.IsZero() {
 			state.RangeSet = true
 
-			// Relative Volume filter: opening-range volume must be >= threshold × AvgMorningVol
-			if !state.AvgMorningVol.IsZero() {
+			// Relative Volume filter: today's opening-range volume must be >=
+			// threshold × AvgMorningVol. AvgMorningVol is seeded by Init() from
+			// history and/or built up here as a rolling mean of prior days.
+			// When there is no baseline yet (first observed day, or Init() never
+			// ran), fall open and trade — we fold today's volume into the
+			// baseline below so subsequent days are filtered properly.
+			if state.AvgMorningVol.IsZero() {
+				log.Printf("[%s] RelVol filter: no baseline yet — allowing today and seeding baseline", state.Symbol)
+			} else {
 				threshold := state.AvgMorningVol.Mul(decimal.NewFromFloat(s.cfg.RelVolThreshold))
 				if state.RangeVolume.LessThan(threshold) {
 					log.Printf("[%s] RelVol filter: RangeVol=%s < %.1fx AvgMorningVol=%s — skipping today",
 						state.Symbol, state.RangeVolume.StringFixed(0), s.cfg.RelVolThreshold, state.AvgMorningVol.StringFixed(0))
 					state.RelVolSkip = true
-					s.SaveState(candle.Symbol)
-					return nil
 				}
 			}
 
+			// Fold today's opening-range volume into the rolling baseline so the
+			// average adapts and self-seeds even without Init().
+			if state.RangeVolume.GreaterThan(decimal.Zero) {
+				state.MorningVolSum = state.MorningVolSum.Add(state.RangeVolume)
+				state.MorningVolDays++
+				state.AvgMorningVol = state.MorningVolSum.Div(decimal.NewFromInt(state.MorningVolDays))
+			}
+
 			s.SaveState(candle.Symbol)
+
+			if state.RelVolSkip {
+				return nil
+			}
 		} else {
 			// No data in range?
 			return nil
@@ -332,15 +382,21 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 	closePrice := candle.Close
 	volume := candle.Volume
 
-	// Entry Conditions
-	// Condition A: Volume > Avg(9)
-	volumeCondition := volume.GreaterThan(prevAvgVol)
+	// Warmup guard: never trade on a half-warmed indicator set.
+	if !state.Atr.IsReady() || rsiVal.IsZero() || adxVal.IsZero() {
+		return nil
+	}
 
-	// Condition B: ADX > threshold AND (ADX rising OR above a stronger level)
-	// Allow flat ADX if it's sufficiently above threshold (strong trend already established)
-	adxStrong := adxVal.GreaterThanOrEqual(decimal.NewFromFloat(s.cfg.ADXThreshold * 1.5))
-	adxRising := adxVal.GreaterThan(prevAdx)
-	if adxVal.LessThan(decimal.NewFromFloat(s.cfg.ADXThreshold)) || (!adxRising && !adxStrong) {
+	// Entry Conditions
+	// Condition A: breakout candle volume must exceed VolThrustMult × trailing
+	// volume SMA. Default mult of 1.0 == original "volume > avg" behavior.
+	volThreshold := prevAvgVol.Mul(decimal.NewFromFloat(s.cfg.VolThrustMult))
+	volumeCondition := volume.GreaterThan(volThreshold)
+
+	// Condition B: ADX > threshold AND ADX rising (within ADXRisingEps tolerance,
+	// so a sub-bar tick down doesn't reject an otherwise valid breakout).
+	risingFloor := prevAdx.Sub(decimal.NewFromFloat(s.cfg.ADXRisingEps))
+	if adxVal.LessThan(decimal.NewFromFloat(s.cfg.ADXThreshold)) || adxVal.LessThanOrEqual(risingFloor) {
 		return nil
 	}
 
@@ -351,6 +407,16 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		maxRange := atrVal.Mul(decimal.NewFromFloat(s.cfg.MaxRangeATR))
 
 		if rangeSize.LessThan(minRange) || rangeSize.GreaterThan(maxRange) {
+			return nil
+		}
+	}
+
+	// Condition D: Extension filter. Reject entries where the breakout close is
+	// already more than MaxVWAPDistATR ATRs away from VWAP — those chase an
+	// extended move with poor reward-to-risk. 0 disables the filter.
+	if s.cfg.MaxVWAPDistATR > 0 && !atrVal.IsZero() {
+		maxDist := atrVal.Mul(decimal.NewFromFloat(s.cfg.MaxVWAPDistATR))
+		if closePrice.Sub(currentVwap).Abs().GreaterThan(maxDist) {
 			return nil
 		}
 	}
@@ -379,18 +445,15 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 				stopLoss = state.RangeLow
 			}
 
-			var target decimal.Decimal
-			if !atrVal.IsZero() {
-				atrSL := closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(s.cfg.SLMultiplier)))
-				if atrSL.GreaterThan(stopLoss) {
-					stopLoss = atrSL
-				}
-				target = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.TargetMultiplier)))
-			} else {
-				target = closePrice.Add(closePrice.Sub(stopLoss).Mul(decimal.NewFromFloat(2.0)))
+			// Floor the long stop at RangeLow: the bottom of the opening range is
+			// the structural invalidation level. An ATR stop sitting above it would
+			// be hit by a routine pullback into the range. min() widens to RangeLow.
+			if s.cfg.StopFloorAtRange != nil && *s.cfg.StopFloorAtRange {
+				stopLoss = decimal.Min(stopLoss, state.RangeLow)
 			}
 
-			state.BreakoutFired = true
+			state.Traded = true
+
 			return &models.Signal{
 				Symbol:      candle.Symbol,
 				Type:        models.BuySignal,
@@ -399,18 +462,18 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 				StopLoss:    stopLoss.Round(2),
 				Target:      target.Round(2),
 				Metadata: map[string]string{
-					"Strategy":      "ORB_Long",
-					"RangeHigh":     state.RangeHigh.StringFixed(2),
-					"RangeLow":      state.RangeLow.StringFixed(2),
-					"VWAP":          currentVwap.StringFixed(2),
-					"ATR":           atrVal.StringFixed(2),
-					"ADX":           adxVal.StringFixed(2),
-					"RSI":           rsiVal.StringFixed(2),
-					"Volume":        volume.StringFixed(0),
-					"AvgVol":        prevAvgVol.StringFixed(0),
-					"RecentAvgVol":  prevRecentVol.StringFixed(0),
-					"BodyStrength":  bodyStrength.StringFixed(2),
-					"CandleTime":    candle.StartTime.Format("2006-01-02 15:04:05"),
+					"Strategy":     "ORB_Long",
+					"RangeHigh":    state.RangeHigh.StringFixed(2),
+					"RangeLow":     state.RangeLow.StringFixed(2),
+					"VWAP":         currentVwap.StringFixed(2),
+					"ATR":          atrVal.StringFixed(2),
+					"ADX":          adxVal.StringFixed(2),
+					"RSI":          rsiVal.StringFixed(2),
+					"Volume":       volume.StringFixed(0),
+					"AvgVol":       prevAvgVol.StringFixed(0),
+					"RecentAvgVol": prevRecentVol.StringFixed(0),
+					"BodyStrength": bodyStrength.StringFixed(2),
+					"CandleTime":   candle.StartTime.Format("2006-01-02 15:04:05"),
 				},
 			}
 		}
@@ -448,7 +511,15 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 				target = closePrice.Sub(state.RangeHigh.Sub(closePrice).Mul(decimal.NewFromFloat(2.0)))
 			}
 
-			state.BreakoutFired = true
+			// Cap the short stop at RangeHigh: the top of the opening range is the
+			// structural invalidation level. An ATR stop below it would be hit by a
+			// routine pullback into the range. max() widens to RangeHigh.
+			if s.cfg.StopFloorAtRange != nil && *s.cfg.StopFloorAtRange {
+				stopLoss = decimal.Max(stopLoss, state.RangeHigh)
+			}
+
+			state.Traded = true
+
 			return &models.Signal{
 				Symbol:      candle.Symbol,
 				Type:        models.SellSignal,
@@ -457,18 +528,18 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 				StopLoss:    stopLoss.Round(2),
 				Target:      target.Round(2),
 				Metadata: map[string]string{
-					"Strategy":      "ORB_Short",
-					"RangeHigh":     state.RangeHigh.StringFixed(2),
-					"RangeLow":      state.RangeLow.StringFixed(2),
-					"VWAP":          currentVwap.StringFixed(2),
-					"ATR":           atrVal.StringFixed(2),
-					"ADX":           adxVal.StringFixed(2),
-					"RSI":           rsiVal.StringFixed(2),
-					"Volume":        volume.StringFixed(0),
-					"AvgVol":        prevAvgVol.StringFixed(0),
-					"RecentAvgVol":  prevRecentVol.StringFixed(0),
-					"BodyStrength":  bodyStrength.StringFixed(2),
-					"CandleTime":    candle.StartTime.Format("2006-01-02 15:04:05"),
+					"Strategy":     "ORB_Short",
+					"RangeHigh":    state.RangeHigh.StringFixed(2),
+					"RangeLow":     state.RangeLow.StringFixed(2),
+					"VWAP":         currentVwap.StringFixed(2),
+					"ATR":          atrVal.StringFixed(2),
+					"ADX":          adxVal.StringFixed(2),
+					"RSI":          rsiVal.StringFixed(2),
+					"Volume":       volume.StringFixed(0),
+					"AvgVol":       prevAvgVol.StringFixed(0),
+					"RecentAvgVol": prevRecentVol.StringFixed(0),
+					"BodyStrength": bodyStrength.StringFixed(2),
+					"CandleTime":   candle.StartTime.Format("2006-01-02 15:04:05"),
 				},
 			}
 		}

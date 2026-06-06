@@ -16,6 +16,7 @@ Usage:
   python scripts/build_watchlist.py --top-sectors 3 --min-beta 1.2 --limit 30
   python scripts/build_watchlist.py --output my_watchlist.csv
 """
+
 import argparse
 import os
 import sys
@@ -44,13 +45,16 @@ def main():
         help="Nifty 500 CSV with Symbol and Industry columns",
     )
     parser.add_argument(
-        "--output", type=str, default="watchlist.csv", help="Final watchlist output CSV"
+        "--output",
+        type=str,
+        default="watchlist.csv",
+        help="Final watchlist output CSV",
     )
     parser.add_argument(
         "--top-sectors",
         type=int,
-        default=4,
-        help="Number of top sectors to pick (default: 4)",
+        default=5,
+        help="Number of top sectors to pick (default: 5)",
     )
     parser.add_argument(
         "--min-beta",

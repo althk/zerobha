@@ -10,6 +10,7 @@ import (
 	"zerobha/internal/risk"
 	"zerobha/pkg/broker"
 	"zerobha/pkg/db"
+	indicators "zerobha/pkg/indicators"
 	"zerobha/pkg/journal"
 
 	"github.com/shopspring/decimal"
@@ -24,12 +25,99 @@ type Engine struct {
 	DB                *db.Store
 	LeverageMap       map[string]float64
 	MaxConcurrent     int
+	UptrendOnly       bool
+	DataProvider      DataProvider
+
+	niftyEMA50     *indicators.EMA
+	niftyEMA200    *indicators.EMA
+	niftyUptrendOK bool   // cached result of today's uptrend check
+	niftyCheckDate string // "YYYY-MM-DD" of last uptrend evaluation
+	niftySeeded    bool   // true once the uptrend filter has valid EMA data
 }
 
 func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *broker.InstrumentManager, d *db.Store) *Engine {
-	e := &Engine{Strategy: s, Broker: b, Risk: r, Journal: j, InstrumentManager: im, DB: d, MaxConcurrent: 5}
+	e := &Engine{
+		Strategy:          s,
+		Broker:            b,
+		Risk:              r,
+		Journal:           j,
+		InstrumentManager: im,
+		DB:                d,
+		MaxConcurrent:     5,
+		UptrendOnly:       true,
+		niftyEMA50:        indicators.NewEMA(50),
+		niftyEMA200:       indicators.NewEMA(200),
+	}
 	e.loadLeverageMap()
 	return e
+}
+
+// InitNiftyEMAs seeds the NIFTY 50 daily EMA indicators using historical data and
+// sets the initial uptrend state from the most recent completed daily candle.
+// Must be called after UptrendOnly and DataProvider are set.
+func (e *Engine) InitNiftyEMAs() {
+	if !e.UptrendOnly || e.DataProvider == nil {
+		return
+	}
+
+	// Fetch enough history to warm up EMA200 (200 + buffer)
+	candles, err := e.DataProvider.History("NIFTY 50", "1d", 300)
+	if err != nil {
+		log.Printf("WARNING: Could not fetch NIFTY 50 history for uptrend filter: %v — uptrend filter NOT seeded", err)
+		return
+	}
+
+	if len(candles) == 0 {
+		log.Printf("WARNING: No NIFTY 50 historical candles returned for uptrend filter — uptrend filter NOT seeded")
+		return
+	}
+
+	// Feed all but the last candle to build EMA history
+	for _, c := range candles[:len(candles)-1] {
+		e.niftyEMA50.Update(c.Close)
+		e.niftyEMA200.Update(c.Close)
+	}
+
+	// Evaluate uptrend using the most recent completed daily candle
+	last := candles[len(candles)-1]
+	e.advanceNiftyEMAs(last)
+	e.niftyUptrendOK = e.isNiftyUptrend(last)
+	e.niftyCheckDate = last.StartTime.Format("2006-01-02")
+	e.niftySeeded = true
+
+	log.Printf("Uptrend filter initialised from %s: EMA50=%.2f EMA200=%.2f → uptrend=%v",
+		e.niftyCheckDate,
+		e.niftyEMA50.Value().InexactFloat64(),
+		e.niftyEMA200.Value().InexactFloat64(),
+		e.niftyUptrendOK)
+}
+
+// advanceNiftyEMAs feeds a daily NIFTY 50 close into the EMA indicators, mutating them.
+// Call exactly once per daily candle before reading via isNiftyUptrend.
+func (e *Engine) advanceNiftyEMAs(niftyCandle models.Candle) {
+	e.niftyEMA50.Update(niftyCandle.Close)
+	e.niftyEMA200.Update(niftyCandle.Close)
+}
+
+// isNiftyUptrend is a pure read: it returns true when the NIFTY 50 close is above
+// EMA50 and EMA50 > EMA200. It does not mutate the EMAs — call advanceNiftyEMAs first.
+func (e *Engine) isNiftyUptrend(niftyCandle models.Candle) bool {
+	if !e.niftyEMA50.IsReady() || !e.niftyEMA200.IsReady() {
+		log.Println("Uptrend filter: EMAs not yet ready, allowing trade")
+		return true
+	}
+
+	ema50 := e.niftyEMA50.Value()
+	ema200 := e.niftyEMA200.Value()
+
+	closeAboveEMA50 := niftyCandle.Close.GreaterThan(ema50)
+	ema50AboveEMA200 := ema50.GreaterThan(ema200)
+
+	log.Printf("Uptrend check: close=%.2f EMA50=%.2f EMA200=%.2f closeAbove=%v ema50Above=%v",
+		niftyCandle.Close.InexactFloat64(), ema50.InexactFloat64(), ema200.InexactFloat64(),
+		closeAboveEMA50, ema50AboveEMA200)
+
+	return closeAboveEMA50 && ema50AboveEMA200
 }
 
 func (e *Engine) loadLeverageMap() {
@@ -67,10 +155,38 @@ func (e *Engine) loadLeverageMap() {
 
 // Execute is called whenever a candle closes
 func (e *Engine) Execute(candle models.Candle) {
-	// Stop accepting new signals after 15:05 (new trade cutoff)
+	// Stop accepting new signals after 14:05 (new trade cutoff)
 	h, m, _ := candle.EndTime.Clock()
-	if h*60+m >= 15*60+5 {
+	if h*60+m >= 14*60+5 {
 		return
+	}
+
+	// Uptrend master filter: update state on NIFTY 50 daily candles, gate all signals
+	if e.UptrendOnly {
+		isNifty := candle.Symbol == "NIFTY 50" || candle.Symbol == "^NSEI" || candle.Symbol == "NSEI"
+		isDaily := candle.Timeframe == "1d" || candle.Timeframe == "day"
+
+		if isNifty && isDaily {
+			dateKey := candle.StartTime.Format("2006-01-02")
+			if dateKey != e.niftyCheckDate {
+				e.advanceNiftyEMAs(candle)
+				e.niftyUptrendOK = e.isNiftyUptrend(candle)
+				e.niftyCheckDate = dateKey
+				e.niftySeeded = true
+				log.Printf("Uptrend filter updated for %s: %v", dateKey, e.niftyUptrendOK)
+			}
+			// NIFTY daily candles don't trigger strategy signals
+			return
+		}
+
+		// Fail open: if the filter never seeded (history fetch failed at startup),
+		// allow trades rather than silently halting for the whole day — but log loudly.
+		if !e.niftySeeded {
+			log.Printf("WARNING: Uptrend filter not seeded — allowing signal for %s without trend check", candle.Symbol)
+		} else if !e.niftyUptrendOK {
+			log.Printf("Uptrend filter: NIFTY not in uptrend, skipping signal for %s", candle.Symbol)
+			return
+		}
 	}
 
 	// 1. Get Signal from Strategy
@@ -168,19 +284,30 @@ func (e *Engine) Execute(candle models.Candle) {
 	}
 
 	// 4. Order Conversion (Position Sizing)
-	balance, _ := e.Broker.GetBalance()
+	balance, err := e.Broker.GetBalance()
+	if err != nil {
+		log.Printf("Skipping signal for %s: failed to fetch balance: %v", signal.Symbol, err)
+		return
+	}
 	if balance.LessThan(decimal.NewFromInt(3000)) {
 		log.Printf("Skipping signal for %s: Insufficient balance", signal.Symbol)
 		return
 	}
 
 	// Divide available balance by remaining open slots so we don't over-deploy capital.
-	openPositions, _ := e.Broker.GetPositions()
+	// Fail closed: if we can't read positions we can't size safely, so skip rather than
+	// assume all slots are free and risk over-deploying capital.
+	openPositions, err := e.Broker.GetPositions()
+	if err != nil {
+		log.Printf("Skipping signal for %s: failed to fetch positions: %v", signal.Symbol, err)
+		return
+	}
 	openCount := int64(len(openPositions))
 	maxConcurrent := int64(e.MaxConcurrent)
 	remainingSlots := decimal.NewFromInt(maxConcurrent - openCount)
 	if remainingSlots.LessThanOrEqual(decimal.Zero) {
-		remainingSlots = decimal.NewFromInt(1)
+		log.Printf("No remaining slots for new positions (open: %d, max: %d)", openCount, maxConcurrent)
+		return
 	}
 	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(30000))
 	capital = decimal.Min(capital, decimal.NewFromInt(50000))
@@ -304,11 +431,23 @@ func (e *Engine) SquareOff() {
 		}
 
 		// Execute
-		_, err := e.Broker.PlaceOrder(order)
+		placedOrder, err := e.Broker.PlaceOrder(order)
 		if err != nil {
 			log.Printf("SquareOff Error: Failed to close position %s: %v", p.Tradingsymbol, err)
+			if e.Journal != nil {
+				e.Journal.LogOrder(order, "FAILED", err.Error())
+			}
+			if e.DB != nil {
+				_ = e.DB.SaveOrder(order, "FAILED")
+			}
 		} else {
 			log.Printf("SquareOff: Successfully submitted close order for %s", p.Tradingsymbol)
+			if e.Journal != nil {
+				e.Journal.LogOrder(placedOrder, "SUCCESS", fmt.Sprintf("OrderID: %s | Reason: AutoSquareOff", placedOrder.ID))
+			}
+			if e.DB != nil {
+				_ = e.DB.SaveOrder(placedOrder, "SUBMITTED")
+			}
 		}
 	}
 

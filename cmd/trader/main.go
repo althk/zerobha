@@ -74,8 +74,10 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	ss := cfg.ActiveStrategySettings()
+
 	// Parse Timeframe
-	tf, err := time.ParseDuration(cfg.Timeframe)
+	tf, err := time.ParseDuration(ss.Timeframe)
 	if err != nil {
 		log.Fatalf("Invalid timeframe: %v", err)
 	}
@@ -111,8 +113,8 @@ func main() {
 	log.Println("=== ZEROBHA LIVE TRADING SYSTEM STARTING ===")
 	log.Println("=== STRATEGY: ", cfg.Strategy)
 	log.Println("=== TIMEFRAME: ", tf)
-	log.Println("=== CSV FILE: ", cfg.CSVFile)
-	log.Println("=== LIMIT: ", cfg.Limit)
+	log.Println("=== CSV FILE: ", ss.CSVFile)
+	log.Println("=== LIMIT: ", ss.Limit)
 
 	// Initialize Kite Client (REST API)
 	kc := kiteconnect.New(apiKey)
@@ -129,17 +131,17 @@ func main() {
 	kc.SetAccessToken(data.AccessToken)
 
 	// 2. Instrument Mapping (Crucial	// Load symbols from CSV
-	watchlist, err := loadSymbolsFromCSV(cfg.CSVFile)
+	watchlist, err := loadSymbolsFromCSV(ss.CSVFile)
 	if err != nil {
-		log.Printf("WARNING: Failed to load %s: %v. Using fallback list.", cfg.CSVFile, err)
+		log.Printf("WARNING: Failed to load %s: %v. Using fallback list.", ss.CSVFile, err)
 		// Fallback list
 		watchlist = []string{"IDEA", "CANBK", "LTF", "NBCC", "RELIANCE"}
 	}
 
 	// Limit symbols if requested
-	if cfg.Limit > 0 && len(watchlist) > cfg.Limit {
-		fmt.Printf("Limiting watchlist to top %d symbols.\n", cfg.Limit)
-		watchlist = watchlist[:cfg.Limit]
+	if ss.Limit > 0 && len(watchlist) > ss.Limit {
+		fmt.Printf("Limiting watchlist to top %d symbols.\n", ss.Limit)
+		watchlist = watchlist[:ss.Limit]
 	}
 
 	fmt.Printf("Loaded %d symbols for trading.\n", len(watchlist))
@@ -178,16 +180,23 @@ func main() {
 
 	// Strategy (The Brain)
 	var strat core.Strategy
+	var maxConcurrent int
 	switch cfg.Strategy {
 	case "donchian":
 		strat = strategy.NewDonchianBreakout(watchlist)
 	case "cprvwap":
 		strat = strategy.NewCPRVWAPStrategy(watchlist, cfg.CPRVWAP)
+		maxConcurrent = cfg.CPRVWAP.MaxConcurrent
 	case "orb":
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
+		maxConcurrent = cfg.ORB.MaxConcurrent
+	case "ema20_pullback":
+		strat = strategy.NewEMA20Pullback(watchlist, cfg.EMA20Pullback)
+		maxConcurrent = cfg.EMA20Pullback.MaxConcurrent
 	default:
 		log.Printf("Using default strategy: ORB")
 		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
+		maxConcurrent = 5 // Default
 	}
 
 	// Inject DB if Strategy supports it (Manual Dependency Injection)
@@ -216,12 +225,10 @@ func main() {
 
 	// Engine (The Orchestrator)
 	engine := core.NewEngine(strat, kiteAdapter, riskMgr, j, im, store)
-	switch cfg.Strategy {
-	case "cprvwap":
-		engine.MaxConcurrent = cfg.CPRVWAP.MaxConcurrent
-	default:
-		engine.MaxConcurrent = cfg.ORB.MaxConcurrent
-	}
+	engine.MaxConcurrent = maxConcurrent
+	engine.UptrendOnly = *cfg.UptrendOnly
+	engine.DataProvider = kiteAdapter
+	engine.InitNiftyEMAs()
 
 	// Web Dashboard
 	webServer := web.NewServer(engine, 8080)

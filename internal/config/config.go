@@ -7,7 +7,18 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// StrategySettings holds the fields common to every strategy that the engine
+// needs to bootstrap: which symbols to load, how many, and the candle timeframe.
+type StrategySettings struct {
+	Timeframe string
+	CSVFile   string
+	Limit     int
+}
+
 type ORBConfig struct {
+	Timeframe         string  `toml:"timeframe"`           // default "5m"
+	CSVFile           string  `toml:"csv_file"`            // default "high_beta_stocks.csv"
+	Limit             int     `toml:"limit"`               // default 50
 	EntryWindowEnd    int     `toml:"entry_window_end"`    // minutes from midnight, default 630 (10:30 AM)
 	RSILongThreshold  float64 `toml:"rsi_long_threshold"`  // default 50
 	RSIShortThreshold float64 `toml:"rsi_short_threshold"` // default 40
@@ -17,13 +28,30 @@ type ORBConfig struct {
 	SLMultiplier      float64 `toml:"sl_multiplier"`       // default 1.5
 	TargetMultiplier  float64 `toml:"target_multiplier"`   // default 3.0
 	MaxConcurrent     int     `toml:"max_concurrent"`      // max simultaneous positions, default 5
-	RelVolThreshold      float64 `toml:"rel_vol_threshold"`   // min ratio of opening-range vol to avg morning vol, default 1.5
-	BodyStrengthThreshold float64 `toml:"body_strength_threshold"` // default 0.6
-	MaxGapPct            float64 `toml:"max_gap_pct"`             // default 3.0
-	MaxVWAPDistPct       float64 `toml:"max_vwap_dist_pct"`       // default 1.5
+	RelVolThreshold   float64 `toml:"rel_vol_threshold"`   // min ratio of opening-range vol to avg morning vol, default 1.5
+
+	// VolThrustMult requires the breakout candle's volume to exceed
+	// VolThrustMult × the trailing volume SMA. Default 1.0 preserves the
+	// original "volume > avg" behavior; values >1 demand a genuine thrust.
+	VolThrustMult float64 `toml:"vol_thrust_mult"` // default 1.0
+	// MaxVWAPDistATR caps how far (in ATR units) the breakout close may be
+	// from VWAP, to avoid chasing extended moves. 0 disables the filter.
+	MaxVWAPDistATR float64 `toml:"max_vwap_dist_atr"` // default 0 (disabled)
+	// ADXRisingEps relaxes the strict "ADX rising" requirement: a signal is
+	// allowed when adx > prevADX - ADXRisingEps. 0 keeps the strict check.
+	ADXRisingEps float64 `toml:"adx_rising_eps"` // default 0
+	// OneTradePerDay blocks any further signals for a symbol once it has
+	// fired one signal that day, capping the per-symbol whipsaw loss tail.
+	OneTradePerDay *bool `toml:"one_trade_per_day"` // default true
+	// StopFloorAtRange floors a long stop at RangeLow and caps a short stop
+	// at RangeHigh, so the ATR stop never sits inside the opening range.
+	StopFloorAtRange *bool `toml:"stop_floor_at_range"` // default true
 }
 
 type CPRVWAPConfig struct {
+	Timeframe         string  `toml:"timeframe"`           // default "5m"
+	CSVFile           string  `toml:"csv_file"`            // default "high_beta_stocks.csv"
+	Limit             int     `toml:"limit"`               // default 50
 	EntryWindowStart  int     `toml:"entry_window_start"`  // minutes from midnight, default 570 (9:30 AM)
 	EntryWindowEnd    int     `toml:"entry_window_end"`    // minutes from midnight, default 840 (2:00 PM)
 	RSILongThreshold  float64 `toml:"rsi_long_threshold"`  // default 50
@@ -37,19 +65,56 @@ type CPRVWAPConfig struct {
 	MaxEMADistPct     float64 `toml:"max_ema_dist_pct"`    // max % distance from EMA9, default 0.5
 }
 
+type DonchianConfig struct {
+	Timeframe string `toml:"timeframe"` // default "day"
+	CSVFile   string `toml:"csv_file"`  // default "high_beta_stocks.csv"
+	Limit     int    `toml:"limit"`     // default 50
+}
+
+type EMA20PullbackConfig struct {
+	Timeframe     string  `toml:"timeframe"`      // default "day"
+	CSVFile       string  `toml:"csv_file"`       // default "high_beta_stocks.csv"
+	Limit         int     `toml:"limit"`          // default 50
+	SLMultiplier  float64 `toml:"sl_multiplier"`  // default 2.0
+	TPMultiplier  float64 `toml:"tp_multiplier"`  // default 2.0
+	MaxConcurrent int     `toml:"max_concurrent"` // default 5
+	// PullbackEMA selects which EMA the entry waits for a pullback touch to:
+	// 20 (default, faster/shallower) or 50 (deeper, less frequent). The trend
+	// filters (EMA50 > SMA200, EMA20 > EMA50) are unchanged.
+	PullbackEMA int `toml:"pullback_ema"` // default 20
+}
+
 type Config struct {
-	Strategy  string       `toml:"strategy"`
-	CSVFile   string       `toml:"csv_file"`
-	Limit     int          `toml:"limit"`
-	Timeframe string       `toml:"timeframe"`
-	APIKey    string       `toml:"api_key"`
-	APISecret string       `toml:"api_secret"`
-	ORB       ORBConfig    `toml:"orb"`
-	CPRVWAP   CPRVWAPConfig `toml:"cprvwap"`
+	Strategy      string              `toml:"strategy"`
+	APIKey        string              `toml:"api_key"`
+	APISecret     string              `toml:"api_secret"`
+	UptrendOnly   *bool               `toml:"uptrend_only"`
+	ORB           ORBConfig           `toml:"orb"`
+	CPRVWAP       CPRVWAPConfig       `toml:"cprvwap"`
+	Donchian      DonchianConfig      `toml:"donchian"`
+	EMA20Pullback EMA20PullbackConfig `toml:"ema20_pullback"`
+}
+
+// ActiveStrategySettings returns the Timeframe, CSVFile, and Limit for whichever
+// strategy is currently selected. Callers use this instead of the old top-level fields.
+func (c *Config) ActiveStrategySettings() StrategySettings {
+	switch c.Strategy {
+	case "cprvwap":
+		return StrategySettings{Timeframe: c.CPRVWAP.Timeframe, CSVFile: c.CPRVWAP.CSVFile, Limit: c.CPRVWAP.Limit}
+	case "donchian":
+		return StrategySettings{Timeframe: c.Donchian.Timeframe, CSVFile: c.Donchian.CSVFile, Limit: c.Donchian.Limit}
+	case "ema20_pullback":
+		return StrategySettings{Timeframe: c.EMA20Pullback.Timeframe, CSVFile: c.EMA20Pullback.CSVFile, Limit: c.EMA20Pullback.Limit}
+	default: // "orb" and anything unknown
+		return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
+	}
 }
 
 func DefaultORBConfig() ORBConfig {
 	return ORBConfig{
+		Timeframe:         "5m",
+		CSVFile:           "high_beta_stocks.csv",
+		Limit:             50,
 		EntryWindowEnd:    10*60 + 30,
 		RSILongThreshold:  50,
 		RSIShortThreshold: 40,
@@ -60,122 +125,23 @@ func DefaultORBConfig() ORBConfig {
 		TargetMultiplier:  3.0,
 		MaxConcurrent:     5,
 		RelVolThreshold:   1.5,
-		BodyStrengthThreshold: 0.6,
-		MaxGapPct:            3.0,
-		MaxVWAPDistPct:       1.5,
+		VolThrustMult:     1.0,
+		MaxVWAPDistATR:    1.5,
+		ADXRisingEps:      0,
+		OneTradePerDay:    boolPtr(true),
+		StopFloorAtRange:  boolPtr(true),
 	}
 }
 
-func LoadConfig(path string) (*Config, error) {
-	var config Config
-	if _, err := toml.DecodeFile(path, &config); err != nil {
-		return nil, fmt.Errorf("failed to load config file: %w", err)
-	}
-
-	// Validate required fields
-	if config.APIKey == "" || config.APISecret == "" {
-		return nil, fmt.Errorf("api_key and api_secret are required in config file")
-	}
-
-	// Set defaults if empty
-	if config.Strategy == "" {
-		config.Strategy = "orb"
-	}
-	if config.CSVFile == "" {
-		config.CSVFile = "high_beta_stocks.csv"
-	}
-	if config.Limit == 0 {
-		config.Limit = 50
-	}
-	if config.Timeframe == "" {
-		config.Timeframe = "5m"
-	}
-
-	// ORB defaults
-	defaults := DefaultORBConfig()
-	if config.ORB.EntryWindowEnd == 0 {
-		config.ORB.EntryWindowEnd = defaults.EntryWindowEnd
-	}
-	if config.ORB.RSILongThreshold == 0 {
-		config.ORB.RSILongThreshold = defaults.RSILongThreshold
-	}
-	if config.ORB.RSIShortThreshold == 0 {
-		config.ORB.RSIShortThreshold = defaults.RSIShortThreshold
-	}
-	if config.ORB.ADXThreshold == 0 {
-		config.ORB.ADXThreshold = defaults.ADXThreshold
-	}
-	if config.ORB.MinRangeATR == 0 {
-		config.ORB.MinRangeATR = defaults.MinRangeATR
-	}
-	if config.ORB.MaxRangeATR == 0 {
-		config.ORB.MaxRangeATR = defaults.MaxRangeATR
-	}
-	if config.ORB.SLMultiplier == 0 {
-		config.ORB.SLMultiplier = defaults.SLMultiplier
-	}
-	if config.ORB.TargetMultiplier == 0 {
-		config.ORB.TargetMultiplier = defaults.TargetMultiplier
-	}
-	if config.ORB.MaxConcurrent == 0 {
-		config.ORB.MaxConcurrent = defaults.MaxConcurrent
-	}
-	if config.ORB.RelVolThreshold == 0 {
-		config.ORB.RelVolThreshold = defaults.RelVolThreshold
-	}
-	if config.ORB.BodyStrengthThreshold == 0 {
-		config.ORB.BodyStrengthThreshold = defaults.BodyStrengthThreshold
-	}
-	if config.ORB.MaxGapPct == 0 {
-		config.ORB.MaxGapPct = defaults.MaxGapPct
-	}
-	if config.ORB.MaxVWAPDistPct == 0 {
-		config.ORB.MaxVWAPDistPct = defaults.MaxVWAPDistPct
-	}
-
-	// CPRVWAP defaults
-	cprvwapDefaults := DefaultCPRVWAPConfig()
-	if config.CPRVWAP.EntryWindowStart == 0 {
-		config.CPRVWAP.EntryWindowStart = cprvwapDefaults.EntryWindowStart
-	}
-	if config.CPRVWAP.EntryWindowEnd == 0 {
-		config.CPRVWAP.EntryWindowEnd = cprvwapDefaults.EntryWindowEnd
-	}
-	if config.CPRVWAP.RSILongThreshold == 0 {
-		config.CPRVWAP.RSILongThreshold = cprvwapDefaults.RSILongThreshold
-	}
-	if config.CPRVWAP.RSIShortThreshold == 0 {
-		config.CPRVWAP.RSIShortThreshold = cprvwapDefaults.RSIShortThreshold
-	}
-	if config.CPRVWAP.ADXThreshold == 0 {
-		config.CPRVWAP.ADXThreshold = cprvwapDefaults.ADXThreshold
-	}
-	if config.CPRVWAP.SLMultiplier == 0 {
-		config.CPRVWAP.SLMultiplier = cprvwapDefaults.SLMultiplier
-	}
-	if config.CPRVWAP.TargetMultiplier == 0 {
-		config.CPRVWAP.TargetMultiplier = cprvwapDefaults.TargetMultiplier
-	}
-	if config.CPRVWAP.MaxConcurrent == 0 {
-		config.CPRVWAP.MaxConcurrent = cprvwapDefaults.MaxConcurrent
-	}
-	if config.CPRVWAP.MinCPRWidthPct == 0 {
-		config.CPRVWAP.MinCPRWidthPct = cprvwapDefaults.MinCPRWidthPct
-	}
-	if config.CPRVWAP.MaxCPRWidthPct == 0 {
-		config.CPRVWAP.MaxCPRWidthPct = cprvwapDefaults.MaxCPRWidthPct
-	}
-	if config.CPRVWAP.MaxEMADistPct == 0 {
-		config.CPRVWAP.MaxEMADistPct = cprvwapDefaults.MaxEMADistPct
-	}
-
-	return &config, nil
-}
+func boolPtr(b bool) *bool { return &b }
 
 func DefaultCPRVWAPConfig() CPRVWAPConfig {
 	return CPRVWAPConfig{
-		EntryWindowStart:  9*60 + 30, // 9:30 AM
-		EntryWindowEnd:    14 * 60,   // 2:00 PM
+		Timeframe:         "5m",
+		CSVFile:           "high_beta_stocks.csv",
+		Limit:             50,
+		EntryWindowStart:  9*60 + 30,
+		EntryWindowEnd:    14 * 60,
 		RSILongThreshold:  50,
 		RSIShortThreshold: 50,
 		ADXThreshold:      20,
@@ -186,4 +152,179 @@ func DefaultCPRVWAPConfig() CPRVWAPConfig {
 		MaxCPRWidthPct:    2.0,
 		MaxEMADistPct:     0.5,
 	}
+}
+
+func DefaultDonchianConfig() DonchianConfig {
+	return DonchianConfig{
+		Timeframe: "day",
+		CSVFile:   "high_beta_stocks.csv",
+		Limit:     50,
+	}
+}
+
+func DefaultEMA20PullbackConfig() EMA20PullbackConfig {
+	return EMA20PullbackConfig{
+		Timeframe:     "day",
+		CSVFile:       "high_beta_stocks.csv",
+		Limit:         50,
+		SLMultiplier:  3.0,
+		TPMultiplier:  4.0,
+		MaxConcurrent: 5,
+		PullbackEMA:   20,
+	}
+}
+
+func LoadConfig(path string) (*Config, error) {
+	var config Config
+	if _, err := toml.DecodeFile(path, &config); err != nil {
+		return nil, fmt.Errorf("failed to load config file: %w", err)
+	}
+
+	if config.APIKey == "" || config.APISecret == "" {
+		return nil, fmt.Errorf("api_key and api_secret are required in config file")
+	}
+
+	if config.UptrendOnly == nil {
+		t := true
+		config.UptrendOnly = &t
+	}
+
+	if config.Strategy == "" {
+		config.Strategy = "orb"
+	}
+
+	// ORB defaults
+	orbD := DefaultORBConfig()
+	if config.ORB.Timeframe == "" {
+		config.ORB.Timeframe = orbD.Timeframe
+	}
+	if config.ORB.CSVFile == "" {
+		config.ORB.CSVFile = orbD.CSVFile
+	}
+	if config.ORB.Limit == 0 {
+		config.ORB.Limit = orbD.Limit
+	}
+	if config.ORB.EntryWindowEnd == 0 {
+		config.ORB.EntryWindowEnd = orbD.EntryWindowEnd
+	}
+	if config.ORB.RSILongThreshold == 0 {
+		config.ORB.RSILongThreshold = orbD.RSILongThreshold
+	}
+	if config.ORB.RSIShortThreshold == 0 {
+		config.ORB.RSIShortThreshold = orbD.RSIShortThreshold
+	}
+	if config.ORB.ADXThreshold == 0 {
+		config.ORB.ADXThreshold = orbD.ADXThreshold
+	}
+	if config.ORB.MinRangeATR == 0 {
+		config.ORB.MinRangeATR = orbD.MinRangeATR
+	}
+	if config.ORB.MaxRangeATR == 0 {
+		config.ORB.MaxRangeATR = orbD.MaxRangeATR
+	}
+	if config.ORB.SLMultiplier == 0 {
+		config.ORB.SLMultiplier = orbD.SLMultiplier
+	}
+	if config.ORB.TargetMultiplier == 0 {
+		config.ORB.TargetMultiplier = orbD.TargetMultiplier
+	}
+	if config.ORB.MaxConcurrent == 0 {
+		config.ORB.MaxConcurrent = orbD.MaxConcurrent
+	}
+	if config.ORB.RelVolThreshold == 0 {
+		config.ORB.RelVolThreshold = orbD.RelVolThreshold
+	}
+	if config.ORB.VolThrustMult == 0 {
+		config.ORB.VolThrustMult = orbD.VolThrustMult
+	}
+	// MaxVWAPDistATR and ADXRisingEps default to 0 (disabled/strict), so no fill needed.
+	if config.ORB.OneTradePerDay == nil {
+		config.ORB.OneTradePerDay = orbD.OneTradePerDay
+	}
+	if config.ORB.StopFloorAtRange == nil {
+		config.ORB.StopFloorAtRange = orbD.StopFloorAtRange
+	}
+
+	// CPRVWAP defaults
+	cprD := DefaultCPRVWAPConfig()
+	if config.CPRVWAP.Timeframe == "" {
+		config.CPRVWAP.Timeframe = cprD.Timeframe
+	}
+	if config.CPRVWAP.CSVFile == "" {
+		config.CPRVWAP.CSVFile = cprD.CSVFile
+	}
+	if config.CPRVWAP.Limit == 0 {
+		config.CPRVWAP.Limit = cprD.Limit
+	}
+	if config.CPRVWAP.EntryWindowStart == 0 {
+		config.CPRVWAP.EntryWindowStart = cprD.EntryWindowStart
+	}
+	if config.CPRVWAP.EntryWindowEnd == 0 {
+		config.CPRVWAP.EntryWindowEnd = cprD.EntryWindowEnd
+	}
+	if config.CPRVWAP.RSILongThreshold == 0 {
+		config.CPRVWAP.RSILongThreshold = cprD.RSILongThreshold
+	}
+	if config.CPRVWAP.RSIShortThreshold == 0 {
+		config.CPRVWAP.RSIShortThreshold = cprD.RSIShortThreshold
+	}
+	if config.CPRVWAP.ADXThreshold == 0 {
+		config.CPRVWAP.ADXThreshold = cprD.ADXThreshold
+	}
+	if config.CPRVWAP.SLMultiplier == 0 {
+		config.CPRVWAP.SLMultiplier = cprD.SLMultiplier
+	}
+	if config.CPRVWAP.TargetMultiplier == 0 {
+		config.CPRVWAP.TargetMultiplier = cprD.TargetMultiplier
+	}
+	if config.CPRVWAP.MaxConcurrent == 0 {
+		config.CPRVWAP.MaxConcurrent = cprD.MaxConcurrent
+	}
+	if config.CPRVWAP.MinCPRWidthPct == 0 {
+		config.CPRVWAP.MinCPRWidthPct = cprD.MinCPRWidthPct
+	}
+	if config.CPRVWAP.MaxCPRWidthPct == 0 {
+		config.CPRVWAP.MaxCPRWidthPct = cprD.MaxCPRWidthPct
+	}
+	if config.CPRVWAP.MaxEMADistPct == 0 {
+		config.CPRVWAP.MaxEMADistPct = cprD.MaxEMADistPct
+	}
+
+	// Donchian defaults
+	donD := DefaultDonchianConfig()
+	if config.Donchian.Timeframe == "" {
+		config.Donchian.Timeframe = donD.Timeframe
+	}
+	if config.Donchian.CSVFile == "" {
+		config.Donchian.CSVFile = donD.CSVFile
+	}
+	if config.Donchian.Limit == 0 {
+		config.Donchian.Limit = donD.Limit
+	}
+
+	// EMA20Pullback defaults
+	ema20D := DefaultEMA20PullbackConfig()
+	if config.EMA20Pullback.Timeframe == "" {
+		config.EMA20Pullback.Timeframe = ema20D.Timeframe
+	}
+	if config.EMA20Pullback.CSVFile == "" {
+		config.EMA20Pullback.CSVFile = ema20D.CSVFile
+	}
+	if config.EMA20Pullback.Limit == 0 {
+		config.EMA20Pullback.Limit = ema20D.Limit
+	}
+	if config.EMA20Pullback.SLMultiplier == 0 {
+		config.EMA20Pullback.SLMultiplier = ema20D.SLMultiplier
+	}
+	if config.EMA20Pullback.TPMultiplier == 0 {
+		config.EMA20Pullback.TPMultiplier = ema20D.TPMultiplier
+	}
+	if config.EMA20Pullback.MaxConcurrent == 0 {
+		config.EMA20Pullback.MaxConcurrent = ema20D.MaxConcurrent
+	}
+	if config.EMA20Pullback.PullbackEMA == 0 {
+		config.EMA20Pullback.PullbackEMA = ema20D.PullbackEMA
+	}
+
+	return &config, nil
 }
