@@ -172,8 +172,12 @@ func main() {
 	// Broker Adapter (The Execution Arm)
 	kiteAdapter := broker.NewZerodhaAdapter(kc, symbolToToken)
 
-	// Risk Manager (The Gatekeeper) - Max Loss ₹5000, Max 10 Trades Total, Max 3 Per Stock
-	riskMgr := risk.NewManager(store, decimal.NewFromInt(5000), 10, 3)
+	// Risk Manager (The Gatekeeper)
+	riskMgr := risk.NewManager(store,
+		decimal.NewFromInt(int64(cfg.Risk.MaxDailyLoss)),
+		cfg.Risk.MaxTradesPerDay,
+		cfg.Risk.MaxTradesPerStock,
+	)
 
 	// Strategy (The Brain)
 	var strat core.Strategy
@@ -225,6 +229,10 @@ func main() {
 	engine.MaxConcurrent = maxConcurrent
 	engine.UptrendOnly = *cfg.UptrendOnly
 	engine.DataProvider = kiteAdapter
+	engine.MinBalance = int64(cfg.Engine.MinBalance)
+	engine.MinCapitalPerTrade = int64(cfg.Engine.MinCapitalPerTrade)
+	engine.MaxCapitalPerTrade = int64(cfg.Engine.MaxCapitalPerTrade)
+	engine.TradeCutoffMin = cfg.Engine.TradeCutoffMin
 	engine.InitNiftyEMAs()
 
 	// Web Dashboard

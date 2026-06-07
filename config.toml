@@ -2,6 +2,18 @@
 
 # Strategy to run: orb, cprvwap, donchian, ema20_pullback
 strategy = "orb"
+uptrend_only = false
+
+[risk]
+max_daily_loss       = 5000   # INR; kill switch triggers when daily PnL drops below -max_daily_loss
+max_trades_per_day   = 10     # total signals executed across all symbols
+max_trades_per_stock = 0      # 0 = disabled; ORB's one_trade_per_day already caps per-symbol entries
+
+[engine]
+min_balance          = 3000   # INR; skip all signals when available balance is below this
+min_capital_per_trade = 30000 # INR floor allocated per open slot
+max_capital_per_trade = 50000 # INR cap allocated per open slot
+trade_cutoff_min     = 845    # minutes from midnight (845 = 14:05); no new signals after this time
 
 # Zerodha API Credentials
 api_key = ""

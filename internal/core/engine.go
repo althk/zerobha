@@ -27,6 +27,10 @@ type Engine struct {
 	MaxConcurrent     int
 	UptrendOnly       bool
 	DataProvider      DataProvider
+	MinBalance        int64
+	MinCapitalPerTrade int64
+	MaxCapitalPerTrade int64
+	TradeCutoffMin    int
 
 	niftyEMA50     *indicators.EMA
 	niftyEMA200    *indicators.EMA
@@ -37,16 +41,20 @@ type Engine struct {
 
 func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *broker.InstrumentManager, d *db.Store) *Engine {
 	e := &Engine{
-		Strategy:          s,
-		Broker:            b,
-		Risk:              r,
-		Journal:           j,
-		InstrumentManager: im,
-		DB:                d,
-		MaxConcurrent:     5,
-		UptrendOnly:       true,
-		niftyEMA50:        indicators.NewEMA(50),
-		niftyEMA200:       indicators.NewEMA(200),
+		Strategy:           s,
+		Broker:             b,
+		Risk:               r,
+		Journal:            j,
+		InstrumentManager:  im,
+		DB:                 d,
+		MaxConcurrent:      5,
+		UptrendOnly:        true,
+		MinBalance:         3000,
+		MinCapitalPerTrade: 30000,
+		MaxCapitalPerTrade: 50000,
+		TradeCutoffMin:     14*60 + 5,
+		niftyEMA50:         indicators.NewEMA(50),
+		niftyEMA200:        indicators.NewEMA(200),
 	}
 	e.loadLeverageMap()
 	return e
@@ -124,7 +132,9 @@ func (e *Engine) loadLeverageMap() {
 	e.LeverageMap = make(map[string]float64)
 	file, err := os.Open("zerodha-mis-margins.csv")
 	if err != nil {
-		log.Printf("WARNING: Failed to open leverage CSV: %v", err)
+		if !os.IsNotExist(err) {
+			log.Printf("WARNING: Failed to open leverage CSV: %v", err)
+		}
 		return
 	}
 	defer file.Close()
@@ -155,9 +165,8 @@ func (e *Engine) loadLeverageMap() {
 
 // Execute is called whenever a candle closes
 func (e *Engine) Execute(candle models.Candle) {
-	// Stop accepting new signals after 14:05 (new trade cutoff)
 	h, m, _ := candle.EndTime.Clock()
-	if h*60+m >= 14*60+5 {
+	if h*60+m >= e.TradeCutoffMin {
 		return
 	}
 
@@ -289,7 +298,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		log.Printf("Skipping signal for %s: failed to fetch balance: %v", signal.Symbol, err)
 		return
 	}
-	if balance.LessThan(decimal.NewFromInt(3000)) {
+	if balance.LessThan(decimal.NewFromInt(e.MinBalance)) {
 		log.Printf("Skipping signal for %s: Insufficient balance", signal.Symbol)
 		return
 	}
@@ -309,8 +318,8 @@ func (e *Engine) Execute(candle models.Candle) {
 		log.Printf("No remaining slots for new positions (open: %d, max: %d)", openCount, maxConcurrent)
 		return
 	}
-	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(30000))
-	capital = decimal.Min(capital, decimal.NewFromInt(50000))
+	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(e.MinCapitalPerTrade))
+	capital = decimal.Min(capital, decimal.NewFromInt(e.MaxCapitalPerTrade))
 
 	leverage := decimal.NewFromInt(1)
 	if signal.ProductType == "MIS" {

@@ -43,11 +43,14 @@ func TestEngineTickRounding(t *testing.T) {
 
 	engine := NewEngine(strategy, broker, riskMgr, nil, nil, nil)
 
-	// Execute
+	// Execute — use a fixed morning time so the trade-cutoff gate never fires
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	now := time.Now().In(loc)
+	morning := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, loc)
 	candle := models.Candle{
 		Symbol:  "RELIANCE",
 		Close:   decimal.NewFromFloat(2500.0),
-		EndTime: time.Now(),
+		EndTime: morning,
 	}
 	engine.Execute(candle)
 

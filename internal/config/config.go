@@ -94,11 +94,32 @@ type EMA20PullbackConfig struct {
 	PullbackEMA int `toml:"pullback_ema"` // default 20
 }
 
+// RiskConfig holds parameters for the risk manager.
+// MaxTradesPerStock is a cross-strategy cap; note that ORB's one_trade_per_day
+// already enforces a per-symbol daily limit at the strategy level. Set
+// MaxTradesPerStock to 0 to disable the risk-manager cap (recommended when
+// one_trade_per_day is true, to avoid redundant and potentially conflicting checks).
+type RiskConfig struct {
+	MaxDailyLoss      int `toml:"max_daily_loss"`       // INR, default 5000
+	MaxTradesPerDay   int `toml:"max_trades_per_day"`   // default 10
+	MaxTradesPerStock int `toml:"max_trades_per_stock"` // default 0 (disabled); use one_trade_per_day for ORB
+}
+
+// EngineConfig holds capital-sizing and trade-gating parameters for the engine.
+type EngineConfig struct {
+	MinBalance         int `toml:"min_balance"`          // INR floor below which all signals are skipped, default 3000
+	MinCapitalPerTrade int `toml:"min_capital_per_trade"` // INR floor per slot, default 30000
+	MaxCapitalPerTrade int `toml:"max_capital_per_trade"` // INR cap per slot, default 50000
+	TradeCutoffMin     int `toml:"trade_cutoff_min"`      // minutes from midnight, default 845 (14:05)
+}
+
 type Config struct {
 	Strategy      string              `toml:"strategy"`
 	APIKey        string              `toml:"api_key"`
 	APISecret     string              `toml:"api_secret"`
 	UptrendOnly   *bool               `toml:"uptrend_only"`
+	Risk          RiskConfig          `toml:"risk"`
+	Engine        EngineConfig        `toml:"engine"`
 	ORB           ORBConfig           `toml:"orb"`
 	CPRVWAP       CPRVWAPConfig       `toml:"cprvwap"`
 	Donchian      DonchianConfig      `toml:"donchian"`
@@ -117,6 +138,23 @@ func (c *Config) ActiveStrategySettings() StrategySettings {
 		return StrategySettings{Timeframe: c.EMA20Pullback.Timeframe, CSVFile: c.EMA20Pullback.CSVFile, Limit: c.EMA20Pullback.Limit}
 	default: // "orb" and anything unknown
 		return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
+	}
+}
+
+func DefaultRiskConfig() RiskConfig {
+	return RiskConfig{
+		MaxDailyLoss:      5000,
+		MaxTradesPerDay:   10,
+		MaxTradesPerStock: 0,
+	}
+}
+
+func DefaultEngineConfig() EngineConfig {
+	return EngineConfig{
+		MinBalance:         3000,
+		MinCapitalPerTrade: 30000,
+		MaxCapitalPerTrade: 50000,
+		TradeCutoffMin:     14*60 + 5,
 	}
 }
 
@@ -201,6 +239,31 @@ func LoadConfig(path string) (*Config, error) {
 
 	if config.Strategy == "" {
 		config.Strategy = "orb"
+	}
+
+	// Risk defaults
+	riskD := DefaultRiskConfig()
+	if config.Risk.MaxDailyLoss == 0 {
+		config.Risk.MaxDailyLoss = riskD.MaxDailyLoss
+	}
+	if config.Risk.MaxTradesPerDay == 0 {
+		config.Risk.MaxTradesPerDay = riskD.MaxTradesPerDay
+	}
+	// MaxTradesPerStock intentionally defaults to 0 (disabled); no fill needed.
+
+	// Engine defaults
+	engD := DefaultEngineConfig()
+	if config.Engine.MinBalance == 0 {
+		config.Engine.MinBalance = engD.MinBalance
+	}
+	if config.Engine.MinCapitalPerTrade == 0 {
+		config.Engine.MinCapitalPerTrade = engD.MinCapitalPerTrade
+	}
+	if config.Engine.MaxCapitalPerTrade == 0 {
+		config.Engine.MaxCapitalPerTrade = engD.MaxCapitalPerTrade
+	}
+	if config.Engine.TradeCutoffMin == 0 {
+		config.Engine.TradeCutoffMin = engD.TradeCutoffMin
 	}
 
 	// ORB defaults
