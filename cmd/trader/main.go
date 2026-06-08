@@ -214,8 +214,9 @@ func main() {
 	j, err := journal.NewJournal(fmt.Sprintf("logs/journal_%s.csv", today.Format("2006-01-02")))
 	if err != nil {
 		log.Printf("WARNING: Failed to create journal: %v", err)
+	} else {
+		defer j.Close()
 	}
-	defer j.Close()
 
 	// Instrument Manager
 	im := broker.NewInstrumentManager()
