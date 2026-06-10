@@ -83,13 +83,30 @@ def main():
     parser.add_argument(
         "--include-all-if-no-leaders",
         action="store_true",
-        help="Fall back to all sectors if no LEADING/IMPROVING found",
+        help="Fall back to top sectors by composite score if no LEADING/IMPROVING found",
+    )
+    parser.add_argument(
+        "--allow-unfiltered",
+        action="store_true",
+        help="Allow building the watchlist without an industry filter when "
+        "no selected sector has an industry mapping",
     )
     args = parser.parse_args()
 
     print(f"{'='*70}")
     print(f"BUILD WATCHLIST PIPELINE")
     print(f"{'='*70}")
+
+    # Fail fast before any network calls
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    find_beta_script = os.path.join(script_dir, "find_high_beta.py")
+
+    if not os.path.exists(args.symbols):
+        print(f"ERROR: Symbols file not found: {args.symbols}")
+        sys.exit(1)
+    if not os.path.exists(find_beta_script):
+        print(f"ERROR: Script not found: {find_beta_script}")
+        sys.exit(1)
 
     # Step 1: Sector momentum analysis
     print(f"\n[Step 1/3] Running sector momentum analysis...")
@@ -112,15 +129,16 @@ def main():
 
     if actionable.empty:
         if args.include_all_if_no_leaders:
-            print("  No LEADING/IMPROVING sectors found. Using top by composite score.")
+            print("  WARNING: No LEADING/IMPROVING sectors - weak market regime.")
+            print("  Falling back to top sectors by composite score.")
+            print("  Consider reducing position size or skipping the session.")
             actionable = sector_report.head(args.top_sectors)
         else:
-            print("  No LEADING/IMPROVING sectors found.")
+            print("  No LEADING/IMPROVING sectors found. Not building a watchlist.")
             print(
                 "  Use --include-all-if-no-leaders to fall back to top sectors by score."
             )
-            # Still produce a watchlist from top composite sectors
-            actionable = sector_report.head(args.top_sectors)
+            sys.exit(2)
 
     selected_sectors = actionable["Sector"].tolist()
     print(f"  Selected sectors: {selected_sectors}")
@@ -128,22 +146,44 @@ def main():
     # Map to Nifty 500 industry names
     industries = set()
     for sector in selected_sectors:
-        mapped = SECTOR_INDUSTRY_MAP.get(sector, [])
+        mapped = SECTOR_INDUSTRY_MAP.get(sector)
+        if not mapped:
+            print(f"  WARNING: No industry mapping for '{sector}' - sector skipped.")
+            continue
         industries.update(mapped)
 
     if not industries:
-        print("  WARNING: No industry mapping found for selected sectors.")
-        print("  Falling back to all industries.")
-        industries = None
+        if args.allow_unfiltered:
+            print("  WARNING: No industries mapped for any selected sector.")
+            print("  Building UNFILTERED watchlist from all industries (--allow-unfiltered).")
+            industries = None
+        else:
+            print("  ERROR: None of the selected sectors map to industries.")
+            print("  Add mappings to SECTOR_INDUSTRY_MAP or pass --allow-unfiltered.")
+            sys.exit(2)
 
+    # Validate mapped industries against the symbols file: find_high_beta
+    # matches the Industry column exactly, so a name drift would silently
+    # filter out everything
     if industries:
+        symbols_df = pd.read_csv(args.symbols)
+        if "Industry" in symbols_df.columns:
+            available = set(symbols_df["Industry"].astype(str).str.strip())
+            matched = {i for i in industries if i in available}
+            missing = sorted(industries - matched)
+            if missing:
+                print(f"  WARNING: Industries not found in {args.symbols}: {missing}")
+            if not matched:
+                print(
+                    "  ERROR: No mapped industry matches the symbols file. "
+                    "Check SECTOR_INDUSTRY_MAP names against the Industry column."
+                )
+                sys.exit(2)
+            industries = matched
         print(f"  Mapped industries: {sorted(industries)}")
 
     # Step 3: Run find_high_beta with sector filter
     print(f"\n[Step 3/3] Finding high-beta stocks in selected sectors...")
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    find_beta_script = os.path.join(script_dir, "find_high_beta.py")
 
     cmd = [
         sys.executable,
@@ -176,6 +216,13 @@ def main():
 
     if os.path.exists(args.output):
         df = pd.read_csv(args.output)
+
+        # Stamp the generation date (appended last so column-0 symbol
+        # readers are unaffected) for post-trade review
+        if "as_of" not in df.columns:
+            df["as_of"] = datetime.now().strftime("%Y-%m-%d")
+            df.to_csv(args.output, index=False)
+
         print(f"  Watchlist: {args.output} ({len(df)} stocks)")
         print(f"  Sectors:   {args.sector_output}")
 
