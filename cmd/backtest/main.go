@@ -38,7 +38,37 @@ func main() {
 	slMult := flag.Float64("sl-mult", 0, "ema20_pullback: override stop-loss multiplier (0 = use config default)")
 	pullbackEMA := flag.Int("pullback-ema", 0, "ema20_pullback: override pullback EMA (20 or 50; 0 = use config default)")
 	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
+	configFile := flag.String("config", "", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
 	flag.Parse()
+
+	// When a TOML config is given, it supplies the strategy, symbol CSV,
+	// timeframe, limit, risk limits, and per-strategy knobs — the same values
+	// the live trader runs with. Explicitly passed flags override it.
+	var appCfg *config.Config
+	if *configFile != "" {
+		var cfgErr error
+		appCfg, cfgErr = config.LoadConfig(*configFile)
+		if cfgErr != nil {
+			log.Fatalf("Failed to load config %s: %v", *configFile, cfgErr)
+		}
+		setFlags := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+		if !setFlags["strategy"] && appCfg.Strategy != "" {
+			*strategyName = appCfg.Strategy
+		}
+		appCfg.Strategy = *strategyName
+		settings := appCfg.ActiveStrategySettings()
+		if !setFlags["csv"] && settings.CSVFile != "" {
+			*csvFile = settings.CSVFile
+		}
+		if !setFlags["timeframe"] && settings.Timeframe != "" {
+			*timeframe = settings.Timeframe
+		}
+		if !setFlags["limit"] && settings.Limit > 0 {
+			*limit = settings.Limit
+		}
+		fmt.Printf("Loaded config from %s (strategy=%s csv=%s timeframe=%s)\n", *configFile, *strategyName, *csvFile, *timeframe)
+	}
 
 	var startDate, endDate time.Time
 	var err error
@@ -132,7 +162,14 @@ func main() {
 		simBroker := broker.NewSimBroker(initialCapital)
 
 		// Risk: Max Loss ₹1000/day, Max 20 trades/day Total, Max 2 trades/day per stock
-		riskMgr := risk.NewManager(nil, decimal.NewFromInt(1000), 20, 2)
+		// (overridden by the [risk] section when -config is given)
+		maxLoss, maxTrades, maxPerStock := decimal.NewFromInt(1000), 20, 2
+		if appCfg != nil {
+			maxLoss = decimal.NewFromInt(int64(appCfg.Risk.MaxDailyLoss))
+			maxTrades = appCfg.Risk.MaxTradesPerDay
+			maxPerStock = appCfg.Risk.MaxTradesPerStock
+		}
+		riskMgr := risk.NewManager(nil, maxLoss, maxTrades, maxPerStock)
 
 		// Strategy
 		var myStrategy core.Strategy
@@ -143,6 +180,9 @@ func main() {
 			myStrategy = strategy.NewCPRVWAPStrategy([]string{sym}, config.DefaultCPRVWAPConfig())
 		case "orb":
 			orbCfg := config.DefaultORBConfig()
+			if appCfg != nil {
+				orbCfg = appCfg.ORB
+			}
 			if *baseline {
 				orbCfg = orbConfigToBaseline(orbCfg)
 			}
@@ -152,6 +192,9 @@ func main() {
 			myStrategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
 		case "ema20_pullback":
 			emaCfg := config.DefaultEMA20PullbackConfig()
+			if appCfg != nil {
+				emaCfg = appCfg.EMA20Pullback
+			}
 			if *tpMult > 0 {
 				emaCfg.TPMultiplier = *tpMult
 			}

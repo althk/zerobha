@@ -107,7 +107,7 @@ type RiskConfig struct {
 
 // EngineConfig holds capital-sizing and trade-gating parameters for the engine.
 type EngineConfig struct {
-	MinBalance         int `toml:"min_balance"`          // INR floor below which all signals are skipped, default 3000
+	MinBalance         int `toml:"min_balance"`           // INR floor below which all signals are skipped, default 3000
 	MinCapitalPerTrade int `toml:"min_capital_per_trade"` // INR floor per slot, default 30000
 	MaxCapitalPerTrade int `toml:"max_capital_per_trade"` // INR cap per slot, default 50000
 	TradeCutoffMin     int `toml:"trade_cutoff_min"`      // minutes from midnight, default 845 (14:05)
@@ -160,24 +160,27 @@ func DefaultEngineConfig() EngineConfig {
 
 func DefaultORBConfig() ORBConfig {
 	return ORBConfig{
-		Timeframe:         "5m",
-		CSVFile:           "high_beta_stocks.csv",
-		Limit:             50,
-		EntryWindowEnd:    10*60 + 30,
-		RSILongThreshold:  50,
-		RSIShortThreshold: 40,
-		ADXThreshold:      20,
-		MinRangeATR:       1.0,
-		MaxRangeATR:       3.0,
-		SLMultiplier:      1.5,
-		TargetMultiplier:  3.0,
-		MaxConcurrent:     5,
-		RelVolThreshold:   1.5,
-		VolThrustMult:     1.0,
-		MaxVWAPDistATR:    1.5,
-		ADXRisingEps:      0,
-		OneTradePerDay:    boolPtr(true),
-		StopFloorAtRange:  boolPtr(true),
+		Timeframe:             "5m",
+		CSVFile:               "high_beta_stocks.csv",
+		Limit:                 50,
+		EntryWindowEnd:        10*60 + 30,
+		RSILongThreshold:      50,
+		RSIShortThreshold:     40,
+		ADXThreshold:          20,
+		MinRangeATR:           1.0,
+		MaxRangeATR:           3.0,
+		SLMultiplier:          1.5,
+		TargetMultiplier:      3.0,
+		MaxConcurrent:         5,
+		RelVolThreshold:       1.5,
+		VolThrustMult:         1.0,
+		MaxVWAPDistATR:        1.5,
+		MaxVWAPDistPct:        1.5,
+		BodyStrengthThreshold: 0.6,
+		MaxGapPct:             3.0,
+		ADXRisingEps:          0,
+		OneTradePerDay:        boolPtr(true),
+		StopFloorAtRange:      boolPtr(true),
 	}
 }
 
@@ -311,6 +314,15 @@ func LoadConfig(path string) (*Config, error) {
 		config.ORB.VolThrustMult = orbD.VolThrustMult
 	}
 	// MaxVWAPDistATR and ADXRisingEps default to 0 (disabled/strict), so no fill needed.
+	if config.ORB.MaxVWAPDistPct == 0 {
+		config.ORB.MaxVWAPDistPct = orbD.MaxVWAPDistPct
+	}
+	if config.ORB.BodyStrengthThreshold == 0 {
+		config.ORB.BodyStrengthThreshold = orbD.BodyStrengthThreshold
+	}
+	if config.ORB.MaxGapPct == 0 {
+		config.ORB.MaxGapPct = orbD.MaxGapPct
+	}
 	if config.ORB.OneTradePerDay == nil {
 		config.ORB.OneTradePerDay = orbD.OneTradePerDay
 	}
