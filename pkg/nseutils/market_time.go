@@ -18,6 +18,23 @@ func init() {
 	}
 }
 
+// IsMarketHours reports whether t falls within NSE trading hours
+// (Mon-Fri, 09:15-15:30 IST). It does not account for exchange holidays.
+func IsMarketHours(t time.Time) bool {
+	ist := t.In(istLocation)
+	if ist.Weekday() == time.Saturday || ist.Weekday() == time.Sunday {
+		return false
+	}
+	mins := ist.Hour()*60 + ist.Minute()
+	return mins >= 9*60+15 && mins <= 15*60+30
+}
+
+// MarketOpenTime returns 09:15 IST on the same calendar day as t.
+func MarketOpenTime(t time.Time) time.Time {
+	ist := t.In(istLocation)
+	return time.Date(ist.Year(), ist.Month(), ist.Day(), 9, 15, 0, 0, istLocation)
+}
+
 // CandleStartTime aligns a tick timestamp to the market open (09:15 IST)
 // strictly based on the provided interval.
 func CandleStartTime(tickTime time.Time, interval time.Duration) time.Time {

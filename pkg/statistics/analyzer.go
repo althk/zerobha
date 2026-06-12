@@ -73,6 +73,14 @@ func Analyze(trades []models.Trade, initialCapital decimal.Decimal) Performance 
 	stats.WinRate = (float64(wins) / float64(stats.TotalTrades)) * 100.0
 	stats.MaxDrawdown = maxDrawdownVal.Mul(decimal.NewFromInt(100)).InexactFloat64()
 
+	losses := stats.TotalTrades - wins
+	if wins > 0 {
+		stats.AverageWin = stats.GrossProfit.Div(decimal.NewFromInt(int64(wins)))
+	}
+	if losses > 0 {
+		stats.AverageLoss = stats.GrossLoss.Div(decimal.NewFromInt(int64(losses)))
+	}
+
 	// Sharpe: mean(PnL) / stddev(PnL) over the trade series. Needs >=2 trades
 	// for a defined sample stddev; with fewer, leave it at 0.
 	if stats.TotalTrades >= 2 {
@@ -124,6 +132,8 @@ func PrintTearSheet(stats Performance) {
 	fmt.Fprintf(w, "Max Drawdown\t%.2f%%\n", stats.MaxDrawdown)
 	fmt.Fprintf(w, "Gross Profit\t₹ %s\n", stats.GrossProfit.StringFixed(2))
 	fmt.Fprintf(w, "Gross Loss\t₹ %s\n", stats.GrossLoss.StringFixed(2))
+	fmt.Fprintf(w, "Average Win\t₹ %s\n", stats.AverageWin.StringFixed(2))
+	fmt.Fprintf(w, "Average Loss\t₹ %s\n", stats.AverageLoss.StringFixed(2))
 
 	fmt.Fprintln(w, "----------------------------------------")
 	_ = w.Flush()

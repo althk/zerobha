@@ -9,6 +9,7 @@ import (
 
 	"zerobha/internal/models"
 
+	"github.com/shopspring/decimal"
 	_ "modernc.org/sqlite" // Pure Go SQLite driver
 )
 
@@ -68,6 +69,31 @@ func (s *Store) initSchema() error {
 			value TEXT,
 			updated_at DATETIME
 		);`,
+		// Completed round-trip trades (entry+exit), reconciled from broker fills.
+		// trade_key is "<exit_order_id>:<lot_index>" so one exit order closing
+		// multiple entry lots produces multiple idempotent rows.
+		`CREATE TABLE IF NOT EXISTS trades (
+			trade_key TEXT PRIMARY KEY,
+			symbol TEXT,
+			strategy TEXT,
+			direction TEXT,
+			quantity REAL,
+			entry_price REAL,
+			exit_price REAL,
+			pnl REAL,
+			entry_time DATETIME,
+			exit_time DATETIME,
+			exit_reason TEXT
+		);`,
+		// Periodic intraday equity snapshots for the dashboard PnL curve.
+		`CREATE TABLE IF NOT EXISTS equity_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp DATETIME,
+			balance REAL,
+			realized_pnl REAL,
+			unrealized_pnl REAL,
+			open_positions INTEGER
+		);`,
 	}
 
 	for _, query := range queries {
@@ -116,6 +142,94 @@ func (s *Store) SaveSignal(sig *models.Signal) error {
 
 	_, err := s.db.Exec(query, sig.Symbol, strategy, sig.Type.String(), price, sl, tgt, time.Now())
 	return err
+}
+
+// --- Trade Methods ---
+
+// SaveTrade persists a completed round-trip trade. key must be unique per
+// matched lot (e.g. "<exit_order_id>:<lot_index>") so re-running the
+// reconciler over the same broker fills is idempotent.
+func (s *Store) SaveTrade(key string, t models.Trade) error {
+	query := `INSERT OR IGNORE INTO trades
+			  (trade_key, symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+
+	qty, _ := t.Quantity.Float64()
+	entry, _ := t.EntryPrice.Float64()
+	exit, _ := t.ExitPrice.Float64()
+	pnl, _ := t.PnL.Float64()
+
+	_, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason)
+	return err
+}
+
+// GetTradeHistory returns completed trades exited after `since`,
+// in chronological order (oldest first).
+func (s *Store) GetTradeHistory(since time.Time) ([]models.Trade, error) {
+	query := `SELECT symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason
+			  FROM trades WHERE exit_time >= ? ORDER BY exit_time ASC;`
+
+	rows, err := s.db.Query(query, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var trades []models.Trade
+	for rows.Next() {
+		var t models.Trade
+		var qty, entry, exit, pnl float64
+		if err := rows.Scan(&t.Symbol, &t.Strategy, &t.Direction, &qty, &entry, &exit, &pnl, &t.EntryTime, &t.ExitTime, &t.ExitReason); err != nil {
+			return nil, err
+		}
+		t.Quantity = decimal.NewFromFloat(qty)
+		t.EntryPrice = decimal.NewFromFloat(entry)
+		t.ExitPrice = decimal.NewFromFloat(exit)
+		t.PnL = decimal.NewFromFloat(pnl)
+		trades = append(trades, t)
+	}
+	return trades, rows.Err()
+}
+
+// --- Equity Snapshot Methods ---
+
+// EquityPoint is one periodic sample of account state used for the
+// intraday PnL curve on the dashboard.
+type EquityPoint struct {
+	Timestamp     time.Time `json:"timestamp"`
+	Balance       float64   `json:"balance"`
+	RealizedPnL   float64   `json:"realized_pnl"`
+	UnrealizedPnL float64   `json:"unrealized_pnl"`
+	OpenPositions int       `json:"open_positions"`
+}
+
+func (s *Store) SaveEquitySnapshot(p EquityPoint) error {
+	query := `INSERT INTO equity_snapshots (timestamp, balance, realized_pnl, unrealized_pnl, open_positions)
+			  VALUES (?, ?, ?, ?, ?);`
+	_, err := s.db.Exec(query, p.Timestamp, p.Balance, p.RealizedPnL, p.UnrealizedPnL, p.OpenPositions)
+	return err
+}
+
+// GetEquitySnapshots returns snapshots taken after `since`, oldest first.
+func (s *Store) GetEquitySnapshots(since time.Time) ([]EquityPoint, error) {
+	query := `SELECT timestamp, balance, realized_pnl, unrealized_pnl, open_positions
+			  FROM equity_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC;`
+
+	rows, err := s.db.Query(query, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []EquityPoint
+	for rows.Next() {
+		var p EquityPoint
+		if err := rows.Scan(&p.Timestamp, &p.Balance, &p.RealizedPnL, &p.UnrealizedPnL, &p.OpenPositions); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
 }
 
 // --- KV Store Methods (for Strategy State) ---

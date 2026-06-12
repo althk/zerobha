@@ -27,7 +27,7 @@ body {
 }
 
 .glass-container {
-    max-width: 1200px;
+    max-width: 1400px;
     margin: 0 auto;
 }
 
@@ -140,9 +140,119 @@ tbody tr:last-child td {
     border-bottom: none;
 }
 
+/* Header right side */
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+}
+
+/* Range selector */
+.range-selector {
+    display: flex;
+    gap: 0.25rem;
+    background: var(--card-bg);
+    border: var(--glass-border);
+    border-radius: 999px;
+    padding: 0.25rem;
+}
+
+.range-selector button {
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    padding: 0.3rem 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.range-selector button:hover {
+    color: var(--text-primary);
+}
+
+.range-selector button.active {
+    background: var(--accent-color);
+    color: #fff;
+}
+
+/* Metric card extras */
+.metric-card .metric-sub {
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+    color: var(--text-secondary);
+}
+
+.metric-sub .sep {
+    margin: 0 0.5rem;
+    color: var(--text-secondary);
+}
+
+.range-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    font-weight: 300;
+}
+
+/* Charts */
+.charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.chart-card h2 {
+    margin-bottom: 1rem;
+    font-size: 1.25rem;
+}
+
+.chart-card h2 small,
+.table-card h2 small {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 300;
+    margin-left: 0.5rem;
+}
+
+.chart-wrap {
+    position: relative;
+    height: 280px;
+}
+
 /* Utilities */
 .text-green { color: var(--success-color); }
 .text-red { color: var(--danger-color); }
+.text-muted { color: var(--text-secondary); font-size: 0.75rem; }
+
+.mono {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.empty-row {
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.pill {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.pill-accent {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+    background: transparent;
+}
 
 .badge {
     padding: 0.25rem 0.5rem;
@@ -159,6 +269,11 @@ tbody tr:last-child td {
     background: rgba(148, 163, 184, 0.2);
     color: #cbd5e1;
     border: 1px solid rgba(148, 163, 184, 0.3);
+}
+.badge-short {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 /* Scrollbar */

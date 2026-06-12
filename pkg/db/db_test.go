@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"testing"
+	"time"
 	"zerobha/internal/models"
 
 	"github.com/shopspring/decimal"
@@ -79,6 +80,79 @@ func TestDB(t *testing.T) {
 		}
 		if strat != "TEST_STRAT" {
 			t.Errorf("Expected TEST_STRAT, got %s", strat)
+		}
+	})
+
+	// Test Trade persistence + idempotency
+	t.Run("SaveTrade", func(t *testing.T) {
+		trade := models.Trade{
+			Symbol:     "INFY",
+			Strategy:   "TEST_STRAT",
+			Direction:  "LONG",
+			Quantity:   decimal.NewFromInt(10),
+			EntryPrice: decimal.NewFromFloat(1500),
+			ExitPrice:  decimal.NewFromFloat(1520),
+			PnL:        decimal.NewFromFloat(200),
+			EntryTime:  time.Now().Add(-time.Hour),
+			ExitTime:   time.Now(),
+		}
+
+		// Saving the same key twice must not duplicate
+		if err := store.SaveTrade("ORDER1:0", trade); err != nil {
+			t.Fatalf("SaveTrade failed: %v", err)
+		}
+		if err := store.SaveTrade("ORDER1:0", trade); err != nil {
+			t.Fatalf("SaveTrade (repeat) failed: %v", err)
+		}
+
+		trades, err := store.GetTradeHistory(time.Now().Add(-24 * time.Hour))
+		if err != nil {
+			t.Fatalf("GetTradeHistory failed: %v", err)
+		}
+		if len(trades) != 1 {
+			t.Fatalf("Expected 1 trade, got %d", len(trades))
+		}
+		got := trades[0]
+		if got.Strategy != "TEST_STRAT" || got.Direction != "LONG" {
+			t.Errorf("Unexpected trade row: %+v", got)
+		}
+		if !got.PnL.Equal(decimal.NewFromFloat(200)) {
+			t.Errorf("Expected PnL 200, got %s", got.PnL)
+		}
+
+		// A cutoff in the future must exclude the trade
+		trades, err = store.GetTradeHistory(time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatalf("GetTradeHistory (future cutoff) failed: %v", err)
+		}
+		if len(trades) != 0 {
+			t.Errorf("Expected 0 trades after future cutoff, got %d", len(trades))
+		}
+	})
+
+	// Test Equity Snapshots
+	t.Run("EquitySnapshots", func(t *testing.T) {
+		point := EquityPoint{
+			Timestamp:     time.Now(),
+			Balance:       50000,
+			RealizedPnL:   1200,
+			UnrealizedPnL: -300,
+			OpenPositions: 2,
+		}
+
+		if err := store.SaveEquitySnapshot(point); err != nil {
+			t.Fatalf("SaveEquitySnapshot failed: %v", err)
+		}
+
+		points, err := store.GetEquitySnapshots(time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatalf("GetEquitySnapshots failed: %v", err)
+		}
+		if len(points) != 1 {
+			t.Fatalf("Expected 1 snapshot, got %d", len(points))
+		}
+		if points[0].RealizedPnL != 1200 || points[0].OpenPositions != 2 {
+			t.Errorf("Unexpected snapshot: %+v", points[0])
 		}
 	})
 }

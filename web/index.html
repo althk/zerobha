@@ -6,6 +6,7 @@
     <title>Zerobha | Live Dashboard</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <div class="glass-container">
@@ -15,8 +16,17 @@
                 <h1>ZEROBHA</h1>
                 <span class="status-indicator online">LIVE</span>
             </div>
-            <div class="last-update">
-                Last Update: <span id="last-update-time">--:--:--</span>
+            <div class="header-right">
+                <div class="range-selector" id="range-selector">
+                    <button data-days="1">1D</button>
+                    <button data-days="7">7D</button>
+                    <button data-days="30" class="active">30D</button>
+                    <button data-days="90">90D</button>
+                    <button data-days="0">All</button>
+                </div>
+                <div class="last-update">
+                    Last Update: <span id="last-update-time">--:--:--</span>
+                </div>
             </div>
         </header>
 
@@ -27,17 +37,68 @@
                 <div class="value" id="balance">₹ 0.00</div>
             </div>
             <div class="card metric-card">
-                <h3>Realized PnL</h3>
+                <h3>Today's PnL</h3>
                 <div class="value pnl" id="pnl">₹ 0.00</div>
+                <div class="metric-sub" id="pnl-breakdown"></div>
             </div>
             <div class="card metric-card">
                 <h3>Active Positions</h3>
                 <div class="value" id="active-positions-count">0</div>
             </div>
+            <div class="card metric-card">
+                <h3>Net PnL <span class="range-label"></span></h3>
+                <div class="value" id="net-pnl">₹ 0.00</div>
+                <div class="metric-sub" id="trade-count"></div>
+            </div>
+            <div class="card metric-card">
+                <h3>Win Rate <span class="range-label"></span></h3>
+                <div class="value" id="win-rate">--</div>
+                <div class="metric-sub" id="profit-factor"></div>
+            </div>
+            <div class="card metric-card">
+                <h3>Max Drawdown <span class="range-label"></span></h3>
+                <div class="value" id="max-drawdown">₹ 0.00</div>
+                <div class="metric-sub" id="sharpe"></div>
+            </div>
+        </section>
+
+        <!-- Charts -->
+        <section class="charts-grid">
+            <div class="card chart-card">
+                <h2>Equity Curve <small>cumulative realized PnL · daily PnL</small></h2>
+                <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
+            </div>
+            <div class="card chart-card">
+                <h2>Today <small>intraday PnL (realized + unrealized)</small></h2>
+                <div class="chart-wrap"><canvas id="intraday-chart"></canvas></div>
+            </div>
         </section>
 
         <!-- Main Content -->
         <main>
+            <!-- Strategy Comparison -->
+            <section class="card table-card">
+                <h2>Strategy Performance <small class="range-label"></small></h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th>Trades</th>
+                            <th>Win Rate</th>
+                            <th>Net PnL</th>
+                            <th>Profit Factor</th>
+                            <th>Avg Win</th>
+                            <th>Avg Loss</th>
+                            <th>Sharpe</th>
+                            <th>Max DD</th>
+                        </tr>
+                    </thead>
+                    <tbody id="strategies-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </section>
+
             <!-- Positions Table -->
             <section class="card table-card">
                 <h2>Open Positions</h2>
@@ -74,6 +135,29 @@
                         </tr>
                     </thead>
                     <tbody id="orders-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Trade History -->
+            <section class="card table-card">
+                <h2>Trade History <small class="range-label"></small></h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Exit Time</th>
+                            <th>Symbol</th>
+                            <th>Strategy</th>
+                            <th>Direction</th>
+                            <th>Qty</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>Hold</th>
+                            <th>PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trade-history-body">
                         <!-- Populated by JS -->
                     </tbody>
                 </table>

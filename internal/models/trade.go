@@ -9,6 +9,7 @@ import (
 // Trade represents a completed Buy+Sell cycle
 type Trade struct {
 	Symbol     string          `json:"symbol"`
+	Strategy   string          `json:"strategy"`
 	EntryPrice decimal.Decimal `json:"entry_price"`
 	ExitPrice  decimal.Decimal `json:"exit_price"`
 	Quantity   decimal.Decimal `json:"quantity"`
