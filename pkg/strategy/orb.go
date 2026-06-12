@@ -207,12 +207,26 @@ func (s *ORBStrategy) Init(provider core.DataProvider) error {
 			continue
 		}
 
+		now := time.Now().In(loc)
+		today := now.Format("2006-01-02")
+
 		// Accumulate opening-range volume per historical day to compute AvgMorningVol
 		morningVolByDay := make(map[string]decimal.Decimal)
 		var lastDate string
 		var lastClose decimal.Decimal
+		var todayRangeHigh, todayRangeLow, todayRangeVol decimal.Decimal
+		var todayFirstOpen decimal.Decimal
+		sawToday := false
 		for _, c := range candles {
 			istTime := c.StartTime.In(loc)
+
+			// Skip the still-forming bucket: the live feed delivers this candle
+			// when it closes, and replaying it here would double-count it in the
+			// indicators and the opening range.
+			if istTime.Add(5 * time.Minute).After(now) {
+				continue
+			}
+
 			dateKey := istTime.Format("2006-01-02")
 
 			// New day in the replay: capture the previous day's close and
@@ -233,10 +247,32 @@ func (s *ORBStrategy) Init(provider core.DataProvider) error {
 			state.Rsi.Update(c.Close)
 			state.Bars++
 
+			if dateKey == today && !sawToday {
+				sawToday = true
+				todayFirstOpen = c.Open
+			}
+
 			h, m, _ := istTime.Clock()
 			tMin := h*60 + m
 			if tMin >= rangeStartMin && tMin < rangeEndMin {
-				morningVolByDay[dateKey] = morningVolByDay[dateKey].Add(c.Volume)
+				if dateKey == today {
+					// Today's range is rebuilt into live state below; OnCandle
+					// folds its volume into the baseline when the range locks,
+					// so keep it out of morningVolByDay to avoid double counting.
+					todayRangeVol = todayRangeVol.Add(c.Volume)
+					if todayRangeHigh.IsZero() {
+						todayRangeHigh = c.High
+						todayRangeLow = c.Low
+					}
+					if c.High.GreaterThan(todayRangeHigh) {
+						todayRangeHigh = c.High
+					}
+					if c.Low.LessThan(todayRangeLow) {
+						todayRangeLow = c.Low
+					}
+				} else {
+					morningVolByDay[dateKey] = morningVolByDay[dateKey].Add(c.Volume)
+				}
 			}
 		}
 
@@ -257,6 +293,37 @@ func (s *ORBStrategy) Init(provider core.DataProvider) error {
 			state.MorningVolDays = int64(len(morningVolByDay))
 			state.AvgMorningVol = total.Div(decimal.NewFromInt(state.MorningVolDays))
 			log.Printf("[%s] AvgMorningVol (9:15-9:30) over %d days: %s", sym, len(morningVolByDay), state.AvgMorningVol.StringFixed(0))
+		}
+
+		// Rebuild today's live state from the replay so a mid-day start can
+		// still trade: without this, the first live candle after 9:30 finds an
+		// empty range and skips the whole day. Skipped when LoadState already
+		// restored today (mid-session restart) so RelVolSkip/Traded survive.
+		if sawToday && state.LastDate != today {
+			state.LastDate = today
+			state.RangeSet = false
+			state.RelVolSkip = false
+			state.Traded = false
+			state.RangeHigh = todayRangeHigh
+			state.RangeLow = todayRangeLow
+			state.RangeVolume = todayRangeVol
+			state.DayGapPct = decimal.Zero
+
+			// Same gap filter OnCandle applies on the day's first candle; that
+			// branch won't run again now that LastDate is set to today.
+			if !state.PrevDayClose.IsZero() {
+				state.DayGapPct = todayFirstOpen.Sub(state.PrevDayClose).Div(state.PrevDayClose).Mul(decimal.NewFromInt(100))
+				if s.cfg.MaxGapPct > 0 && state.DayGapPct.Abs().GreaterThan(decimal.NewFromFloat(s.cfg.MaxGapPct)) {
+					log.Printf("[%s] Gap filter: Gap=%.2f%% > %.2f%% — skipping today", sym, state.DayGapPct.InexactFloat64(), s.cfg.MaxGapPct)
+					state.RelVolSkip = true
+				}
+			}
+
+			if !todayRangeHigh.IsZero() {
+				log.Printf("[%s] Rebuilt today's opening range from history: High=%s Low=%s Vol=%s",
+					sym, todayRangeHigh, todayRangeLow, todayRangeVol.StringFixed(0))
+			}
+			s.SaveState(sym)
 		}
 	}
 	return nil
