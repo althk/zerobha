@@ -57,6 +57,15 @@ func (a *ATR) Update(candle models.Candle) decimal.Decimal {
 	return a.value
 }
 
+// Value returns the current ATR without ingesting a new candle. It is zero
+// until the indicator has warmed up (period candles seen).
+func (a *ATR) Value() decimal.Decimal {
+	if a.count < a.period {
+		return decimal.Zero
+	}
+	return a.value
+}
+
 func (a *ATR) IsReady() bool {
 	return a.count >= a.period
 }
