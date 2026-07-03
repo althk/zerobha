@@ -237,7 +237,7 @@ func main() {
 	engine.InitNiftyEMAs()
 
 	// Web Dashboard
-	webServer := web.NewServer(engine, 8080)
+	webServer := web.NewServer(engine, 9080)
 	go webServer.Start()
 
 	// 5. Setup Data Pipeline
