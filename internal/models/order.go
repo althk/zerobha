@@ -16,17 +16,30 @@ const (
 )
 
 type Order struct {
-	ID          string            `json:"id"`
-	Symbol      string            `json:"symbol"`
-	Side        SignalType        `json:"side"`         // Reusing SignalType (Buy/Sell)
-	Type        string            `json:"type"`         // MARKET, LIMIT, SL-M
-	ProductType string            `json:"product_type"` // MIS, CNC
-	Quantity    decimal.Decimal   `json:"quantity"`
-	Price       decimal.Decimal   `json:"price"` // Limit price
-	Timestamp   time.Time         `json:"timestamp"`
-	Status      OrderStatus       `json:"status"`
-	StopLoss    decimal.Decimal   `json:"stop_loss"`
-	Target      decimal.Decimal   `json:"target"`
-	ParentID    string            `json:"parent_id"` // Links the Exit order to the Entry order
-	Metadata    map[string]string `json:"metadata"`
+	ID          string          `json:"id"`
+	Symbol      string          `json:"symbol"`
+	Side        SignalType      `json:"side"`         // Reusing SignalType (Buy/Sell)
+	Type        string          `json:"type"`         // MARKET, LIMIT, SL-M
+	ProductType string          `json:"product_type"` // MIS, CNC
+	Quantity    decimal.Decimal `json:"quantity"`
+	Price       decimal.Decimal `json:"price"` // Limit price
+	Timestamp   time.Time       `json:"timestamp"`
+	Status      OrderStatus     `json:"status"`
+	StopLoss    decimal.Decimal `json:"stop_loss"`
+	Target      decimal.Decimal `json:"target"`
+	// PartialExitPrice is the price at which half (see PartialExitPct) of the
+	// position is booked and StopLoss moved to breakeven. Zero disables it.
+	PartialExitPrice decimal.Decimal `json:"partial_exit_price"`
+	PartialExitPct   decimal.Decimal `json:"partial_exit_pct"`
+	// PartialExitDone marks that the partial leg has already fired, so
+	// CheckExits does not re-trigger it on the remaining quantity.
+	PartialExitDone bool `json:"partial_exit_done"`
+	// GTTTriggerID is the Kite GTT trigger ID protecting this live position
+	// (SL + Target OCO). Zero when no GTT was placed (e.g. backtest).
+	GTTTriggerID int `json:"gtt_trigger_id"`
+	// BreakevenApplied marks that the GTT's stop leg has already been moved
+	// to entry price, so the live position monitor does not re-trigger it.
+	BreakevenApplied bool              `json:"breakeven_applied"`
+	ParentID         string            `json:"parent_id"` // Links the Exit order to the Entry order
+	Metadata         map[string]string `json:"metadata"`
 }

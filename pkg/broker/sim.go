@@ -100,6 +100,40 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 
 		// Handle LONG Positions
 		if o.Status == models.OrderFilled && o.Side == models.BuySignal && o.Quantity.GreaterThan(decimal.Zero) {
+			// Partial exit: book PartialExitPct of the position once price
+			// reaches PartialExitPrice, then move the stop to breakeven (entry
+			// price) for the remainder so the trade can no longer turn into a
+			// loser. Checked before the full SL/target so a bar that reaches
+			// both the partial level and the stop in the same candle still
+			// books the partial leg's better price first.
+			if !o.PartialExitDone && !o.PartialExitPrice.IsZero() && candle.High.GreaterThanOrEqual(o.PartialExitPrice) {
+				partialQty := o.Quantity.Mul(o.PartialExitPct).Round(0)
+				if partialQty.GreaterThan(decimal.Zero) && partialQty.LessThan(o.Quantity) {
+					revenue := o.PartialExitPrice.Mul(partialQty)
+					s.Balance = s.Balance.Add(revenue)
+					realizedPnL := revenue.Sub(o.Price.Mul(partialQty))
+
+					o.Quantity = o.Quantity.Sub(partialQty)
+					o.PartialExitDone = true
+					o.StopLoss = o.Price // move remainder's stop to breakeven
+
+					s.Trades = append(s.Trades, models.Trade{
+						Symbol:     o.Symbol,
+						EntryPrice: o.Price,
+						ExitPrice:  o.PartialExitPrice,
+						Quantity:   partialQty,
+						Direction:  "LONG",
+						PnL:        realizedPnL,
+						EntryTime:  o.Timestamp,
+						ExitTime:   candle.EndTime,
+						ExitReason: "PARTIAL-EXIT",
+					})
+
+					log.Printf(">>> PARTIAL EXIT (LONG): %s | %s @ %s | SL moved to breakeven %s\n",
+						o.Symbol, partialQty.String(), o.PartialExitPrice, o.StopLoss)
+				}
+			}
+
 			var exitPrice decimal.Decimal
 			var exitReason string
 
@@ -143,6 +177,37 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 
 		// Handle SHORT Positions
 		if o.Status == models.OrderFilled && o.Side == models.SellSignal && o.Quantity.GreaterThan(decimal.Zero) {
+			// Partial exit: book PartialExitPct of the position once price
+			// reaches PartialExitPrice (moving down), then move the stop to
+			// breakeven for the remainder.
+			if !o.PartialExitDone && !o.PartialExitPrice.IsZero() && candle.Low.LessThanOrEqual(o.PartialExitPrice) {
+				partialQty := o.Quantity.Mul(o.PartialExitPct).Round(0)
+				if partialQty.GreaterThan(decimal.Zero) && partialQty.LessThan(o.Quantity) {
+					buyBackCost := o.PartialExitPrice.Mul(partialQty)
+					s.Balance = s.Balance.Sub(buyBackCost)
+					realizedPnL := o.Price.Sub(o.PartialExitPrice).Mul(partialQty)
+
+					o.Quantity = o.Quantity.Sub(partialQty)
+					o.PartialExitDone = true
+					o.StopLoss = o.Price // move remainder's stop to breakeven
+
+					s.Trades = append(s.Trades, models.Trade{
+						Symbol:     o.Symbol,
+						EntryPrice: o.Price,
+						ExitPrice:  o.PartialExitPrice,
+						Quantity:   partialQty,
+						Direction:  "SHORT",
+						PnL:        realizedPnL,
+						EntryTime:  o.Timestamp,
+						ExitTime:   candle.EndTime,
+						ExitReason: "PARTIAL-EXIT",
+					})
+
+					log.Printf(">>> PARTIAL EXIT (SHORT): %s | %s @ %s | SL moved to breakeven %s\n",
+						o.Symbol, partialQty.String(), o.PartialExitPrice, o.StopLoss)
+				}
+			}
+
 			var exitPrice decimal.Decimal
 			var exitReason string
 
@@ -243,6 +308,13 @@ func (s *SimBroker) GetGTTs() ([]models.GTT, error) {
 
 // CancelGTT deletes a GTT trigger (Stub)
 func (s *SimBroker) CancelGTT(triggerID int) error {
+	return nil
+}
+
+// ModifyPositionStop is a no-op in the simulator: CheckExits applies the
+// breakeven-trail directly to the in-memory order's StopLoss field, so there
+// is no live GTT to modify.
+func (s *SimBroker) ModifyPositionStop(order models.Order, newStopLoss decimal.Decimal) error {
 	return nil
 }
 

@@ -56,6 +56,14 @@ type ORBConfig struct {
 	// MaxVWAPDistPct caps how far (in percent) the breakout close may sit
 	// from VWAP, to avoid chasing extended moves.
 	MaxVWAPDistPct float64 `toml:"max_vwap_dist_pct"` // default 1.5
+
+	// PartialExitAtRMultiple sets the ATR multiple at which half the position
+	// is booked and the stop is moved to breakeven. 0 disables partial exits
+	// (the position runs untouched to the full SL/target).
+	PartialExitAtRMultiple float64 `toml:"partial_exit_at_r_multiple"` // default 0 (disabled)
+	// PartialExitPct is the fraction of the position closed at the partial
+	// exit level (e.g. 0.5 = sell half). Ignored when PartialExitAtRMultiple is 0.
+	PartialExitPct float64 `toml:"partial_exit_pct"` // default 0.5
 }
 
 type CPRVWAPConfig struct {
@@ -160,27 +168,29 @@ func DefaultEngineConfig() EngineConfig {
 
 func DefaultORBConfig() ORBConfig {
 	return ORBConfig{
-		Timeframe:             "5m",
-		CSVFile:               "high_beta_stocks.csv",
-		Limit:                 50,
-		EntryWindowEnd:        10*60 + 30,
-		RSILongThreshold:      50,
-		RSIShortThreshold:     40,
-		ADXThreshold:          20,
-		MinRangeATR:           1.0,
-		MaxRangeATR:           3.0,
-		SLMultiplier:          1.5,
-		TargetMultiplier:      3.0,
-		MaxConcurrent:         5,
-		RelVolThreshold:       1.5,
-		VolThrustMult:         1.0,
-		MaxVWAPDistATR:        1.5,
-		MaxVWAPDistPct:        1.5,
-		BodyStrengthThreshold: 0.6,
-		MaxGapPct:             3.0,
-		ADXRisingEps:          0,
-		OneTradePerDay:        boolPtr(true),
-		StopFloorAtRange:      boolPtr(true),
+		Timeframe:              "5m",
+		CSVFile:                "high_beta_stocks.csv",
+		Limit:                  50,
+		EntryWindowEnd:         10*60 + 30,
+		RSILongThreshold:       50,
+		RSIShortThreshold:      40,
+		ADXThreshold:           20,
+		MinRangeATR:            1.0,
+		MaxRangeATR:            3.0,
+		SLMultiplier:           1.5,
+		TargetMultiplier:       3.0,
+		MaxConcurrent:          5,
+		RelVolThreshold:        1.5,
+		VolThrustMult:          1.0,
+		MaxVWAPDistATR:         1.5,
+		MaxVWAPDistPct:         1.5,
+		BodyStrengthThreshold:  0.6,
+		MaxGapPct:              3.0,
+		ADXRisingEps:           0,
+		OneTradePerDay:         boolPtr(true),
+		StopFloorAtRange:       boolPtr(true),
+		PartialExitAtRMultiple: 0,
+		PartialExitPct:         0.5,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
 	"zerobha/internal/models"
 	"zerobha/internal/risk"
 	"zerobha/pkg/broker"
@@ -17,26 +18,34 @@ import (
 )
 
 type Engine struct {
-	Strategy          Strategy
-	Broker            Broker
-	Risk              *risk.Manager
-	Journal           *journal.Journal
-	InstrumentManager *broker.InstrumentManager
-	DB                *db.Store
-	LeverageMap       map[string]float64
-	MaxConcurrent     int
-	UptrendOnly       bool
-	DataProvider      DataProvider
-	MinBalance        int64
+	Strategy           Strategy
+	Broker             Broker
+	Risk               *risk.Manager
+	Journal            *journal.Journal
+	InstrumentManager  *broker.InstrumentManager
+	DB                 *db.Store
+	LeverageMap        map[string]float64
+	MaxConcurrent      int
+	UptrendOnly        bool
+	DataProvider       DataProvider
+	MinBalance         int64
 	MinCapitalPerTrade int64
 	MaxCapitalPerTrade int64
-	TradeCutoffMin    int
+	TradeCutoffMin     int
 
 	niftyEMA50     *indicators.EMA
 	niftyEMA200    *indicators.EMA
 	niftyUptrendOK bool   // cached result of today's uptrend check
 	niftyCheckDate string // "YYYY-MM-DD" of last uptrend evaluation
 	niftySeeded    bool   // true once the uptrend filter has valid EMA data
+
+	openOrdersMu sync.Mutex
+	// openOrders tracks live positions carrying a PartialExitPrice, keyed by
+	// symbol, so OnTick can apply the breakeven-trail without re-querying the
+	// broker on every tick. Entries are removed once BreakevenApplied fires;
+	// a position that exits before then is simply never cleaned up here (it's
+	// a lookup cache, not a source of truth — GetPositions remains authoritative).
+	openOrders map[string]*models.Order
 }
 
 func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *broker.InstrumentManager, d *db.Store) *Engine {
@@ -55,6 +64,7 @@ func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *br
 		TradeCutoffMin:     14*60 + 5,
 		niftyEMA50:         indicators.NewEMA(50),
 		niftyEMA200:        indicators.NewEMA(200),
+		openOrders:         make(map[string]*models.Order),
 	}
 	e.loadLeverageMap()
 	return e
@@ -336,16 +346,18 @@ func (e *Engine) Execute(candle models.Candle) {
 
 	// 5. Create Order Object
 	order := models.Order{
-		Symbol:      signal.Symbol,
-		Side:        signal.Type,
-		Type:        "MARKET", // Only market orders supported
-		ProductType: signal.ProductType,
-		Quantity:    qty.Floor(),
-		Price:       AdjustPriceToTick(signal.Price, GetTickSize(signal.Symbol, signal.Price)),
-		StopLoss:    AdjustPriceToTick(signal.StopLoss, GetTickSize(signal.Symbol, signal.StopLoss)),
-		Target:      AdjustPriceToTick(signal.Target, GetTickSize(signal.Symbol, signal.Target)),
-		Metadata:    signal.Metadata,
-		Timestamp:   candle.StartTime, // Set Timestamp from Candle
+		Symbol:           signal.Symbol,
+		Side:             signal.Type,
+		Type:             "MARKET", // Only market orders supported
+		ProductType:      signal.ProductType,
+		Quantity:         qty.Floor(),
+		Price:            AdjustPriceToTick(signal.Price, GetTickSize(signal.Symbol, signal.Price)),
+		StopLoss:         AdjustPriceToTick(signal.StopLoss, GetTickSize(signal.Symbol, signal.StopLoss)),
+		Target:           AdjustPriceToTick(signal.Target, GetTickSize(signal.Symbol, signal.Target)),
+		PartialExitPrice: AdjustPriceToTick(signal.PartialExitPrice, GetTickSize(signal.Symbol, signal.PartialExitPrice)),
+		PartialExitPct:   signal.PartialExitPct,
+		Metadata:         signal.Metadata,
+		Timestamp:        candle.StartTime, // Set Timestamp from Candle
 	}
 
 	// 6. Execute
@@ -370,6 +382,57 @@ func (e *Engine) Execute(candle models.Candle) {
 		// Update Risk Manager stats
 		// TODO: Handle actual pnl
 		e.Risk.UpdateTradeLog(order.Symbol, decimal.Zero)
+
+		// Track the order for the tick-driven breakeven-trail monitor when
+		// the strategy attached a partial-exit level and the broker placed a
+		// GTT for it (GTTTriggerID is 0 for brokers without GTT support, e.g.
+		// the sim, where CheckExits handles the trail directly instead).
+		if !order.PartialExitPrice.IsZero() && order.GTTTriggerID != 0 {
+			ord := order
+			e.openOrdersMu.Lock()
+			e.openOrders[order.Symbol] = &ord
+			e.openOrdersMu.Unlock()
+		}
+	}
+}
+
+// OnTick checks live-quoted price for symbol against any tracked position's
+// partial-exit/breakeven-trail level and, once crossed, moves the GTT's stop
+// leg to breakeven. Called from the live tick handler (per tick, not per
+// candle) since the trail must react intracandle rather than waiting for the
+// bar to close. No-op for symbols with no tracked order or an already-applied
+// breakeven move.
+func (e *Engine) OnTick(symbol string, price decimal.Decimal) {
+	e.openOrdersMu.Lock()
+	order, ok := e.openOrders[symbol]
+	if !ok || order.BreakevenApplied {
+		e.openOrdersMu.Unlock()
+		return
+	}
+	e.openOrdersMu.Unlock()
+
+	crossed := false
+	if order.Side == models.BuySignal {
+		crossed = price.GreaterThanOrEqual(order.PartialExitPrice)
+	} else {
+		crossed = price.LessThanOrEqual(order.PartialExitPrice)
+	}
+	if !crossed {
+		return
+	}
+
+	if err := e.Broker.ModifyPositionStop(*order, order.Price); err != nil {
+		log.Printf("ERROR: Failed to move %s stop to breakeven: %v", symbol, err)
+		return
+	}
+
+	e.openOrdersMu.Lock()
+	order.BreakevenApplied = true
+	order.StopLoss = order.Price
+	e.openOrdersMu.Unlock()
+
+	if e.Journal != nil {
+		e.Journal.LogOrder(*order, "BREAKEVEN", fmt.Sprintf("SL moved to entry %s at price %s", order.Price, price))
 	}
 }
 

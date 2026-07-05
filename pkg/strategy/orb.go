@@ -600,13 +600,21 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 			state.Traded = true
 			s.SaveState(candle.Symbol)
 
+			var partialExitPrice, partialExitPct decimal.Decimal
+			if s.cfg.PartialExitAtRMultiple > 0 && !atrVal.IsZero() {
+				partialExitPrice = closePrice.Add(atrVal.Mul(decimal.NewFromFloat(s.cfg.PartialExitAtRMultiple))).Round(2)
+				partialExitPct = decimal.NewFromFloat(s.cfg.PartialExitPct)
+			}
+
 			return &models.Signal{
-				Symbol:      candle.Symbol,
-				Type:        models.BuySignal,
-				ProductType: "MIS",
-				Price:       closePrice,
-				StopLoss:    stopLoss.Round(2),
-				Target:      target.Round(2),
+				Symbol:           candle.Symbol,
+				Type:             models.BuySignal,
+				ProductType:      "MIS",
+				Price:            closePrice,
+				StopLoss:         stopLoss.Round(2),
+				Target:           target.Round(2),
+				PartialExitPrice: partialExitPrice,
+				PartialExitPct:   partialExitPct,
 				Metadata: map[string]string{
 					"Strategy":      "ORB_Long",
 					"RangeHigh":     state.RangeHigh.StringFixed(2),
@@ -672,13 +680,21 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 			state.Traded = true
 			s.SaveState(candle.Symbol)
 
+			var partialExitPrice, partialExitPct decimal.Decimal
+			if s.cfg.PartialExitAtRMultiple > 0 && !atrVal.IsZero() {
+				partialExitPrice = closePrice.Sub(atrVal.Mul(decimal.NewFromFloat(s.cfg.PartialExitAtRMultiple))).Round(2)
+				partialExitPct = decimal.NewFromFloat(s.cfg.PartialExitPct)
+			}
+
 			return &models.Signal{
-				Symbol:      candle.Symbol,
-				Type:        models.SellSignal,
-				ProductType: "MIS",
-				Price:       closePrice,
-				StopLoss:    stopLoss.Round(2),
-				Target:      target.Round(2),
+				Symbol:           candle.Symbol,
+				Type:             models.SellSignal,
+				ProductType:      "MIS",
+				Price:            closePrice,
+				StopLoss:         stopLoss.Round(2),
+				Target:           target.Round(2),
+				PartialExitPrice: partialExitPrice,
+				PartialExitPct:   partialExitPct,
 				Metadata: map[string]string{
 					"Strategy":      "ORB_Short",
 					"RangeHigh":     state.RangeHigh.StringFixed(2),

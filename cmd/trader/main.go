@@ -309,6 +309,10 @@ func main() {
 		if builder, exists := builders[tick.InstrumentToken]; exists {
 			builder.Update(zTick)
 		}
+
+		// C. Breakeven-trail check: must run on every tick (not just candle
+		// close) since price can cross the partial-exit level intracandle.
+		engine.OnTick(symbolName, zTick.Price)
 	})
 
 	ticker.OnError(func(err error) {

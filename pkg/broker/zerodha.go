@@ -159,98 +159,146 @@ func (z *ZerodhaAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 			return order, nil
 		}
 
-		var gttTxType string
-		if order.Side == models.BuySignal {
-			gttTxType = kiteconnect.TransactionTypeSell
-		} else {
-			gttTxType = kiteconnect.TransactionTypeBuy
-		}
-
-		slPrice := order.StopLoss.InexactFloat64()
-		targetPrice := order.Target.InexactFloat64()
-
-		// Enforce Minimum Gap of 0.3% (Broker requires > 0.25%)
-		executionPrice := filledOrder.AveragePrice
-		minGap := executionPrice * 0.003
-
-		if order.Side == models.BuySignal {
-			// Long Position: SL below, Target above
-			if executionPrice-slPrice < minGap {
-				newSL := executionPrice - minGap
-				fmt.Printf("Adjusting SL from %.2f to %.2f (min gap rule)\n", slPrice, newSL)
-				slPrice = newSL
-			}
-			if targetPrice-executionPrice < minGap {
-				newTarget := executionPrice + minGap
-				fmt.Printf("Adjusting Target from %.2f to %.2f (min gap rule)\n", targetPrice, newTarget)
-				targetPrice = newTarget
-			}
-		} else {
-			// Short Position: SL above, Target below
-			if slPrice-executionPrice < minGap {
-				newSL := executionPrice + minGap
-				fmt.Printf("Adjusting SL from %.2f to %.2f (min gap rule)\n", slPrice, newSL)
-				slPrice = newSL
-			}
-			if executionPrice-targetPrice < minGap {
-				newTarget := executionPrice - minGap
-				fmt.Printf("Adjusting Target from %.2f to %.2f (min gap rule)\n", targetPrice, newTarget)
-				targetPrice = newTarget
-			}
-		}
-
-		qty := float64(order.Quantity.IntPart())
-
-		// Construct GTT Params
-		gttParams := kiteconnect.GTTParams{
-			Tradingsymbol:   order.Symbol,
-			Exchange:        kiteconnect.ExchangeNSE,
-			LastPrice:       filledOrder.AveragePrice,
-			TransactionType: gttTxType,
-			Product:         product,
-			Trigger: &kiteconnect.GTTOneCancelsOtherTrigger{
-				Upper: kiteconnect.TriggerParams{
-					TriggerValue: func() float64 {
-						if targetPrice > slPrice {
-							return targetPrice
-						}
-						return slPrice
-					}(),
-					LimitPrice: func() float64 {
-						if targetPrice > slPrice {
-							return targetPrice
-						}
-						return slPrice
-					}(),
-					Quantity: qty,
-				},
-				Lower: kiteconnect.TriggerParams{
-					TriggerValue: func() float64 {
-						if targetPrice < slPrice {
-							return targetPrice
-						}
-						return slPrice
-					}(),
-					LimitPrice: func() float64 {
-						if targetPrice < slPrice {
-							return targetPrice
-						}
-						return slPrice
-					}(),
-					Quantity: qty,
-				},
-			},
-		}
+		gttParams := buildOCOGTTParams(order, product, filledOrder.AveragePrice, order.StopLoss.InexactFloat64(), order.Target.InexactFloat64())
 
 		gttResponse, err := z.client.PlaceGTT(gttParams)
 		if err != nil {
 			fmt.Printf("Error placing GTT OCO: %v\n", err)
 		} else {
 			fmt.Printf("Placed GTT OCO. Trigger ID: %d\n", gttResponse.TriggerID)
+			order.GTTTriggerID = gttResponse.TriggerID
 		}
 	}
 
 	return order, nil
+}
+
+// buildOCOGTTParams constructs the GTT OCO (SL + Target) parameters for an
+// order, enforcing Kite's minimum trigger-gap rule (>0.25% from LTP) around
+// both legs. Shared by PlaceOrder (initial GTT) and ModifyPositionStop
+// (breakeven-trail replacement GTT), so both take the same gap-safety path.
+func buildOCOGTTParams(order models.Order, product string, executionPrice, slPrice, targetPrice float64) kiteconnect.GTTParams {
+	var gttTxType string
+	if order.Side == models.BuySignal {
+		gttTxType = kiteconnect.TransactionTypeSell
+	} else {
+		gttTxType = kiteconnect.TransactionTypeBuy
+	}
+
+	// Enforce Minimum Gap of 0.3% (Broker requires > 0.25%)
+	minGap := executionPrice * 0.003
+
+	if order.Side == models.BuySignal {
+		// Long Position: SL below, Target above
+		if executionPrice-slPrice < minGap {
+			newSL := executionPrice - minGap
+			fmt.Printf("Adjusting SL from %.2f to %.2f (min gap rule)\n", slPrice, newSL)
+			slPrice = newSL
+		}
+		if targetPrice-executionPrice < minGap {
+			newTarget := executionPrice + minGap
+			fmt.Printf("Adjusting Target from %.2f to %.2f (min gap rule)\n", targetPrice, newTarget)
+			targetPrice = newTarget
+		}
+	} else {
+		// Short Position: SL above, Target below
+		if slPrice-executionPrice < minGap {
+			newSL := executionPrice + minGap
+			fmt.Printf("Adjusting SL from %.2f to %.2f (min gap rule)\n", slPrice, newSL)
+			slPrice = newSL
+		}
+		if executionPrice-targetPrice < minGap {
+			newTarget := executionPrice - minGap
+			fmt.Printf("Adjusting Target from %.2f to %.2f (min gap rule)\n", targetPrice, newTarget)
+			targetPrice = newTarget
+		}
+	}
+
+	qty := float64(order.Quantity.IntPart())
+
+	return kiteconnect.GTTParams{
+		Tradingsymbol:   order.Symbol,
+		Exchange:        kiteconnect.ExchangeNSE,
+		LastPrice:       executionPrice,
+		TransactionType: gttTxType,
+		Product:         product,
+		Trigger: &kiteconnect.GTTOneCancelsOtherTrigger{
+			Upper: kiteconnect.TriggerParams{
+				TriggerValue: func() float64 {
+					if targetPrice > slPrice {
+						return targetPrice
+					}
+					return slPrice
+				}(),
+				LimitPrice: func() float64 {
+					if targetPrice > slPrice {
+						return targetPrice
+					}
+					return slPrice
+				}(),
+				Quantity: qty,
+			},
+			Lower: kiteconnect.TriggerParams{
+				TriggerValue: func() float64 {
+					if targetPrice < slPrice {
+						return targetPrice
+					}
+					return slPrice
+				}(),
+				LimitPrice: func() float64 {
+					if targetPrice < slPrice {
+						return targetPrice
+					}
+					return slPrice
+				}(),
+				Quantity: qty,
+			},
+		},
+	}
+}
+
+// ModifyPositionStop replaces the SL leg of an existing OCO GTT with
+// newStopLoss (e.g. moving it to breakeven), keeping the target leg and
+// quantity unchanged. Kite has no partial-GTT-patch API, so this rebuilds
+// the full OCO via ModifyGTT, which replaces the trigger in place.
+func (z *ZerodhaAdapter) ModifyPositionStop(order models.Order, newStopLoss decimal.Decimal) error {
+	if order.GTTTriggerID == 0 {
+		return fmt.Errorf("order %s has no GTT trigger to modify", order.ID)
+	}
+
+	err := z.limiter.Wait(context.Background())
+	if err != nil {
+		return err
+	}
+
+	product := kiteconnect.ProductMIS
+	switch order.ProductType {
+	case "CNC":
+		product = kiteconnect.ProductCNC
+	case "MIS":
+		product = kiteconnect.ProductMIS
+	case "NRML":
+		product = kiteconnect.ProductNRML
+	}
+
+	// Use the current LTP as the reference execution price for the min-gap
+	// check — the breakeven stop is normally already well clear of price by
+	// the time this fires (2R in profit), so this is a safety net, not the
+	// common path.
+	ltp, err := z.GetQuote(order.Symbol)
+	if err != nil {
+		return fmt.Errorf("failed to fetch quote for %s: %v", order.Symbol, err)
+	}
+
+	gttParams := buildOCOGTTParams(order, product, ltp.InexactFloat64(), newStopLoss.InexactFloat64(), order.Target.InexactFloat64())
+
+	_, err = z.client.ModifyGTT(order.GTTTriggerID, gttParams)
+	if err != nil {
+		return fmt.Errorf("failed to modify GTT %d for %s: %v", order.GTTTriggerID, order.Symbol, err)
+	}
+
+	fmt.Printf("Moved SL to breakeven for %s (GTT %d): new SL=%.2f\n", order.Symbol, order.GTTTriggerID, newStopLoss.InexactFloat64())
+	return nil
 }
 
 // History fetches historical candles for Strategy Warmup

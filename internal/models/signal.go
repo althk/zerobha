@@ -28,6 +28,12 @@ type Signal struct {
 	Price    decimal.Decimal `json:"price"` // The trigger price
 	StopLoss decimal.Decimal `json:"stop_loss"`
 	Target   decimal.Decimal `json:"target"`
+	// PartialExitPrice is the price at which a partial exit fires (e.g. 2x ATR
+	// profit), after which the stop is moved to breakeven for the remainder.
+	// Zero disables partial-exit handling for this signal.
+	PartialExitPrice decimal.Decimal `json:"partial_exit_price"`
+	// PartialExitPct is the fraction of the position closed at PartialExitPrice.
+	PartialExitPct decimal.Decimal `json:"partial_exit_pct"`
 	// ProductType: "MIS" (Intraday) or "CNC" (Delivery)
 	ProductType string `json:"product_type"`
 

@@ -54,6 +54,11 @@ type Broker interface {
 	// CancelGTT deletes a GTT trigger
 	CancelGTT(triggerID int) error
 
+	// ModifyPositionStop replaces the SL leg of an existing OCO GTT with a new
+	// stop price (e.g. breakeven), keeping the target leg and quantity
+	// unchanged. Used by the partial-exit/breakeven-trail live position monitor.
+	ModifyPositionStop(order models.Order, newStopLoss decimal.Decimal) error
+
 	// CancelOrder cancels an open order
 	CancelOrder(orderID string) error
 

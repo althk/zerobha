@@ -42,6 +42,9 @@ func (m *mockBroker) CancelOrder(orderID string) error {
 }
 func (m *mockBroker) GetPositions() ([]models.Position, error) { return m.Positions, nil }
 func (m *mockBroker) GetTrades() ([]models.Order, error)       { return m.Orders, nil }
+func (m *mockBroker) ModifyPositionStop(order models.Order, newStopLoss decimal.Decimal) error {
+	return nil
+}
 
 // mockStrategy
 type mockStrategy struct{}
