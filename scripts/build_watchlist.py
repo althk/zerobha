@@ -53,8 +53,8 @@ def main():
     parser.add_argument(
         "--top-sectors",
         type=int,
-        default=5,
-        help="Number of top sectors to pick (default: 5)",
+        default=10,
+        help="Number of top sectors to pick (default: 10)",
     )
     parser.add_argument(
         "--min-beta",
@@ -91,6 +91,12 @@ def main():
         help="Allow building the watchlist without an industry filter when "
         "no selected sector has an industry mapping",
     )
+    parser.add_argument(
+        "--as-of-date",
+        type=str,
+        default=None,
+        help="As-of date for sector momentum analysis (YYYY-MM-DD, default: today); useful for backtesting or historical watchlist generation",
+    )
     args = parser.parse_args()
 
     print(f"{'='*70}")
@@ -110,7 +116,12 @@ def main():
 
     # Step 1: Sector momentum analysis
     print(f"\n[Step 1/3] Running sector momentum analysis...")
-    sector_report = calculate_sector_momentum(NSE_SECTORS)
+    as_of_date = (
+        datetime.today()
+        if not args.as_of_date
+        else datetime.strptime(args.as_of_date, "%Y-%m-%d")
+    )
+    sector_report = calculate_sector_momentum(NSE_SECTORS, as_of_date=as_of_date)
 
     if sector_report.empty:
         print("ERROR: Sector analysis failed. Check internet connection.")
@@ -155,7 +166,9 @@ def main():
     if not industries:
         if args.allow_unfiltered:
             print("  WARNING: No industries mapped for any selected sector.")
-            print("  Building UNFILTERED watchlist from all industries (--allow-unfiltered).")
+            print(
+                "  Building UNFILTERED watchlist from all industries (--allow-unfiltered)."
+            )
             industries = None
         else:
             print("  ERROR: None of the selected sectors map to industries.")
@@ -198,6 +211,8 @@ def main():
         str(args.min_beta),
         "--limit",
         str(args.limit),
+        "--end-date",
+        as_of_date.strftime("%Y-%m-%d"),
     ]
 
     if industries:
@@ -220,7 +235,7 @@ def main():
         # Stamp the generation date (appended last so column-0 symbol
         # readers are unaffected) for post-trade review
         if "as_of" not in df.columns:
-            df["as_of"] = datetime.now().strftime("%Y-%m-%d")
+            df["as_of"] = as_of_date.strftime("%Y-%m-%d")
             df.to_csv(args.output, index=False)
 
         print(f"  Watchlist: {args.output} ({len(df)} stocks)")

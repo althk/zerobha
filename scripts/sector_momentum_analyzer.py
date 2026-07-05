@@ -7,6 +7,7 @@ vs Nifty 50 benchmark. Outputs ranked sectors with quadrant classification.
 
 Weightage: 1W (30%), 1M (40%), 3M (30%)
 """
+
 import argparse
 import pandas as pd
 import yfinance as yf
@@ -125,18 +126,19 @@ def window_perf(series, days, offset=0):
     return (current / past) - 1
 
 
-def calculate_sector_momentum(sectors, benchmark="^NSEI"):
+def calculate_sector_momentum(sectors, benchmark="^NSEI", as_of_date=None):
     """
     Calculates Composite Relative Strength Score for NSE sectors.
 
     Uses 1W/1M/3M windows with RRG quadrant classification and
     momentum-of-momentum detection.
     """
+    as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
     weights = {"1W": WEIGHT_1W, "1M": WEIGHT_1M, "3M": WEIGHT_3M}
 
     # Need enough history for 3M + previous-week shift + holiday buffer
     max_lookback = WINDOWS["3M"] + PREV_SHIFT + 20
-    start_date = (datetime.now() - timedelta(days=int(max_lookback * 1.7))).strftime(
+    start_date = (as_of_date - timedelta(days=int(max_lookback * 1.7))).strftime(
         "%Y-%m-%d"
     )
 
