@@ -29,7 +29,7 @@ func main() {
 	strategyName := flag.String("strategy", "orb", "Strategy to run: orb, donchian, cprvwap")
 	csvFile := flag.String("csv", "high_beta_stocks.csv", "CSV file containing symbols")
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
-	timeframe := flag.String("timeframe", "1d", "Timeframe for candles (e.g. 1d, 1h)")
+	timeframe := flag.String("timeframe", "5m", "Timeframe for candles (e.g. 1d, 1h)")
 	limit := flag.Int("limit", -1, "Limit number of symbols to process (default -1: all)")
 	baseline := flag.Bool("baseline", false, "ORB only: revert the new robustness/signal knobs to original behavior for A/B comparison")
 	costBps := flag.Float64("cost-bps", 0.0, "Round-trip transaction cost in basis points of turnover, deducted per trade (e.g. 6 = 0.06%)")
@@ -38,7 +38,7 @@ func main() {
 	slMult := flag.Float64("sl-mult", 0, "ema20_pullback: override stop-loss multiplier (0 = use config default)")
 	pullbackEMA := flag.Int("pullback-ema", 0, "ema20_pullback: override pullback EMA (20 or 50; 0 = use config default)")
 	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
-	configFile := flag.String("config", "", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
+	configFile := flag.String("config", "config.local.toml", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
 	flag.Parse()
 
 	// When a TOML config is given, it supplies the strategy, symbol CSV,
