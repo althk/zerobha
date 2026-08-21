@@ -20,11 +20,13 @@ Analyzes Nifty 500 stocks to identify top trending sectors based on **relative s
 #### Usage
 
 **Basic Usage:**
+
 ```bash
 python3 scripts/find_trending_sectors.py
 ```
 
 **With Custom Options:**
+
 ```bash
 python3 scripts/find_trending_sectors.py \
   --symbols ind_nifty500list.csv \
@@ -38,7 +40,7 @@ python3 scripts/find_trending_sectors.py \
 #### Command-Line Arguments
 
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| ---------- | ------ | --------- | ------------- |
 | `--symbols` | string | `ind_nifty500list.csv` | Path to CSV file with symbols (columns: 'Symbol', 'Industry') |
 | `--output` | string | `trending_sectors.csv` | Output CSV file path |
 | `--top` | int | `5` | Number of top sectors to display |
@@ -51,6 +53,7 @@ python3 scripts/find_trending_sectors.py \
 The script displays comprehensive sector analysis with multiple metrics:
 
 **Sample Output:**
+
 ```
 ================================================================================
 TOP 5 TRENDING SECTORS (vs ^NSEI)
@@ -78,7 +81,7 @@ Ranked by Relative Strength (Weights: 1W=50%, 1M=30%, 3M=20%)
 **Signal Classification:**
 
 | Signal | Emoji | Criteria | Interpretation |
-|--------|-------|----------|----------------|
+| -------- | ------- | ---------- | ---------------- |
 | **STRONG BUY** | 🟢 | All RS positive + improving momentum (RS_1W > RS_1M) | Best opportunity - outperforming with acceleration |
 | **BUY** | 🟡 | Weighted RS > 0 OR RS_1W > 0 | Good opportunity - outperforming benchmark |
 | **NEUTRAL** | ⚪ | Weighted RS between -1% and +1% | Moving in-line with market |
@@ -88,17 +91,20 @@ Ranked by Relative Strength (Weights: 1W=50%, 1M=30%, 3M=20%)
 #### How Relative Strength Works
 
 **Formula:**
+
 ```
 Relative Strength (RS) = Sector Return - Benchmark Return
 ```
 
 **Examples:**
+
 - Sector: +10%, Nifty 50: +6% → RS = **+4%** (outperforming ▲)
 - Sector: +3%, Nifty 50: +6% → RS = **-3%** (underperforming ▼)
 
 **Why It Matters:**
 
 Relative strength reveals which sectors are truly leading the market:
+
 - In a bull market where everything is up, RS shows which sectors are rising *faster*
 - In a bear market, RS identifies sectors that are falling *slower* (defensive plays)
 - Sectors with strong positive RS are momentum plays for sector rotation strategies
@@ -162,7 +168,7 @@ python3 scripts/find_high_beta.py --start-date 2025-01-01 --end-date 2025-03-01
 #### Command-Line Arguments
 
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| ---------- | ------ | --------- | ------------- |
 | `--symbols` | string | `ind_nifty500list.csv` | CSV with 'Symbol' column (and optional 'Industry') |
 | `--output` | string | `high_beta_stocks.csv` | Output CSV path |
 | `--start-date` | string | 60 days ago | Start date (YYYY-MM-DD) |
@@ -201,7 +207,7 @@ python3 scripts/sector_momentum_analyzer.py --output top_sectors.csv --top 5
 #### Command-Line Arguments
 
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| ---------- | ------ | --------- | ------------- |
 | `--output` | string | `top_sectors.csv` | Output CSV path |
 | `--benchmark` | string | `^NSEI` | Benchmark ticker |
 | `--top` | int | `4` | Number of top sectors to highlight |
@@ -213,7 +219,7 @@ python3 scripts/sector_momentum_analyzer.py --output top_sectors.csv --top 5
 #### Quadrant Interpretation
 
 | Quadrant | RS Level | Momentum | Action |
-|----------|----------|----------|--------|
+| ---------- | ---------- | ---------- | -------- |
 | **LEADING** | Positive | Rising | Trade — strongest sector |
 | **WEAKENING** | Positive | Falling | Trim — losing steam |
 | **IMPROVING** | Negative | Rising | Watch — potential turnaround |
@@ -251,9 +257,9 @@ python3 scripts/build_watchlist.py --include-all-if-no-leaders
 #### Command-Line Arguments
 
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| ---------- | ------ | --------- | ------------- |
 | `--symbols` | string | `ind_nifty500list.csv` | Nifty 500 CSV |
-| `--output` | string | `high_beta_stocks.csv` | Final watchlist CSV |
+| `--output` | string | `watchlist.csv` | Final watchlist CSV |
 | `--top-sectors` | int | `4` | Number of top sectors |
 | `--min-beta` | float | `1.0` | Minimum beta |
 | `--limit` | int | `50` | Max stocks in watchlist |
@@ -306,6 +312,7 @@ python3 scripts/data_downloader.py
 ## Contributing
 
 When adding new scripts to this directory:
+
 1. Include comprehensive docstrings
 2. Add command-line argument parsing with `--help` support
 3. Use logging instead of print statements

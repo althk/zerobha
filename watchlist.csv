@@ -1,51 +1,51 @@
 symbol,industry,beta,last_price,rs_1m,as_of
-IFCI.NS,Financial Services,2.74,76.81,-9.6,2026-07-03
-AIIL.NS,Financial Services,2.61,523.0,12.6,2026-07-03
-CHOLAFIN.NS,Financial Services,2.31,1788.5,17.07,2026-07-03
-HOMEFIRST.NS,Financial Services,2.28,1201.1,9.55,2026-07-03
-SHRIRAMFIN.NS,Financial Services,2.26,1060.7,13.19,2026-07-03
-ABREL.NS,Realty,2.21,1424.1,10.55,2026-07-03
-JKTYRE.NS,Automobile and Auto Components,2.17,416.5,4.74,2026-07-03
-PRESTIGE.NS,Realty,2.16,1674.1,20.1,2026-07-03
-GODREJPROP.NS,Realty,2.13,1968.7,12.91,2026-07-03
-JMFINANCIL.NS,Financial Services,2.1,129.26,5.01,2026-07-03
-MOTILALOFS.NS,Financial Services,2.09,956.9,8.56,2026-07-03
-FORCEMOT.NS,Automobile and Auto Components,2.08,19367.0,0.88,2026-07-03
-CEATLTD.NS,Automobile and Auto Components,2.06,3805.8,14.53,2026-07-03
-DLF.NS,Realty,2.06,658.2,10.62,2026-07-03
-LTF.NS,Financial Services,2.0,315.25,14.91,2026-07-03
-LODHA.NS,Realty,1.95,1006.2,10.82,2026-07-03
-ABCAPITAL.NS,Financial Services,1.91,392.95,7.82,2026-07-03
-M&MFIN.NS,Financial Services,1.9,318.0,6.73,2026-07-03
-MUTHOOTFIN.NS,Financial Services,1.86,2949.7,-10.23,2026-07-03
-ANANTRAJ.NS,Realty,1.83,537.65,-12.06,2026-07-03
-APOLLOTYRE.NS,Automobile and Auto Components,1.8,456.6,12.09,2026-07-03
-BAJFINANCE.NS,Financial Services,1.8,1018.4,13.89,2026-07-03
-ANGELONE.NS,Financial Services,1.79,346.15,-0.79,2026-07-03
-SAMMAANCAP.NS,Financial Services,1.77,173.94,-8.3,2026-07-03
-NAM-INDIA.NS,Financial Services,1.76,1213.2,5.33,2026-07-03
-BALKRISIND.NS,Automobile and Auto Components,1.74,2230.2,-1.94,2026-07-03
-ARE&M.NS,Automobile and Auto Components,1.72,862.75,-2.9,2026-07-03
-IDBI.NS,Financial Services,1.72,84.41,12.44,2026-07-03
-JIOFIN.NS,Financial Services,1.72,239.73,-1.6,2026-07-03
-IIFL.NS,Financial Services,1.7,518.7,-5.48,2026-07-03
-CANBK.NS,Financial Services,1.65,126.64,-5.02,2026-07-03
-CHOLAHLDNG.NS,Financial Services,1.6,1687.0,12.53,2026-07-03
-BELRISE.NS,Automobile and Auto Components,1.59,238.2,6.93,2026-07-03
-MANAPPURAM.NS,Financial Services,1.59,323.1,0.63,2026-07-03
-INDUSINDBK.NS,Financial Services,1.57,943.5,1.34,2026-07-03
-HDFCAMC.NS,Financial Services,1.56,2759.6,8.48,2026-07-03
-UCOBANK.NS,Financial Services,1.56,27.15,5.01,2026-07-03
-BAJAJHLDNG.NS,Financial Services,1.55,10858.0,5.26,2026-07-03
-AUBANK.NS,Financial Services,1.54,1057.0,6.58,2026-07-03
-BRIGADE.NS,Realty,1.52,501.25,-0.37,2026-07-03
-M&M.NS,Automobile and Auto Components,1.52,3175.4,3.11,2026-07-03
-LTFOODS.NS,Fast Moving Consumer Goods,1.51,379.65,-4.77,2026-07-03
-POONAWALLA.NS,Financial Services,1.5,456.9,12.87,2026-07-03
-HDFCBANK.NS,Financial Services,1.49,795.9,3.98,2026-07-03
-ICICIPRULI.NS,Financial Services,1.49,495.95,1.02,2026-07-03
-GROWW.NS,Financial Services,1.48,206.08,5.08,2026-07-03
-KARURVYSYA.NS,Financial Services,1.48,293.95,0.23,2026-07-03
-PNB.NS,Financial Services,1.45,106.91,0.83,2026-07-03
-PINELABS.NS,Financial Services,1.42,159.84,9.08,2026-07-03
-UNIONBANK.NS,Financial Services,1.42,174.35,4.48,2026-07-03
+BANDHANBNK.NS,Financial Services,2.3,175.1,4.4,2026-08-21
+ABCAPITAL.NS,Financial Services,2.19,413.0,2.82,2026-08-21
+JIOFIN.NS,Financial Services,2.14,244.0,2.16,2026-08-21
+JUBLFOOD.NS,Consumer Services,2.07,506.75,19.12,2026-08-21
+ABFRL.NS,Consumer Services,1.96,54.35,-5.42,2026-08-21
+SHRIRAMFIN.NS,Financial Services,1.85,1130.0,10.39,2026-08-21
+CHOLAFIN.NS,Financial Services,1.83,1862.9,5.99,2026-08-21
+SBICARD.NS,Financial Services,1.75,649.0,2.85,2026-08-21
+BALRAMCHIN.NS,Fast Moving Consumer Goods,1.72,729.35,17.5,2026-08-21
+360ONE.NS,Financial Services,1.66,1199.0,6.73,2026-08-21
+RBLBANK.NS,Financial Services,1.65,392.5,9.47,2026-08-21
+URBANCO.NS,Consumer Services,1.65,158.6,20.19,2026-08-21
+PINELABS.NS,Financial Services,1.64,156.91,5.68,2026-08-21
+GABRIEL.NS,Automobile and Auto Components,1.53,1420.6,2.36,2026-08-21
+AIIL.NS,Financial Services,1.52,552.25,1.94,2026-08-21
+TBOTEK.NS,Consumer Services,1.52,1696.5,16.68,2026-08-21
+LTF.NS,Financial Services,1.51,317.15,2.84,2026-08-21
+PAYTM.NS,Financial Services,1.51,1632.0,25.14,2026-08-21
+CIEINDIA.NS,Automobile and Auto Components,1.49,401.05,-5.11,2026-08-21
+SWIGGY.NS,Consumer Services,1.49,282.5,10.32,2026-08-21
+AADHARHFC.NS,Financial Services,1.45,462.55,-8.59,2026-08-21
+BAJFINANCE.NS,Financial Services,1.45,1095.0,6.08,2026-08-21
+MOTILALOFS.NS,Financial Services,1.43,990.0,11.5,2026-08-21
+EIHOTEL.NS,Consumer Services,1.42,302.75,-8.86,2026-08-21
+CROMPTON.NS,Consumer Durables,1.41,252.0,-1.3,2026-08-21
+POONAWALLA.NS,Financial Services,1.38,490.05,4.56,2026-08-21
+ITCHOTELS.NS,Consumer Services,1.37,164.98,1.13,2026-08-21
+INDUSINDBK.NS,Financial Services,1.36,1005.6,-1.08,2026-08-21
+M&MFIN.NS,Financial Services,1.36,381.6,5.0,2026-08-21
+BALKRISIND.NS,Automobile and Auto Components,1.35,2350.8,14.9,2026-08-21
+GRAVITA.NS,Metals & Mining,1.35,1821.7,0.55,2026-08-21
+HINDUNILVR.NS,Fast Moving Consumer Goods,1.35,2015.0,-8.1,2026-08-21
+ADANIENT.NS,Metals & Mining,1.34,2997.0,-3.01,2026-08-21
+GODFRYPHLP.NS,Fast Moving Consumer Goods,1.33,2117.0,-1.18,2026-08-21
+FORCEMOT.NS,Automobile and Auto Components,1.32,17770.0,-1.19,2026-08-21
+AUBANK.NS,Financial Services,1.31,1108.2,8.45,2026-08-21
+HDFCAMC.NS,Financial Services,1.31,2610.0,2.12,2026-08-21
+PFOCUS.NS,Media Entertainment & Publication,1.31,296.95,0.61,2026-08-21
+TMPV.NS,Automobile and Auto Components,1.31,317.9,-3.86,2026-08-21
+AAVAS.NS,Financial Services,1.29,1355.3,-3.76,2026-08-21
+IREDA.NS,Financial Services,1.29,115.0,-6.59,2026-08-21
+KFINTECH.NS,Financial Services,1.29,980.0,12.21,2026-08-21
+PNBHOUSING.NS,Financial Services,1.28,1170.3,9.44,2026-08-21
+CHOLAHLDNG.NS,Financial Services,1.27,1561.8,1.02,2026-08-21
+DABUR.NS,Fast Moving Consumer Goods,1.26,400.5,-7.4,2026-08-21
+IDFCFIRSTB.NS,Financial Services,1.25,86.75,5.65,2026-08-21
+PGEL.NS,Consumer Durables,1.25,600.55,2.87,2026-08-21
+PPLPHARMA.NS,Healthcare,1.25,213.67,15.84,2026-08-21
+HDFCBANK.NS,Financial Services,1.24,726.95,-4.17,2026-08-21
+ICICIBANK.NS,Financial Services,1.24,1420.0,-2.1,2026-08-21

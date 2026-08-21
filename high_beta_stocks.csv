@@ -1,0 +1,118 @@
+symbol,industry,beta,last_price,rs_1m
+FSL.NS,Services,2.9,276.05,6.82
+AEGISLOG.NS,Oil Gas & Consumable Fuels,2.66,1417.9,3.02
+REDINGTON.NS,Services,2.51,350.55,33.28
+BRIGADE.NS,Realty,2.49,639.3,20.05
+ZENSARTECH.NS,Information Technology,2.33,483.55,-6.46
+ECLERX.NS,Services,2.33,1815.7,-4.45
+NEWGEN.NS,Information Technology,2.31,522.7,1.32
+BANDHANBNK.NS,Financial Services,2.3,175.1,4.4
+SONATSOFTW.NS,Information Technology,2.3,304.0,3.89
+AEGISVOPAK.NS,Oil Gas & Consumable Fuels,2.29,276.3,-7.62
+ABCAPITAL.NS,Financial Services,2.19,413.0,2.82
+JIOFIN.NS,Financial Services,2.14,244.0,2.16
+ASHOKLEY.NS,Capital Goods,2.07,173.0,12.48
+JUBLFOOD.NS,Consumer Services,2.07,506.75,19.12
+BSOFT.NS,Information Technology,2.06,303.75,5.52
+INDIGO.NS,Services,2.02,5110.0,0.47
+SIGNATURE.NS,Realty,2.02,795.3,1.47
+ABFRL.NS,Consumer Services,1.96,54.35,-5.42
+LTM.NS,Information Technology,1.95,4487.8,7.64
+PRESTIGE.NS,Realty,1.88,1631.0,0.49
+PCBL.NS,Chemicals,1.87,317.55,-0.75
+DLF.NS,Realty,1.86,678.1,4.38
+SHRIRAMFIN.NS,Financial Services,1.85,1130.0,10.39
+CHOLAFIN.NS,Financial Services,1.83,1862.9,5.99
+AMBUJACEM.NS,Construction Materials,1.81,414.5,-4.54
+MAPMYINDIA.NS,Information Technology,1.78,983.9,-13.7
+INFY.NS,Information Technology,1.78,1121.0,5.66
+SBICARD.NS,Financial Services,1.75,649.0,2.85
+PERSISTENT.NS,Information Technology,1.73,5667.5,7.32
+BALRAMCHIN.NS,Fast Moving Consumer Goods,1.72,729.35,17.5
+GODREJPROP.NS,Realty,1.69,2035.0,-1.24
+RITES.NS,Construction,1.69,218.08,0.62
+360ONE.NS,Financial Services,1.66,1199.0,6.73
+ABREL.NS,Realty,1.65,1406.3,0.3
+RBLBANK.NS,Financial Services,1.65,392.5,9.47
+URBANCO.NS,Consumer Services,1.65,158.6,20.19
+MPHASIS.NS,Information Technology,1.64,2430.0,4.16
+PINELABS.NS,Financial Services,1.64,156.91,5.68
+ACC.NS,Construction Materials,1.63,1307.4,-4.54
+SAGILITY.NS,Information Technology,1.62,43.35,5.46
+HBLENGINE.NS,Capital Goods,1.56,702.55,-1.47
+GABRIEL.NS,Automobile and Auto Components,1.53,1420.6,2.36
+AIIL.NS,Financial Services,1.52,552.25,1.94
+JUBLINGREA.NS,Chemicals,1.52,718.35,-3.03
+TBOTEK.NS,Consumer Services,1.52,1696.5,16.68
+LTF.NS,Financial Services,1.51,317.15,2.84
+PAYTM.NS,Financial Services,1.51,1632.0,25.14
+UPL.NS,Chemicals,1.5,569.0,-7.59
+CIEINDIA.NS,Automobile and Auto Components,1.49,401.05,-5.11
+NCC.NS,Construction,1.49,149.56,8.74
+SWIGGY.NS,Consumer Services,1.49,282.5,10.32
+IRCON.NS,Construction,1.48,124.72,-3.11
+KAYNES.NS,Capital Goods,1.48,3890.0,20.43
+NAVA.NS,Power,1.47,558.95,-0.35
+COFORGE.NS,Information Technology,1.46,1891.7,25.96
+AADHARHFC.NS,Financial Services,1.45,462.55,-8.59
+BAJFINANCE.NS,Financial Services,1.45,1095.0,6.08
+IKS.NS,Information Technology,1.45,1786.2,-0.54
+LODHA.NS,Realty,1.45,1242.0,6.9
+INTELLECT.NS,Information Technology,1.44,691.25,-7.63
+MOTILALOFS.NS,Financial Services,1.43,990.0,11.5
+EIHOTEL.NS,Consumer Services,1.42,302.75,-8.86
+RHIM.NS,Capital Goods,1.42,375.25,-7.98
+CROMPTON.NS,Consumer Durables,1.41,252.0,-1.3
+JSWINFRA.NS,Services,1.39,335.7,1.99
+OFSS.NS,Information Technology,1.39,11724.0,8.03
+OBEROIRLTY.NS,Realty,1.38,1886.0,1.52
+POONAWALLA.NS,Financial Services,1.38,490.05,4.56
+ITCHOTELS.NS,Consumer Services,1.37,164.98,1.13
+KPRMILL.NS,Textiles,1.37,1151.6,6.45
+TCS.NS,Information Technology,1.37,2302.0,0.08
+BLUEDART.NS,Services,1.36,5083.0,1.45
+INDUSINDBK.NS,Financial Services,1.36,1005.6,-1.08
+M&MFIN.NS,Financial Services,1.36,381.6,5.0
+BALKRISIND.NS,Automobile and Auto Components,1.35,2350.8,14.9
+GRAVITA.NS,Metals & Mining,1.35,1821.7,0.55
+HINDPETRO.NS,Oil Gas & Consumable Fuels,1.35,363.25,-1.81
+HINDUNILVR.NS,Fast Moving Consumer Goods,1.35,2015.0,-8.1
+ADANIENT.NS,Metals & Mining,1.34,2997.0,-3.01
+GODFRYPHLP.NS,Fast Moving Consumer Goods,1.33,2117.0,-1.18
+GODREJIND.NS,Diversified,1.33,1230.0,-9.71
+HFCL.NS,Telecommunication,1.33,228.01,13.79
+BPCL.NS,Oil Gas & Consumable Fuels,1.32,311.0,-1.76
+DALBHARAT.NS,Construction Materials,1.32,1880.0,1.78
+FORCEMOT.NS,Automobile and Auto Components,1.32,17770.0,-1.19
+AUBANK.NS,Financial Services,1.31,1108.2,8.45
+GALLANTT.NS,Capital Goods,1.31,584.4,10.09
+HDFCAMC.NS,Financial Services,1.31,2610.0,2.12
+PFOCUS.NS,Media Entertainment & Publication,1.31,296.95,0.61
+TMPV.NS,Automobile and Auto Components,1.31,317.9,-3.86
+RVNL.NS,Construction,1.3,225.3,-1.38
+AAVAS.NS,Financial Services,1.29,1355.3,-3.76
+IREDA.NS,Financial Services,1.29,115.0,-6.59
+KFINTECH.NS,Financial Services,1.29,980.0,12.21
+PNBHOUSING.NS,Financial Services,1.28,1170.3,9.44
+CHOLAHLDNG.NS,Financial Services,1.27,1561.8,1.02
+HEXT.NS,Information Technology,1.27,532.45,-5.55
+SUMICHEM.NS,Chemicals,1.27,534.65,0.69
+DABUR.NS,Fast Moving Consumer Goods,1.26,400.5,-7.4
+IDFCFIRSTB.NS,Financial Services,1.25,86.75,5.65
+PGEL.NS,Consumer Durables,1.25,600.55,2.87
+PPLPHARMA.NS,Healthcare,1.25,213.67,15.84
+TEJASNET.NS,Telecommunication,1.25,510.45,1.0
+CLEAN.NS,Chemicals,1.24,825.5,12.46
+HDFCBANK.NS,Financial Services,1.24,726.95,-4.17
+ICICIBANK.NS,Financial Services,1.24,1420.0,-2.1
+IGIL.NS,Services,1.24,340.6,-1.31
+CREDITACC.NS,Financial Services,1.23,1496.1,-3.46
+TITAGARH.NS,Capital Goods,1.23,843.55,0.9
+BLS.NS,Consumer Services,1.22,271.29,14.1
+IOC.NS,Oil Gas & Consumable Fuels,1.22,135.9,-3.02
+GRASIM.NS,Construction Materials,1.21,3308.0,5.37
+HYUNDAI.NS,Automobile and Auto Components,1.21,2218.8,12.68
+BLUEJET.NS,Healthcare,1.2,596.15,3.12
+CDSL.NS,Financial Services,1.2,1388.9,2.15
+TMCV.NS,Capital Goods,1.2,472.55,14.31
+RAMCOCEM.NS,Construction Materials,1.2,899.05,-3.49
