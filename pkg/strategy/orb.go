@@ -489,7 +489,14 @@ func (s *ORBStrategy) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	// VWAP Distance Check
+	// VWAP Distance Check.
+	// VWAP is zero while the session has traded no volume at all (a halted or
+	// completely illiquid stock prints zero-volume candles). There is nothing
+	// to measure extension against, and such a session is not tradeable, so
+	// skip rather than divide by zero.
+	if currentVwap.IsZero() {
+		return nil
+	}
 	vwapDistPct := candle.Close.Sub(currentVwap).Div(currentVwap).Abs().Mul(decimal.NewFromInt(100))
 	if vwapDistPct.GreaterThan(decimal.NewFromFloat(s.cfg.MaxVWAPDistPct)) {
 		return nil
