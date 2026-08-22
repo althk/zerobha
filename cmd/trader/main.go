@@ -179,7 +179,15 @@ func main() {
 		cfg.Risk.MaxTradesPerStock,
 	)
 
-	// Strategy (The Brain)
+	// Strategy (The Brain). ORB is the only strategy wired for live trading:
+	// dailyrev is a backtest-only research strategy (CNC, multi-day holds) and
+	// the live loop's intraday square-off would close its positions the same
+	// day. Fail loudly rather than logging the configured name and silently
+	// running ORB against another strategy's watchlist and timeframe.
+	if cfg.Strategy != "" && cfg.Strategy != config.StrategyORB {
+		log.Fatalf("live trading supports only strategy=%q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
+			config.StrategyORB, cfg.Strategy, cfg.Strategy, cfg.Strategy)
+	}
 	strat := strategy.NewORBStrategy(watchlist, cfg.ORB)
 	maxConcurrent := cfg.ORB.MaxConcurrent
 

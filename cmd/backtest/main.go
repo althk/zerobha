@@ -26,7 +26,7 @@ func main() {
 	// Parse command line flags
 	startDateStr := flag.String("start", "", "Start date for backtest (YYYY-MM-DD)")
 	endDateStr := flag.String("end", "", "End date for backtest (YYYY-MM-DD)")
-	strategyName := flag.String("strategy", "orb", "Strategy to run (ORB is the only strategy; kept so -config files that name it still work)")
+	strategyName := flag.String("strategy", "orb", "Strategy to run: orb (intraday 5m) or dailyrev (daily short-term reversal)")
 	csvFile := flag.String("csv", "high_beta_stocks.csv", "CSV file containing symbols")
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
 	timeframe := flag.String("timeframe", "5m", "Timeframe for candles (e.g. 1d, 1h)")
@@ -182,6 +182,13 @@ func main() {
 			orbCfg = orbConfigWithKnobs(*knobs)
 		}
 		var myStrategy core.Strategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
+		if *strategyName == config.StrategyDailyRev {
+			drCfg := config.DefaultDailyRevConfig()
+			if appCfg != nil {
+				drCfg = appCfg.DailyRev
+			}
+			myStrategy = strategy.NewDailyReversalStrategy([]string{sym}, drCfg)
+		}
 
 		// Journal
 		j, _ := journal.NewJournal("backtest_journal.csv")

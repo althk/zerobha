@@ -41,3 +41,12 @@ type Signal struct {
 	// useful for the Risk Manager and Logs.
 	Metadata map[string]string `json:"metadata"`
 }
+
+// MetaExitOnOrAfter is a Signal/Order metadata key carrying a "2006-01-02"
+// date on or after which the position must be closed regardless of stop and
+// target. Strategies that hold across sessions set it to bound the hold; a
+// broker without time-stop support simply ignores it.
+//
+// It lives in models rather than core because pkg/broker must read it and
+// internal/core already imports pkg/broker — the reverse import would cycle.
+const MetaExitOnOrAfter = "ExitOnOrAfter"

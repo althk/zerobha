@@ -66,6 +66,33 @@ type ORBConfig struct {
 	PartialExitPct float64 `toml:"partial_exit_pct"` // default 0.5
 }
 
+// DailyRevConfig holds parameters for the DailyReversal strategy (daily
+// candles, multi-day holds). It is long-only by construction — see the note on
+// the strategy type — so there are no short-side thresholds.
+type DailyRevConfig struct {
+	Timeframe string `toml:"timeframe"` // default "day"
+	CSVFile   string `toml:"csv_file"`  // default "ind_nifty200list.csv"
+	Limit     int    `toml:"limit"`     // default 200
+
+	TrendPeriod   int `toml:"trend_period"`    // regime SMA, default 200
+	RSIPeriod     int `toml:"rsi_period"`      // default 2
+	ExitSMAPeriod int `toml:"exit_sma_period"` // reversion target SMA, default 5
+	ATRPeriod     int `toml:"atr_period"`      // default 14
+
+	RSIEntry float64 `toml:"rsi_entry"` // buy below this RSI, default 10
+	StopATR  float64 `toml:"stop_atr"`  // stop distance in ATR, default 2.5
+	// MinTargetATR rejects entries whose distance to the reversion target is
+	// smaller than this many ATR — a target too close to cover costs.
+	MinTargetATR float64 `toml:"min_target_atr"` // default 0.5
+	// MinPrice skips low-priced names where tick and impact costs dominate.
+	MinPrice float64 `toml:"min_price"` // default 50
+	// MaxHoldDays force-closes a position after this many sessions. 0 disables
+	// the time stop, which lets a stuck trade run to the end of the backtest.
+	MaxHoldDays int `toml:"max_hold_days"` // default 10
+
+	MaxConcurrent int `toml:"max_concurrent"` // default 5
+}
+
 // RiskConfig holds parameters for the risk manager.
 // MaxTradesPerStock is a cross-strategy cap; note that ORB's one_trade_per_day
 // already enforces a per-symbol daily limit at the strategy level. Set
@@ -86,20 +113,49 @@ type EngineConfig struct {
 }
 
 type Config struct {
-	Strategy    string       `toml:"strategy"`
-	APIKey      string       `toml:"api_key"`
-	APISecret   string       `toml:"api_secret"`
-	UptrendOnly *bool        `toml:"uptrend_only"`
-	Risk        RiskConfig   `toml:"risk"`
-	Engine      EngineConfig `toml:"engine"`
-	ORB         ORBConfig    `toml:"orb"`
+	Strategy    string         `toml:"strategy"`
+	APIKey      string         `toml:"api_key"`
+	APISecret   string         `toml:"api_secret"`
+	UptrendOnly *bool          `toml:"uptrend_only"`
+	Risk        RiskConfig     `toml:"risk"`
+	Engine      EngineConfig   `toml:"engine"`
+	ORB         ORBConfig      `toml:"orb"`
+	DailyRev    DailyRevConfig `toml:"dailyrev"`
 }
 
 // ActiveStrategySettings returns the Timeframe, CSVFile, and Limit the engine
-// bootstraps from. ORB is the only strategy, so these come from its section;
-// the accessor stays so callers don't reach into ORBConfig directly.
+// bootstraps from, taken from the section belonging to the selected strategy.
+// Callers do not reach into the per-strategy configs directly.
 func (c *Config) ActiveStrategySettings() StrategySettings {
+	if c.Strategy == StrategyDailyRev {
+		return StrategySettings{Timeframe: c.DailyRev.Timeframe, CSVFile: c.DailyRev.CSVFile, Limit: c.DailyRev.Limit}
+	}
 	return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
+}
+
+// Strategy names accepted by the `strategy` config key and the backtester's
+// -strategy flag.
+const (
+	StrategyORB      = "orb"
+	StrategyDailyRev = "dailyrev"
+)
+
+func DefaultDailyRevConfig() DailyRevConfig {
+	return DailyRevConfig{
+		Timeframe:     "day",
+		CSVFile:       "ind_nifty200list.csv",
+		Limit:         200,
+		TrendPeriod:   200,
+		RSIPeriod:     2,
+		ExitSMAPeriod: 5,
+		ATRPeriod:     14,
+		RSIEntry:      10,
+		StopATR:       2.5,
+		MinTargetATR:  0.5,
+		MinPrice:      50,
+		MaxHoldDays:   10,
+		MaxConcurrent: 5,
+	}
 }
 
 func DefaultRiskConfig() RiskConfig {
@@ -252,6 +308,50 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.ORB.StopFloorAtRange == nil {
 		config.ORB.StopFloorAtRange = orbD.StopFloorAtRange
+	}
+
+	// DailyReversal defaults. Same zero-means-absent convention as above: a
+	// knob set to 0 in TOML gets the default back, so disable a threshold with
+	// an extreme value rather than 0 (see CLAUDE.md).
+	drD := DefaultDailyRevConfig()
+	if config.DailyRev.Timeframe == "" {
+		config.DailyRev.Timeframe = drD.Timeframe
+	}
+	if config.DailyRev.CSVFile == "" {
+		config.DailyRev.CSVFile = drD.CSVFile
+	}
+	if config.DailyRev.Limit == 0 {
+		config.DailyRev.Limit = drD.Limit
+	}
+	if config.DailyRev.TrendPeriod == 0 {
+		config.DailyRev.TrendPeriod = drD.TrendPeriod
+	}
+	if config.DailyRev.RSIPeriod == 0 {
+		config.DailyRev.RSIPeriod = drD.RSIPeriod
+	}
+	if config.DailyRev.ExitSMAPeriod == 0 {
+		config.DailyRev.ExitSMAPeriod = drD.ExitSMAPeriod
+	}
+	if config.DailyRev.ATRPeriod == 0 {
+		config.DailyRev.ATRPeriod = drD.ATRPeriod
+	}
+	if config.DailyRev.RSIEntry == 0 {
+		config.DailyRev.RSIEntry = drD.RSIEntry
+	}
+	if config.DailyRev.StopATR == 0 {
+		config.DailyRev.StopATR = drD.StopATR
+	}
+	if config.DailyRev.MinTargetATR == 0 {
+		config.DailyRev.MinTargetATR = drD.MinTargetATR
+	}
+	if config.DailyRev.MinPrice == 0 {
+		config.DailyRev.MinPrice = drD.MinPrice
+	}
+	if config.DailyRev.MaxHoldDays == 0 {
+		config.DailyRev.MaxHoldDays = drD.MaxHoldDays
+	}
+	if config.DailyRev.MaxConcurrent == 0 {
+		config.DailyRev.MaxConcurrent = drD.MaxConcurrent
 	}
 
 	return &config, nil

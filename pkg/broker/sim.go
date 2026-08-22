@@ -89,6 +89,24 @@ func (s *SimBroker) PlaceOrder(order models.Order) (models.Order, error) {
 	return order, nil
 }
 
+// timeStopReached reports whether the order carries a MetaExitOnOrAfter date
+// that this candle has reached. Orders without the key, or with an unparseable
+// one, never time out — a malformed date must not silently close positions.
+func timeStopReached(o *models.Order, candle models.Candle) bool {
+	if o.Metadata == nil {
+		return false
+	}
+	raw, ok := o.Metadata[models.MetaExitOnOrAfter]
+	if !ok || raw == "" {
+		return false
+	}
+	deadline, err := time.ParseInLocation("2006-01-02", raw, candle.StartTime.Location())
+	if err != nil {
+		return false
+	}
+	return !candle.StartTime.Before(deadline)
+}
+
 func (s *SimBroker) CheckExits(candle models.Candle) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,6 +163,12 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 				// 2. Check Target
 				exitPrice = o.Target
 				exitReason = "TARGET-HIT"
+			} else if timeStopReached(o, candle) {
+				// 3. Time stop, for strategies that hold across sessions.
+				// Checked last so a bar that also touches stop or target is
+				// attributed to the price level it actually hit.
+				exitPrice = candle.Close
+				exitReason = "TIME-STOP"
 			}
 
 			// If triggered, Execute the Sell
