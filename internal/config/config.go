@@ -66,42 +66,6 @@ type ORBConfig struct {
 	PartialExitPct float64 `toml:"partial_exit_pct"` // default 0.5
 }
 
-type CPRVWAPConfig struct {
-	Timeframe         string  `toml:"timeframe"`           // default "5m"
-	CSVFile           string  `toml:"csv_file"`            // default "high_beta_stocks.csv"
-	Limit             int     `toml:"limit"`               // default 50
-	EntryWindowStart  int     `toml:"entry_window_start"`  // minutes from midnight, default 570 (9:30 AM)
-	EntryWindowEnd    int     `toml:"entry_window_end"`    // minutes from midnight, default 840 (2:00 PM)
-	RSILongThreshold  float64 `toml:"rsi_long_threshold"`  // default 50
-	RSIShortThreshold float64 `toml:"rsi_short_threshold"` // default 50
-	ADXThreshold      float64 `toml:"adx_threshold"`       // default 20
-	SLMultiplier      float64 `toml:"sl_multiplier"`       // default 1.5
-	TargetMultiplier  float64 `toml:"target_multiplier"`   // default 3.0
-	MaxConcurrent     int     `toml:"max_concurrent"`      // max simultaneous positions, default 5
-	MinCPRWidthPct    float64 `toml:"min_cpr_width_pct"`   // min CPR width as % of price, default 0.3
-	MaxCPRWidthPct    float64 `toml:"max_cpr_width_pct"`   // max CPR width as % of price, default 2.0
-	MaxEMADistPct     float64 `toml:"max_ema_dist_pct"`    // max % distance from EMA9, default 0.5
-}
-
-type DonchianConfig struct {
-	Timeframe string `toml:"timeframe"` // default "day"
-	CSVFile   string `toml:"csv_file"`  // default "high_beta_stocks.csv"
-	Limit     int    `toml:"limit"`     // default 50
-}
-
-type EMA20PullbackConfig struct {
-	Timeframe     string  `toml:"timeframe"`      // default "day"
-	CSVFile       string  `toml:"csv_file"`       // default "high_beta_stocks.csv"
-	Limit         int     `toml:"limit"`          // default 50
-	SLMultiplier  float64 `toml:"sl_multiplier"`  // default 2.0
-	TPMultiplier  float64 `toml:"tp_multiplier"`  // default 2.0
-	MaxConcurrent int     `toml:"max_concurrent"` // default 5
-	// PullbackEMA selects which EMA the entry waits for a pullback touch to:
-	// 20 (default, faster/shallower) or 50 (deeper, less frequent). The trend
-	// filters (EMA50 > SMA200, EMA20 > EMA50) are unchanged.
-	PullbackEMA int `toml:"pullback_ema"` // default 20
-}
-
 // RiskConfig holds parameters for the risk manager.
 // MaxTradesPerStock is a cross-strategy cap; note that ORB's one_trade_per_day
 // already enforces a per-symbol daily limit at the strategy level. Set
@@ -122,31 +86,20 @@ type EngineConfig struct {
 }
 
 type Config struct {
-	Strategy      string              `toml:"strategy"`
-	APIKey        string              `toml:"api_key"`
-	APISecret     string              `toml:"api_secret"`
-	UptrendOnly   *bool               `toml:"uptrend_only"`
-	Risk          RiskConfig          `toml:"risk"`
-	Engine        EngineConfig        `toml:"engine"`
-	ORB           ORBConfig           `toml:"orb"`
-	CPRVWAP       CPRVWAPConfig       `toml:"cprvwap"`
-	Donchian      DonchianConfig      `toml:"donchian"`
-	EMA20Pullback EMA20PullbackConfig `toml:"ema20_pullback"`
+	Strategy    string       `toml:"strategy"`
+	APIKey      string       `toml:"api_key"`
+	APISecret   string       `toml:"api_secret"`
+	UptrendOnly *bool        `toml:"uptrend_only"`
+	Risk        RiskConfig   `toml:"risk"`
+	Engine      EngineConfig `toml:"engine"`
+	ORB         ORBConfig    `toml:"orb"`
 }
 
-// ActiveStrategySettings returns the Timeframe, CSVFile, and Limit for whichever
-// strategy is currently selected. Callers use this instead of the old top-level fields.
+// ActiveStrategySettings returns the Timeframe, CSVFile, and Limit the engine
+// bootstraps from. ORB is the only strategy, so these come from its section;
+// the accessor stays so callers don't reach into ORBConfig directly.
 func (c *Config) ActiveStrategySettings() StrategySettings {
-	switch c.Strategy {
-	case "cprvwap":
-		return StrategySettings{Timeframe: c.CPRVWAP.Timeframe, CSVFile: c.CPRVWAP.CSVFile, Limit: c.CPRVWAP.Limit}
-	case "donchian":
-		return StrategySettings{Timeframe: c.Donchian.Timeframe, CSVFile: c.Donchian.CSVFile, Limit: c.Donchian.Limit}
-	case "ema20_pullback":
-		return StrategySettings{Timeframe: c.EMA20Pullback.Timeframe, CSVFile: c.EMA20Pullback.CSVFile, Limit: c.EMA20Pullback.Limit}
-	default: // "orb" and anything unknown
-		return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
-	}
+	return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
 }
 
 func DefaultRiskConfig() RiskConfig {
@@ -195,45 +148,6 @@ func DefaultORBConfig() ORBConfig {
 }
 
 func boolPtr(b bool) *bool { return &b }
-
-func DefaultCPRVWAPConfig() CPRVWAPConfig {
-	return CPRVWAPConfig{
-		Timeframe:         "5m",
-		CSVFile:           "high_beta_stocks.csv",
-		Limit:             50,
-		EntryWindowStart:  9*60 + 30,
-		EntryWindowEnd:    14 * 60,
-		RSILongThreshold:  50,
-		RSIShortThreshold: 50,
-		ADXThreshold:      20,
-		SLMultiplier:      1.5,
-		TargetMultiplier:  3.0,
-		MaxConcurrent:     5,
-		MinCPRWidthPct:    0.3,
-		MaxCPRWidthPct:    2.0,
-		MaxEMADistPct:     0.5,
-	}
-}
-
-func DefaultDonchianConfig() DonchianConfig {
-	return DonchianConfig{
-		Timeframe: "day",
-		CSVFile:   "high_beta_stocks.csv",
-		Limit:     50,
-	}
-}
-
-func DefaultEMA20PullbackConfig() EMA20PullbackConfig {
-	return EMA20PullbackConfig{
-		Timeframe:     "day",
-		CSVFile:       "high_beta_stocks.csv",
-		Limit:         50,
-		SLMultiplier:  3.0,
-		TPMultiplier:  4.0,
-		MaxConcurrent: 5,
-		PullbackEMA:   20,
-	}
-}
 
 func LoadConfig(path string) (*Config, error) {
 	var config Config
@@ -338,87 +252,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.ORB.StopFloorAtRange == nil {
 		config.ORB.StopFloorAtRange = orbD.StopFloorAtRange
-	}
-
-	// CPRVWAP defaults
-	cprD := DefaultCPRVWAPConfig()
-	if config.CPRVWAP.Timeframe == "" {
-		config.CPRVWAP.Timeframe = cprD.Timeframe
-	}
-	if config.CPRVWAP.CSVFile == "" {
-		config.CPRVWAP.CSVFile = cprD.CSVFile
-	}
-	if config.CPRVWAP.Limit == 0 {
-		config.CPRVWAP.Limit = cprD.Limit
-	}
-	if config.CPRVWAP.EntryWindowStart == 0 {
-		config.CPRVWAP.EntryWindowStart = cprD.EntryWindowStart
-	}
-	if config.CPRVWAP.EntryWindowEnd == 0 {
-		config.CPRVWAP.EntryWindowEnd = cprD.EntryWindowEnd
-	}
-	if config.CPRVWAP.RSILongThreshold == 0 {
-		config.CPRVWAP.RSILongThreshold = cprD.RSILongThreshold
-	}
-	if config.CPRVWAP.RSIShortThreshold == 0 {
-		config.CPRVWAP.RSIShortThreshold = cprD.RSIShortThreshold
-	}
-	if config.CPRVWAP.ADXThreshold == 0 {
-		config.CPRVWAP.ADXThreshold = cprD.ADXThreshold
-	}
-	if config.CPRVWAP.SLMultiplier == 0 {
-		config.CPRVWAP.SLMultiplier = cprD.SLMultiplier
-	}
-	if config.CPRVWAP.TargetMultiplier == 0 {
-		config.CPRVWAP.TargetMultiplier = cprD.TargetMultiplier
-	}
-	if config.CPRVWAP.MaxConcurrent == 0 {
-		config.CPRVWAP.MaxConcurrent = cprD.MaxConcurrent
-	}
-	if config.CPRVWAP.MinCPRWidthPct == 0 {
-		config.CPRVWAP.MinCPRWidthPct = cprD.MinCPRWidthPct
-	}
-	if config.CPRVWAP.MaxCPRWidthPct == 0 {
-		config.CPRVWAP.MaxCPRWidthPct = cprD.MaxCPRWidthPct
-	}
-	if config.CPRVWAP.MaxEMADistPct == 0 {
-		config.CPRVWAP.MaxEMADistPct = cprD.MaxEMADistPct
-	}
-
-	// Donchian defaults
-	donD := DefaultDonchianConfig()
-	if config.Donchian.Timeframe == "" {
-		config.Donchian.Timeframe = donD.Timeframe
-	}
-	if config.Donchian.CSVFile == "" {
-		config.Donchian.CSVFile = donD.CSVFile
-	}
-	if config.Donchian.Limit == 0 {
-		config.Donchian.Limit = donD.Limit
-	}
-
-	// EMA20Pullback defaults
-	ema20D := DefaultEMA20PullbackConfig()
-	if config.EMA20Pullback.Timeframe == "" {
-		config.EMA20Pullback.Timeframe = ema20D.Timeframe
-	}
-	if config.EMA20Pullback.CSVFile == "" {
-		config.EMA20Pullback.CSVFile = ema20D.CSVFile
-	}
-	if config.EMA20Pullback.Limit == 0 {
-		config.EMA20Pullback.Limit = ema20D.Limit
-	}
-	if config.EMA20Pullback.SLMultiplier == 0 {
-		config.EMA20Pullback.SLMultiplier = ema20D.SLMultiplier
-	}
-	if config.EMA20Pullback.TPMultiplier == 0 {
-		config.EMA20Pullback.TPMultiplier = ema20D.TPMultiplier
-	}
-	if config.EMA20Pullback.MaxConcurrent == 0 {
-		config.EMA20Pullback.MaxConcurrent = ema20D.MaxConcurrent
-	}
-	if config.EMA20Pullback.PullbackEMA == 0 {
-		config.EMA20Pullback.PullbackEMA = ema20D.PullbackEMA
 	}
 
 	return &config, nil

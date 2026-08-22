@@ -26,7 +26,7 @@ func main() {
 	// Parse command line flags
 	startDateStr := flag.String("start", "", "Start date for backtest (YYYY-MM-DD)")
 	endDateStr := flag.String("end", "", "End date for backtest (YYYY-MM-DD)")
-	strategyName := flag.String("strategy", "orb", "Strategy to run: orb, donchian, cprvwap")
+	strategyName := flag.String("strategy", "orb", "Strategy to run (ORB is the only strategy; kept so -config files that name it still work)")
 	csvFile := flag.String("csv", "high_beta_stocks.csv", "CSV file containing symbols")
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
 	timeframe := flag.String("timeframe", "5m", "Timeframe for candles (e.g. 1d, 1h)")
@@ -34,9 +34,7 @@ func main() {
 	baseline := flag.Bool("baseline", false, "ORB only: revert the new robustness/signal knobs to original behavior for A/B comparison")
 	costBps := flag.Float64("cost-bps", 0.0, "Round-trip transaction cost in basis points of turnover, deducted per trade (e.g. 6 = 0.06%)")
 	knobs := flag.String("knobs", "", "ORB ablation: start from baseline and enable only these new knobs (comma list of: onetrade,stopfloor,vwapdist,thrust,adxeps)")
-	tpMult := flag.Float64("tp-mult", 0, "ema20_pullback: override target multiplier (0 = use config default)")
-	slMult := flag.Float64("sl-mult", 0, "ema20_pullback: override stop-loss multiplier (0 = use config default)")
-	pullbackEMA := flag.Int("pullback-ema", 0, "ema20_pullback: override pullback EMA (20 or 50; 0 = use config default)")
+	tradesCSV := flag.String("trades-csv", "", "Write every trade (all symbols, pre-cost PnL) to this CSV for offline analysis")
 	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
 	configFile := flag.String("config", "config.local.toml", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
 	flag.Parse()
@@ -133,6 +131,7 @@ func main() {
 	// portfolio-level Sharpe at the end (averaging per-symbol Sharpes would be
 	// dominated by symbols that traded only once or twice).
 	var allTrades []models.Trade
+	var allTradesRaw []models.Trade
 
 	// When the uptrend filter is engaged, load NIFTY-50 daily candles keyed by
 	// date so we can feed the matching index candle into the engine before each
@@ -172,43 +171,17 @@ func main() {
 		riskMgr := risk.NewManager(nil, maxLoss, maxTrades, maxPerStock)
 
 		// Strategy
-		var myStrategy core.Strategy
-		switch *strategyName {
-		case "donchian":
-			myStrategy = strategy.NewDonchianBreakout([]string{sym})
-		case "cprvwap":
-			myStrategy = strategy.NewCPRVWAPStrategy([]string{sym}, config.DefaultCPRVWAPConfig())
-		case "orb":
-			orbCfg := config.DefaultORBConfig()
-			if appCfg != nil {
-				orbCfg = appCfg.ORB
-			}
-			if *baseline {
-				orbCfg = orbConfigToBaseline(orbCfg)
-			}
-			if *knobs != "" {
-				orbCfg = orbConfigWithKnobs(*knobs)
-			}
-			myStrategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
-		case "ema20_pullback":
-			emaCfg := config.DefaultEMA20PullbackConfig()
-			if appCfg != nil {
-				emaCfg = appCfg.EMA20Pullback
-			}
-			if *tpMult > 0 {
-				emaCfg.TPMultiplier = *tpMult
-			}
-			if *slMult > 0 {
-				emaCfg.SLMultiplier = *slMult
-			}
-			if *pullbackEMA > 0 {
-				emaCfg.PullbackEMA = *pullbackEMA
-			}
-			myStrategy = strategy.NewEMA20Pullback([]string{sym}, emaCfg)
-		default:
-			log.Printf("Using default strategy: ORB")
-			myStrategy = strategy.NewORBStrategy([]string{sym}, config.DefaultORBConfig())
+		orbCfg := config.DefaultORBConfig()
+		if appCfg != nil {
+			orbCfg = appCfg.ORB
 		}
+		if *baseline {
+			orbCfg = orbConfigToBaseline(orbCfg)
+		}
+		if *knobs != "" {
+			orbCfg = orbConfigWithKnobs(*knobs)
+		}
+		var myStrategy core.Strategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
 
 		// Journal
 		j, _ := journal.NewJournal("backtest_journal.csv")
@@ -320,6 +293,7 @@ func main() {
 
 		// Deduct round-trip transaction costs (brokerage + STT + exchange/GST/etc.)
 		// from each trade so baseline and updated runs are compared net of costs.
+		allTradesRaw = append(allTradesRaw, simBroker.Trades...)
 		tradesNet := applyCosts(simBroker.Trades, *costBps)
 
 		stats := statistics.Analyze(tradesNet, initialCapital)
@@ -405,6 +379,14 @@ func main() {
 		aggProfitFactor = 999.0 // Infinite
 	}
 
+	if *tradesCSV != "" {
+		if err := writeTradesCSV(*tradesCSV, allTradesRaw); err != nil {
+			log.Printf("WARNING: Failed to write trades CSV: %v", err)
+		} else {
+			fmt.Printf("Wrote %d trades to %s\n", len(allTradesRaw), *tradesCSV)
+		}
+	}
+
 	// Portfolio-level Sharpe over the pooled trade series. (Note: the pooled
 	// drawdown is not meaningful here because trades are grouped by symbol, not
 	// time-ordered into a single equity curve — so we report only Sharpe.)
@@ -418,6 +400,44 @@ func main() {
 	fmt.Printf("Sharpe (per-trade): %.3f\n", portfolio.Sharpe)
 
 	fmt.Println("\n=== BACKTEST COMPLETE ===")
+}
+
+// writeTradesCSV dumps every trade with its pre-cost PnL, so regime and exit
+// analysis can be done offline without re-running the backtest.
+func writeTradesCSV(path string, trades []models.Trade) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"symbol", "direction", "entry_time", "exit_time",
+		"entry_price", "exit_price", "quantity", "pnl_gross", "exit_reason"}); err != nil {
+		return err
+	}
+	for _, t := range trades {
+		exitTime := ""
+		if !t.ExitTime.IsZero() {
+			exitTime = t.ExitTime.Format(time.RFC3339)
+		}
+		if err := w.Write([]string{
+			t.Symbol,
+			t.Direction,
+			t.EntryTime.Format(time.RFC3339),
+			exitTime,
+			t.EntryPrice.String(),
+			t.ExitPrice.String(),
+			t.Quantity.String(),
+			t.PnL.String(),
+			t.ExitReason,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyCosts returns a copy of the trades with a round-trip transaction cost

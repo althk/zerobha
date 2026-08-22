@@ -180,33 +180,11 @@ func main() {
 	)
 
 	// Strategy (The Brain)
-	var strat core.Strategy
-	var maxConcurrent int
-	switch cfg.Strategy {
-	case "donchian":
-		strat = strategy.NewDonchianBreakout(watchlist)
-	case "cprvwap":
-		strat = strategy.NewCPRVWAPStrategy(watchlist, cfg.CPRVWAP)
-		maxConcurrent = cfg.CPRVWAP.MaxConcurrent
-	case "orb":
-		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
-		maxConcurrent = cfg.ORB.MaxConcurrent
-	case "ema20_pullback":
-		strat = strategy.NewEMA20Pullback(watchlist, cfg.EMA20Pullback)
-		maxConcurrent = cfg.EMA20Pullback.MaxConcurrent
-	default:
-		log.Printf("Using default strategy: ORB")
-		strat = strategy.NewORBStrategy(watchlist, cfg.ORB)
-		maxConcurrent = 5 // Default
-	}
+	strat := strategy.NewORBStrategy(watchlist, cfg.ORB)
+	maxConcurrent := cfg.ORB.MaxConcurrent
 
-	// Inject DB if Strategy supports it (Manual Dependency Injection)
-	if orbStrat, ok := strat.(*strategy.ORBStrategy); ok {
-		orbStrat.SetDB(store)
-	}
-	if cprvwapStrat, ok := strat.(*strategy.CPRVWAPStrategy); ok {
-		cprvwapStrat.SetDB(store)
-	}
+	// Inject DB (Manual Dependency Injection)
+	strat.SetDB(store)
 
 	strat.Init(kiteAdapter)
 
@@ -416,8 +394,7 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 	log.Println("=== UPTREND ONLY:", *cfg.UptrendOnly)
 	log.Printf("=== TIMEFRAME: %s | CSV: %s | LIMIT: %d", tf, ss.CSVFile, ss.Limit)
 
-	switch cfg.Strategy {
-	case "orb":
+	{
 		c := cfg.ORB
 		log.Printf("--- ORB CONFIG ---")
 		log.Printf("  Entry Window End : %d min from midnight (%02d:%02d)", c.EntryWindowEnd, c.EntryWindowEnd/60, c.EntryWindowEnd%60)
@@ -430,28 +407,6 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 		log.Printf("  Max VWAP Dist    : %.2f ATR / %.2f%%", c.MaxVWAPDistATR, c.MaxVWAPDistPct)
 		log.Printf("  Body Strength    : %.2f  Max Gap Pct: %.2f%%", c.BodyStrengthThreshold, c.MaxGapPct)
 		log.Printf("  One Trade/Day    : %v  Stop Floor At Range: %v", *c.OneTradePerDay, *c.StopFloorAtRange)
-	case "cprvwap":
-		c := cfg.CPRVWAP
-		log.Printf("--- CPRVWAP CONFIG ---")
-		log.Printf("  Entry Window     : %d–%d min from midnight (%02d:%02d – %02d:%02d)",
-			c.EntryWindowStart, c.EntryWindowEnd,
-			c.EntryWindowStart/60, c.EntryWindowStart%60,
-			c.EntryWindowEnd/60, c.EntryWindowEnd%60)
-		log.Printf("  RSI Long/Short   : %.1f / %.1f", c.RSILongThreshold, c.RSIShortThreshold)
-		log.Printf("  ADX Threshold    : %.1f", c.ADXThreshold)
-		log.Printf("  SL/Target Mult   : %.2fx / %.2fx", c.SLMultiplier, c.TargetMultiplier)
-		log.Printf("  Max Concurrent   : %d", c.MaxConcurrent)
-		log.Printf("  CPR Width Pct    : %.2f%% – %.2f%%", c.MinCPRWidthPct, c.MaxCPRWidthPct)
-		log.Printf("  Max EMA Dist Pct : %.2f%%", c.MaxEMADistPct)
-	case "donchian":
-		log.Printf("--- DONCHIAN CONFIG ---")
-		log.Printf("  (no extra parameters)")
-	case "ema20_pullback":
-		c := cfg.EMA20Pullback
-		log.Printf("--- EMA20 PULLBACK CONFIG ---")
-		log.Printf("  Pullback EMA     : %d", c.PullbackEMA)
-		log.Printf("  SL/TP Mult       : %.2fx / %.2fx", c.SLMultiplier, c.TPMultiplier)
-		log.Printf("  Max Concurrent   : %d", c.MaxConcurrent)
 	}
 	log.Println("==========================================")
 }
