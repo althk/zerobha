@@ -122,3 +122,6 @@ zerobha.iml
 temp_stocks.csv
 scripts/__pycache__/*
 backtest_orb_watchlist.log
+
+# Cached Kite access token (cmd/histdl)
+.kite_token.json
