@@ -115,6 +115,12 @@ func main() {
 	}
 
 	fmt.Printf("=== ZEROBHA MULTI-STOCK BACKTEST [%s] ===\n", *strategyName)
+	if *strategyName == config.StrategyGapFade {
+		fmt.Println("!! GAPFADE IS UNGATED IN BACKTEST: the Upstox news/earnings check has no")
+		fmt.Println("!! as-of-date history, so this run fades EVERY qualifying gap, including the")
+		fmt.Println("!! informed ones the live strategy declines. Treat the result as the")
+		fmt.Println("!! no-information floor of the strategy, never as an estimate of it.")
+	}
 
 	// Store results for sorting
 	type Result struct {
@@ -182,12 +188,23 @@ func main() {
 			orbCfg = orbConfigWithKnobs(*knobs)
 		}
 		var myStrategy core.Strategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
-		if *strategyName == config.StrategyDailyRev {
+		switch *strategyName {
+		case config.StrategyDailyRev:
 			drCfg := config.DefaultDailyRevConfig()
 			if appCfg != nil {
 				drCfg = appCfg.DailyRev
 			}
 			myStrategy = strategy.NewDailyReversalStrategy([]string{sym}, drCfg)
+		case config.StrategyGapFade:
+			gfCfg := config.DefaultGapFadeConfig()
+			if appCfg != nil {
+				gfCfg = appCfg.GapFade
+			}
+			// nil gate: Upstox serves current news and current fundamentals
+			// with no as-of-date history, so a backtest cannot reproduce the
+			// live news/earnings check. This run fades every qualifying gap,
+			// informed or not — see the banner printed above.
+			myStrategy = strategy.NewGapFadeStrategy([]string{sym}, gfCfg, nil)
 		}
 
 		// Journal

@@ -25,6 +25,7 @@ import (
 	"zerobha/pkg/db"
 	"zerobha/pkg/journal"
 	"zerobha/pkg/strategy"
+	"zerobha/pkg/upstox"
 
 	"github.com/shopspring/decimal"
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
@@ -179,22 +180,37 @@ func main() {
 		cfg.Risk.MaxTradesPerStock,
 	)
 
-	// Strategy (The Brain). ORB is the only strategy wired for live trading:
-	// dailyrev is a backtest-only research strategy (CNC, multi-day holds) and
-	// the live loop's intraday square-off would close its positions the same
-	// day. Fail loudly rather than logging the configured name and silently
-	// running ORB against another strategy's watchlist and timeframe.
-	if cfg.Strategy != "" && cfg.Strategy != config.StrategyORB {
-		log.Fatalf("live trading supports only strategy=%q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
-			config.StrategyORB, cfg.Strategy, cfg.Strategy, cfg.Strategy)
+	// Strategy (The Brain). ORB and gapfade are the intraday (MIS) strategies
+	// wired for live trading; dailyrev is backtest-only research (CNC,
+	// multi-day holds) whose positions the live loop's square-off would close
+	// the same day. Fail loudly on anything else rather than logging the
+	// configured name and silently running ORB against another strategy's
+	// watchlist and timeframe.
+	var strat core.Strategy
+	var maxConcurrent int
+	switch cfg.Strategy {
+	case "", config.StrategyORB:
+		orb := strategy.NewORBStrategy(watchlist, cfg.ORB)
+		// Inject DB (Manual Dependency Injection) so opening ranges and
+		// per-day state survive a mid-session restart.
+		orb.SetDB(store)
+		strat = orb
+		maxConcurrent = cfg.ORB.MaxConcurrent
+	case config.StrategyGapFade:
+		gate, err := buildUpstoxGate(cfg)
+		if err != nil {
+			log.Fatalf("gapfade needs the Upstox news/earnings gate: %v", err)
+		}
+		strat = strategy.NewGapFadeStrategy(watchlist, cfg.GapFade, gate)
+		maxConcurrent = cfg.GapFade.MaxConcurrent
+	default:
+		log.Fatalf("live trading supports strategy=%q or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
+			config.StrategyORB, config.StrategyGapFade, cfg.Strategy, cfg.Strategy, cfg.Strategy)
 	}
-	strat := strategy.NewORBStrategy(watchlist, cfg.ORB)
-	maxConcurrent := cfg.ORB.MaxConcurrent
 
-	// Inject DB (Manual Dependency Injection)
-	strat.SetDB(store)
-
-	strat.Init(kiteAdapter)
+	if err := strat.Init(kiteAdapter); err != nil {
+		log.Printf("WARNING: strategy Init failed: %v", err)
+	}
 
 	// Journal
 	j, err := journal.NewJournal(fmt.Sprintf("logs/journal_%s.csv", today.Format("2006-01-02")))
@@ -402,6 +418,21 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 	log.Println("=== UPTREND ONLY:", *cfg.UptrendOnly)
 	log.Printf("=== TIMEFRAME: %s | CSV: %s | LIMIT: %d", tf, ss.CSVFile, ss.Limit)
 
+	if cfg.Strategy == config.StrategyGapFade {
+		c := cfg.GapFade
+		log.Printf("--- GAPFADE CONFIG ---")
+		log.Printf("  Gap Band         : %.2f%% – %.2f%% down", c.MinGapDownPct, c.MaxGapDownPct)
+		log.Printf("  Observe Until    : %02d:%02d   Entry Until: %02d:%02d",
+			c.ObserveEndMin/60, c.ObserveEndMin%60, c.EntryWindowEnd/60, c.EntryWindowEnd%60)
+		log.Printf("  Stop / RR        : %.2f ATR (max %.2f%%) / 1:%.2f", c.SLATR, c.MaxStopPct, c.RewardRisk)
+		log.Printf("  Stop At Day Low  : %v  Require Above VWAP: %v", *c.StopAtDayLow, *c.RequireAboveVWAP)
+		log.Printf("  Max Concurrent   : %d  Gate Fail Open: %v", c.MaxConcurrent, *c.GateFailOpen)
+		log.Printf("  Gate             : news %dh lookback, max profit drop %.1f%%, ISIN map %s",
+			cfg.Upstox.NewsLookbackHours, cfg.Upstox.MaxProfitDropPct, cfg.Upstox.ISINCSV)
+		log.Println("==========================================")
+		return
+	}
+
 	{
 		c := cfg.ORB
 		log.Printf("--- ORB CONFIG ---")
@@ -553,4 +584,27 @@ func loadSymbolsFromCSV(filename string) ([]string, error) {
 		}
 	}
 	return symbols, nil
+}
+
+// buildUpstoxGate assembles the news/earnings gate the gap-fade strategy
+// consults before fading a gap down. It is built at startup, not lazily, so a
+// missing token or an unreadable ISIN file stops the trader before the open
+// rather than blocking every signal at 09:35.
+func buildUpstoxGate(cfg *config.Config) (core.NewsGate, error) {
+	if cfg.UpstoxAccessToken == "" {
+		return nil, fmt.Errorf("upstox_access_token is empty (it must sit above the first [section] header in the TOML)")
+	}
+	lookup, err := upstox.LoadISINCSV(cfg.Upstox.ISINCSV)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Upstox gate: loaded %d symbol→ISIN mappings from %s", lookup.Len(), cfg.Upstox.ISINCSV)
+
+	client := upstox.NewClient(cfg.UpstoxAccessToken, time.Duration(cfg.Upstox.TimeoutSeconds)*time.Second)
+	return upstox.NewGate(client, lookup, upstox.GateConfig{
+		NewsLookback:      time.Duration(cfg.Upstox.NewsLookbackHours) * time.Hour,
+		BlockKeywords:     cfg.Upstox.BlockKeywords,
+		MaxProfitDropPct:  cfg.Upstox.MaxProfitDropPct,
+		MaxResultsAgeDays: cfg.Upstox.MaxResultsAgeDays,
+	}), nil
 }

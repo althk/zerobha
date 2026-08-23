@@ -1,12 +1,19 @@
 # Zerobha Trading Bot Configuration
 
-# Strategy to run: orb (the only strategy)
+# Strategy to run: orb | gapfade (both intraday/MIS), or dailyrev (backtest only)
 strategy = "orb"
 uptrend_only = false
 
-# Zerodha API Credentials
+# Zerodha API Credentials.
+# These are bare keys: they MUST stay above the first [section] header, or TOML
+# assigns them to that section and the config fails to load.
 api_key = ""
 api_secret = ""
+
+# Upstox read-only access token, used only by the gapfade news/earnings gate.
+# Long-lived (~1 year) and unrelated to the Kite credentials above. Bare key —
+# same placement rule.
+upstox_access_token = ""
 
 [risk]
 max_daily_loss       = 5000   # INR; kill switch triggers when daily PnL drops below -max_daily_loss
@@ -45,3 +52,60 @@ target_multiplier = 3.0
 # Max simultaneous open positions
 max_concurrent = 5
 
+
+# --- GapFade: buy the intraday recovery in an unexplained gap down (MIS) ---
+[gapfade]
+timeframe = "5m"
+csv_file = "ind_nifty200list.csv"
+limit = 200
+
+# Qualifying gap band, percent below the previous close. Gaps beyond the max
+# are usually corporate actions (split/bonus), not panics.
+min_gap_down_pct = 5.0
+max_gap_down_pct = 20.0
+
+# "Let the knife land" window, then the window in which a reclaim may trigger.
+# Minutes from midnight IST: 570 = 09:30, 660 = 11:00.
+observe_end_min = 570
+entry_window_end = 660
+
+# Stop is sl_atr x ATR below entry, floored at the session low; target is
+# reward_risk x the realised stop distance (1:2). An entry whose stop would sit
+# further than max_stop_pct below entry is skipped.
+atr_period = 14
+sl_atr = 2.0
+reward_risk = 2.0
+max_stop_pct = 5.0
+stop_at_day_low = true
+require_above_vwap = true
+min_price = 50
+
+max_concurrent = 5
+
+# What to do when the Upstox gate errors (network, expired token). false = skip
+# the trade: an unverified gap fade is a different strategy than this one.
+gate_fail_open = false
+
+# --- Policy for the Upstox news/earnings gate (credential is the top-level
+# --- upstox_access_token key above) ---
+[upstox]
+# Any NSE constituent CSV with "Symbol" and "ISIN Code" columns. Upstox keys
+# both news and fundamentals by ISIN.
+isin_csv = "ind_nifty500list.csv"
+
+# How far back a headline still counts as an explanation for today's gap.
+news_lookback_hours = 48
+
+# Blocks when the latest reported quarter's net profit fell more than this
+# (year-on-year where four quarters of history exist).
+max_profit_drop_pct = 25.0
+
+# Beyond this age the latest reported quarter is treated as stale and the entry
+# rests on the news check alone.
+max_results_age_days = 180
+
+timeout_seconds = 5
+
+# Extra headline keywords that block a fade. Empty = the built-in list in
+# pkg/upstox/gate.go (fraud, probe, SEBI, resignation, downgrade, default, ...).
+block_keywords = []

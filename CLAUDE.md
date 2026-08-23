@@ -4,7 +4,9 @@ Intraday algorithmic trading system for NSE equities via Zerodha Kite. Go core
 (live trader, backtester, data tools) plus Python scripts for stock screening.
 
 **ORB (Opening Range Breakout) is the primary strategy**, plus `dailyrev`, a
-daily short-term reversal added to test the lower-frequency thesis. Other
+daily short-term reversal added to test the lower-frequency thesis, and
+`gapfade`, an intraday gap-down recovery trade gated on Upstox news and
+earnings. Other
 strategies existed and were removed in `6f8ef50` after backtests showed no edge
 — see [Findings](#findings-do-not-re-derive) before proposing to add them back.
 `dailyrev` also has no edge once benchmarked; it is kept as the worked example
@@ -17,6 +19,9 @@ go build ./... && go vet ./... && go test ./...
 
 # Backtest (reads test/data/<timeframe>/<symbol>_real.csv)
 go run ./cmd/backtest -csv high_beta_100.csv -timeframe 5minute -cost-bps 3
+
+# Gap fade (intraday MIS; UNGATED in backtest - see the gapfade section)
+go run ./cmd/backtest -strategy gapfade -csv ind_nifty200list.csv   -timeframe 5minute -limit 200 -cost-bps 3
 
 # Daily short-term reversal (CNC, multi-day holds - note the higher cost-bps)
 go run ./cmd/backtest -strategy dailyrev -csv ind_nifty200list.csv   -timeframe day -limit 200 -cost-bps 11
@@ -45,6 +50,8 @@ with `pkg/broker/sim.go`; the engine and strategy code are identical.
 | `internal/config/config.go` | TOML config, defaults, `ActiveStrategySettings()` |
 | `pkg/strategy/orb.go` | The intraday strategy |
 | `pkg/strategy/dailyrev.go` | Daily short-term reversal (CNC, multi-day holds) |
+| `pkg/strategy/gapfade.go` | Intraday gap-down recovery, gated on news/earnings |
+| `pkg/upstox/` | Read-only Upstox client + the news/earnings `core.NewsGate` |
 | `pkg/broker/zerodha.go`, `sim.go` | Live and simulated brokers |
 | `pkg/indicators/` | EMA, SMA, ATR, ADX, RSI, VWAP — all streaming/O(1) |
 | `cmd/histdl/` | Kite historical downloader |
@@ -53,6 +60,12 @@ with `pkg/broker/sim.go`; the engine and strategy code are identical.
 A strategy implements `Name() / Init(DataProvider) / OnCandle(Candle) *Signal`.
 Optional `SetDB(*db.Store)` gets injected by the trader for state that must
 survive a mid-session restart.
+
+`core.NewsGate` is the second injection point: `Assess(symbol, asOf)` returns a
+`GateVerdict{Allow, Reason}`. `gapfade` consults it before entering; the trader
+injects `pkg/upstox.Gate`, the backtester injects nil. Live trading supports
+`orb` and `gapfade`; `dailyrev` is backtest-only (CNC positions would be
+squared off the same day).
 
 ## Configuration
 
@@ -64,6 +77,11 @@ survive a mid-session restart.
 assigns bare keys to the preceding table, so credentials placed after `[risk]`
 silently become `engine.api_key` and the config fails to load. This was a real
 bug in `config.toml`, fixed in `6f8ef50`.
+
+`upstox_access_token` is a bare key too, and TOML needs the value **quoted** —
+an unquoted JWT fails to parse at the first `.`. It is a long-lived (~1 year)
+read-only token, unrelated to the Kite credentials; the `[upstox]` section holds
+only the gate's policy knobs.
 
 **Setting a config knob to `0` does not disable it.** `LoadConfig` treats zero as
 "absent" and substitutes the default. To effectively disable a threshold, pass an
@@ -245,6 +263,47 @@ If pursuing this further: the cost structure argues for lower-frequency, larger-
 target trades (daily bars, multi-day holds), where ₹24–32 of cost is negligible
 rather than 100%+ of expectancy. `histdl -interval day -days 1800` pulls 7 years
 of daily candles quickly.
+
+### Intraday gap fade (`gapfade`) — added 2026-08-24, unvalidated
+
+Rule set: open <= −5% vs previous close (and > −20%, above which it is usually
+a corporate action); observe 09:15–09:30 and take its high as the reclaim
+level; enter up to 11:00 on the first candle closing above that high, above
+its own open, and above session VWAP; stop = 2 ATR below entry floored at the
+session low (rejected if wider than 5% of price); target = 2 x the realised
+stop distance (1:2). MIS, long only, one entry per symbol per day.
+
+Before entering, the strategy consults `core.NewsGate`. The live gate
+(`pkg/upstox`) blocks when a headline from the last 48h matches a damaging
+keyword, or the latest reported quarter is loss-making or down more than 25%
+year-on-year. The premise is that big gaps split into informed (keep going)
+and panic (revert), and price alone cannot tell them apart.
+
+**The gate is not backtestable.** Upstox's news and fundamentals endpoints
+serve current state with no as-of-date parameter, so a backtest can only run
+ungated — fading every qualifying gap, informed ones included. The backtester
+prints a banner saying so on every gapfade run. Treat any backtest number as
+the no-information floor, never as an estimate of the gated strategy.
+
+First ungated run, Nifty 200, 271 sessions, 3 bps:
+
+| Trades | Net | Edge/trade | Win% | PF | t |
+|---|---|---|---|---|---|
+| 52 | +₹1,471 | +₹28 | 46.2% | 1.27 | 0.65 |
+
+t = 0.65 on 52 trades is no result, exactly as CLAUDE.md predicts for this
+sample size — 5% gaps are rare enough that 271 sessions x 200 names produces
+only ~52 setups. Two things must happen before this is believed:
+
+1. **Sample.** Pull more history (`histdl -interval 5minute -days 1800`) and/or
+   widen the universe; target >=100 trades.
+2. **Benchmark.** It is long-only, so a positive number proves nothing on its
+   own. Compare the gross per-trade return against the unconditional mean
+   intraday (open-to-1513) return of gap-down names over the same window —
+   the same test `dailyrev` failed at t = 4.49.
+
+The gated version cannot be measured this way at all. Measuring it means
+recording gate verdicts live, forward, from the day the strategy runs.
 
 ## Gotchas
 
