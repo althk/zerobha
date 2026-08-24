@@ -24,9 +24,10 @@ RUN apk add --no-cache tzdata ca-certificates sqlite rclone bash
 ENV TZ=Asia/Kolkata
 RUN cp /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo "Asia/Kolkata" > /etc/timezone
 
-# Copy binary from builder
+# Copy binary and configuration files
 COPY --from=builder /bin/trader /app/trader
 COPY indices.csv /app/indices.csv
+COPY config.local.toml /app/config.local.toml
 
 # Default volumes directory
 RUN mkdir -p /app/logs /app/data
