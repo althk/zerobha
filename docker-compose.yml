@@ -1,0 +1,17 @@
+services:
+  trader:
+    image: zerobha:latest
+    container_name: zerobha-trader
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Kolkata
+    volumes:
+      - ./config.local.toml:/app/config.local.toml:ro
+      - ./indices.csv:/app/indices.csv:ro
+      - ./logs:/app/logs
+      - ./:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

@@ -1,0 +1,37 @@
+# --- Build Stage ---
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /src
+RUN apk add --no-cache git
+
+# Cache dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Build binary
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /bin/trader ./cmd/trader
+
+# --- Runtime Stage ---
+FROM alpine:3.20
+
+WORKDIR /app
+
+# Install tzdata (mandatory for IST market hours), ca-certificates (for HTTPS Kite API), and sqlite
+RUN apk add --no-cache tzdata ca-certificates sqlite rclone bash
+
+# Set IST Timezone
+ENV TZ=Asia/Kolkata
+RUN cp /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo "Asia/Kolkata" > /etc/timezone
+
+# Copy binary from builder
+COPY --from=builder /bin/trader /app/trader
+COPY indices.csv /app/indices.csv
+
+# Default volumes directory
+RUN mkdir -p /app/logs /app/data
+
+VOLUME ["/app/logs", "/app/data"]
+
+ENTRYPOINT ["/app/trader"]
+CMD ["-config", "/app/config.local.toml", "-strategy", "donchian"]
