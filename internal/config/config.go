@@ -443,7 +443,7 @@ func DefaultDonchianConfig() DonchianConfig {
 		TargetDeltaNearExpiry: 0.90,
 		MinDaysToExpiry:     intPtr(2),
 		ADXThreshold:        0,
-		ADXPeriod:           14,
+		ADXPeriod:           4,
 		AllowShort:          boolPtr(true),
 		ExitOnOppositeBreak: boolPtr(true),
 	}

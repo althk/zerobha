@@ -136,7 +136,7 @@ func (s *Donchian) SetContracts(specs map[string]ContractSpec) {
 func (s *Donchian) newState() *donchianState {
 	adxPeriod := s.cfg.ADXPeriod
 	if adxPeriod <= 0 {
-		adxPeriod = 14
+		adxPeriod = 4
 	}
 	return &donchianState{
 		channel: indicators.NewDonchian(s.cfg.DonchianLookback),

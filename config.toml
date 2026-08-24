@@ -171,9 +171,9 @@ target_delta_near_expiry = 0.90
 # and an explicit 0 here survives rather than being replaced by the default.
 min_days_to_expiry = 2
 
-# Optional ADX trend filter (0 = disabled, e.g. 20.0 to filter low-volatility chop)
-adx_threshold = 0.0
-adx_period = 14
+# Optional ADX trend filter (0 = disabled, 40.0 with period 4 or 20.0 with period 9 filters chop)
+adx_threshold = 40.0
+adx_period = 4
 
 # Volatility used only when the at-the-money premium cannot be read. 0 means
 # "refuse to trade": picking a strike against a stale constant silently buys
