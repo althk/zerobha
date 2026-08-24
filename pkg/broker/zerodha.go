@@ -117,7 +117,7 @@ func (z *ZerodhaAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 
 	// 3. Execute
 	kiteOrderResponse, err := z.client.PlaceOrder(kiteconnect.VarietyRegular, kiteconnect.OrderParams{
-		Exchange:        kiteconnect.ExchangeNSE,
+		Exchange:        orderExchange(order),
 		Tradingsymbol:   order.Symbol,
 		TransactionType: txType,
 		Quantity:        int(order.Quantity.IntPart()),
@@ -132,8 +132,11 @@ func (z *ZerodhaAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 	}
 	order.ID = kiteOrderResponse.OrderID
 
-	// 4. Place GTT OCO if StopLoss and Target are present
-	if !order.StopLoss.IsZero() && !order.Target.IsZero() {
+	// 4. Protect the position. A GTT OCO carries stop and target together; a
+	// strategy that runs a pure trailing exit (tp_rr = 0) leaves the target
+	// empty and gets a single-leg stop GTT instead. What must never happen is
+	// an open MIS position with no resting stop at all.
+	if !order.StopLoss.IsZero() {
 		// Poll for order fill status
 		var filledOrder *kiteconnect.Order
 		maxRetries := 10
@@ -159,7 +162,7 @@ func (z *ZerodhaAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 			return order, nil
 		}
 
-		gttParams := buildOCOGTTParams(order, product, filledOrder.AveragePrice, order.StopLoss.InexactFloat64(), order.Target.InexactFloat64())
+		gttParams := buildProtectiveGTTParams(order, product, filledOrder.AveragePrice, order.StopLoss.InexactFloat64(), order.Target.InexactFloat64())
 
 		gttResponse, err := z.client.PlaceGTT(gttParams)
 		if err != nil {
@@ -171,6 +174,64 @@ func (z *ZerodhaAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 	}
 
 	return order, nil
+}
+
+// orderExchange resolves the exchange an order routes to. Empty means NSE:
+// this system started as a cash-equity trader and every strategy but Donchian
+// still leaves the field unset.
+func orderExchange(order models.Order) string {
+	if order.Exchange != "" {
+		return order.Exchange
+	}
+	return kiteconnect.ExchangeNSE
+}
+
+// buildProtectiveGTTParams builds the resting protection for a filled position:
+// an OCO when the strategy set a target, a single-leg stop when it did not.
+//
+// The single-leg case is not a degraded OCO — a strategy exiting on a trail has
+// no target price to name, and inventing one would put a real sell order in the
+// book at a price the strategy never chose.
+func buildProtectiveGTTParams(order models.Order, product string, executionPrice, slPrice, targetPrice float64) kiteconnect.GTTParams {
+	if targetPrice > 0 {
+		return buildOCOGTTParams(order, product, executionPrice, slPrice, targetPrice)
+	}
+	return buildStopGTTParams(order, product, executionPrice, slPrice)
+}
+
+// buildStopGTTParams constructs a single-leg stop GTT for a position with no
+// target, honouring the same 0.3% minimum-gap rule the OCO builder applies.
+func buildStopGTTParams(order models.Order, product string, executionPrice, slPrice float64) kiteconnect.GTTParams {
+	gttTxType := kiteconnect.TransactionTypeSell
+	minGap := executionPrice * 0.003
+
+	if order.Side == models.BuySignal {
+		if executionPrice-slPrice < minGap {
+			fmt.Printf("Adjusting SL from %.2f to %.2f (min gap rule)\n", slPrice, executionPrice-minGap)
+			slPrice = executionPrice - minGap
+		}
+	} else {
+		gttTxType = kiteconnect.TransactionTypeBuy
+		if slPrice-executionPrice < minGap {
+			fmt.Printf("Adjusting SL from %.2f to %.2f (min gap rule)\n", slPrice, executionPrice+minGap)
+			slPrice = executionPrice + minGap
+		}
+	}
+
+	return kiteconnect.GTTParams{
+		Tradingsymbol:   order.Symbol,
+		Exchange:        orderExchange(order),
+		LastPrice:       executionPrice,
+		TransactionType: gttTxType,
+		Product:         product,
+		Trigger: &kiteconnect.GTTSingleLegTrigger{
+			TriggerParams: kiteconnect.TriggerParams{
+				TriggerValue: slPrice,
+				LimitPrice:   slPrice,
+				Quantity:     float64(order.Quantity.IntPart()),
+			},
+		},
+	}
 }
 
 // buildOCOGTTParams constructs the GTT OCO (SL + Target) parameters for an
@@ -218,7 +279,7 @@ func buildOCOGTTParams(order models.Order, product string, executionPrice, slPri
 
 	return kiteconnect.GTTParams{
 		Tradingsymbol:   order.Symbol,
-		Exchange:        kiteconnect.ExchangeNSE,
+		Exchange:        orderExchange(order),
 		LastPrice:       executionPrice,
 		TransactionType: gttTxType,
 		Product:         product,
@@ -290,14 +351,14 @@ func (z *ZerodhaAdapter) ModifyPositionStop(order models.Order, newStopLoss deci
 		return fmt.Errorf("failed to fetch quote for %s: %v", order.Symbol, err)
 	}
 
-	gttParams := buildOCOGTTParams(order, product, ltp.InexactFloat64(), newStopLoss.InexactFloat64(), order.Target.InexactFloat64())
+	gttParams := buildProtectiveGTTParams(order, product, ltp.InexactFloat64(), newStopLoss.InexactFloat64(), order.Target.InexactFloat64())
 
 	_, err = z.client.ModifyGTT(order.GTTTriggerID, gttParams)
 	if err != nil {
 		return fmt.Errorf("failed to modify GTT %d for %s: %v", order.GTTTriggerID, order.Symbol, err)
 	}
 
-	fmt.Printf("Moved SL to breakeven for %s (GTT %d): new SL=%.2f\n", order.Symbol, order.GTTTriggerID, newStopLoss.InexactFloat64())
+	fmt.Printf("Moved SL for %s (GTT %d): new SL=%.2f\n", order.Symbol, order.GTTTriggerID, newStopLoss.InexactFloat64())
 	return nil
 }
 

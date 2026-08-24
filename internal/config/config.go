@@ -154,6 +154,145 @@ type GapFadeConfig struct {
 	MaxConcurrent int `toml:"max_concurrent"` // default 5
 }
 
+// DonchianConfig holds parameters for the Donchian intraday breakout strategy:
+// a channel breakout computed on the NIFTY / SENSEX 5-minute **index** chart,
+// intended for execution in weekly index options.
+//
+// The signal instrument and the traded instrument are deliberately different.
+// The index says when to act; an option is what gets bought. Nothing here
+// describes the option leg — strike selection, position size in lots and the
+// premium P&L all live in cmd/optbt, which prices this strategy's trade list on
+// real expired weekly-option candles.
+//
+// The zero-means-absent convention applies (see CLAUDE.md): setting a knob to 0
+// in TOML gets the default back. Knobs whose zero is a meaningful setting are
+// pointers (UseIgnition, AllowShort, ExitOnOppositeBreak) so that "absent" and
+// "off" stay distinguishable.
+//
+// Three families of knob were REMOVED rather than defaulted off, because each
+// was measured and found inapplicable or actively harmful. Read the Donchian
+// sections of CLAUDE.md before reintroducing any of them:
+//
+//   - vol_mult / vol_avg_bars: an index publishes no volume at all, so the
+//     filter was inapplicable rather than merely disabled.
+//   - use_breakeven / breakeven_trigger_atr / breakeven_plus_points: BREAKEVEN+
+//     truncates the right tail a breakout system lives on; removing it doubled
+//     gross return per trade. It also fabricated profits whenever the parked
+//     stop landed beyond the market.
+//   - tp_rr: a target capped the winners in four independent tests and paid for
+//     itself in none. The chandelier trail is the only profit-taking exit.
+type DonchianConfig struct {
+	Timeframe string `toml:"timeframe"` // default "5m"
+	CSVFile   string `toml:"csv_file"`  // backtest universe, default "indices.csv"
+	Limit     int    `toml:"limit"`     // default 2
+
+	DonchianLookback int `toml:"donchian_lookback"` // channel bars, default 30
+	ATRPeriod        int `toml:"atr_period"`        // default 9
+
+	// MinATRPct is a volatility floor as a percent of price (0.03 = 0.03%),
+	// skipping bars too dead for a breakout to pay for its costs. Default 0.03.
+	// The stock-calibrated 0.15 rejects every bar on an index, whose 5-minute
+	// ATR runs 0.076% (NIFTY) to 0.083% (SENSEX) of price.
+	MinATRPct float64 `toml:"min_atr_pct"`
+	// BreakoutBufferPoints requires the close to clear the channel by this many
+	// rupees, not merely touch it. It is an absolute-points knob (not ATR) on
+	// purpose - it is a noise/tick filter, and tick noise does not scale with
+	// volatility the way the channel already does. Default 2.
+	BreakoutBufferPoints float64 `toml:"breakout_buffer_points"`
+	// UseIgnition demands the breakout bar carry real energy: its range
+	// (high-low) must be at least IgnitionATRMult x ATR. A breakout that drifts
+	// over the line on a doji is the one that gets given back. Default true.
+	UseIgnition     *bool   `toml:"use_ignition"`
+	IgnitionATRMult float64 `toml:"ignition_atr_mult"` // default 1.0
+
+	// SLATRMult places the initial stop this many ATR from entry. Default 3.0.
+	//
+	// It was 1.3, which stopped out 82% of trades before the trend developed
+	// while all of the profit sat in the ones that survived to run. At 3.0 the
+	// chandelier trail binds first and the initial stop rarely fires at all —
+	// stops of 3, 4 and 6 ATR produce identical results for that reason.
+	SLATRMult float64 `toml:"sl_atr_mult"`
+	// TrailATRMult is the chandelier trail distance in ATR, measured from the
+	// highest high (long) or lowest low (short) since entry. The stop only
+	// ratchets. Default 3.0; 0 disables trailing and leaves the initial stop.
+	//
+	// This is the only profit-taking exit the strategy has, so it is
+	// load-bearing: 3 beats 2 on both indices, and every attempt to cap the
+	// winning side ahead of it has cost more than it saved.
+	TrailATRMult float64 `toml:"trail_atr_mult"`
+
+	// EntryStartMin skips the opening auction noise; EntryCutoffMin is the last
+	// minute a new entry may trigger; SquareOffMin is the hard flatten. All are
+	// minutes from midnight IST: 570 = 09:30, 871 = 14:31, 897 = 14:57.
+	//
+	// SquareOffMin is earlier than the engine's global 15:13 MIS square-off and
+	// is the binding one for this strategy - the wiring in cmd/backtest and
+	// cmd/trader drives the flatten from it.
+	EntryStartMin  int `toml:"entry_start_min"`
+	EntryCutoffMin int `toml:"entry_cutoff_min"`
+	SquareOffMin   int `toml:"squareoff_min"`
+
+	// RiskPct is the fraction of capital risked per trade, in percent.
+	// Default 0.5 - half the 1% the other strategies use, because this one
+	// runs both directions and takes more entries.
+	RiskPct float64 `toml:"risk_pct"`
+	// MaxDailyLossPct stops all new entries once the day's realised PnL is
+	// below this percent of capital. Default 2.
+	MaxDailyLossPct float64 `toml:"max_daily_loss_pct"`
+
+	MaxConcurrent int `toml:"max_concurrent"` // default 5
+	// MaxEntriesPerSymbol caps entries per symbol per day. Default 4.
+	//
+	// With a one-instrument universe this is the day's trade budget. A cap of 1
+	// makes a marginal early entry consume the slot a better later setup needed,
+	// so a filter change reshuffles which trade is taken rather than adding to
+	// it — compare matched trade lists, never totals.
+	MaxEntriesPerSymbol int `toml:"max_entries_per_symbol"`
+
+	// TargetDelta is the |delta| of the option bought to express a signal.
+	// Default 0.80. A long index view buys a call, a short view buys a put;
+	// the strategy is never short an option.
+	//
+	// A delta target is not interchangeable with a fixed point offset. What
+	// sets delta is the move in units of sigma*sqrt(T), so 150 points ITM is
+	// ~0.95 delta on expiry morning and ~0.68 six days out. Holding the point
+	// offset fixed sweeps delta across the week; holding delta fixed is what
+	// this buys instead.
+	TargetDelta float64 `toml:"target_delta"`
+
+	// MinDaysToExpiry refuses entries when the nearest weekly expiry is closer
+	// than this. Default 2 - skipping expiry day and the day before.
+	//
+	// It is the single largest improvement found in this strategy, and it has
+	// a mechanism rather than a hindsight: as T collapses the target-delta
+	// strike walks in towards spot, so near expiry it buys a nearly worthless
+	// contract with enormous leverage and brutal decay per rupee of premium.
+	// Measured at -1571 bps a trade on expiry day against -104 to +106 for the
+	// rest of the week.
+	// It is a pointer for the reason tp_rr was: 0 is a meaningful setting
+	// ("trade expiry day too"), and with a plain int "absent from the TOML"
+	// and "explicitly zero" are the same value, so honouring an explicit 0
+	// means the default can never apply. That exact bug ran a whole backtest
+	// without the target it was meant to be testing.
+	MinDaysToExpiry *int `toml:"min_days_to_expiry"`
+
+	// FallbackIV is the volatility used when the at-the-money premium cannot
+	// be read. Default 0, which means "refuse to trade" - selecting a strike
+	// against a stale constant picks the wrong contract silently, and not
+	// trading is the better failure.
+	FallbackIV float64 `toml:"fallback_iv"`
+
+	// AllowShort enables the short side. Default true - the spec is symmetric,
+	// and a bearish index signal is expressed by buying a put, never by selling
+	// an option.
+	AllowShort *bool `toml:"allow_short"`
+	// ExitOnOppositeBreak closes a position at market when price closes beyond
+	// the opposite Donchian band. Default true. There is no flip in v1: the
+	// position is closed, and the same-day entry cap decides whether the
+	// reverse trade may be taken.
+	ExitOnOppositeBreak *bool `toml:"exit_on_opposite_break"`
+}
+
 // UpstoxConfig configures the policy of the Upstox-backed news and earnings
 // gate. The credential itself is the top-level upstox_access_token key, not a
 // field here — see Config.UpstoxAccessToken and the TOML placement warning
@@ -218,6 +357,7 @@ type Config struct {
 	ORB               ORBConfig      `toml:"orb"`
 	DailyRev          DailyRevConfig `toml:"dailyrev"`
 	GapFade           GapFadeConfig  `toml:"gapfade"`
+	Donchian          DonchianConfig `toml:"donchian"`
 	Upstox            UpstoxConfig   `toml:"upstox"`
 }
 
@@ -230,6 +370,8 @@ func (c *Config) ActiveStrategySettings() StrategySettings {
 		return StrategySettings{Timeframe: c.DailyRev.Timeframe, CSVFile: c.DailyRev.CSVFile, Limit: c.DailyRev.Limit}
 	case StrategyGapFade:
 		return StrategySettings{Timeframe: c.GapFade.Timeframe, CSVFile: c.GapFade.CSVFile, Limit: c.GapFade.Limit}
+	case StrategyDonchian:
+		return StrategySettings{Timeframe: c.Donchian.Timeframe, CSVFile: c.Donchian.CSVFile, Limit: c.Donchian.Limit}
 	}
 	return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
 }
@@ -240,6 +382,7 @@ const (
 	StrategyORB      = "orb"
 	StrategyDailyRev = "dailyrev"
 	StrategyGapFade  = "gapfade"
+	StrategyDonchian = "donchian"
 )
 
 func DefaultGapFadeConfig() GapFadeConfig {
@@ -260,6 +403,36 @@ func DefaultGapFadeConfig() GapFadeConfig {
 		MinPrice:         50,
 		GateFailOpen:     boolPtr(false),
 		MaxConcurrent:    5,
+	}
+}
+
+func DefaultDonchianConfig() DonchianConfig {
+	return DonchianConfig{
+		Timeframe:        "5m",
+		CSVFile:          "indices.csv",
+		Limit:            2,
+		DonchianLookback: 30,
+		ATRPeriod:        9,
+		MinATRPct:        0.03,
+
+		BreakoutBufferPoints: 2.0,
+		UseIgnition:          boolPtr(true),
+		IgnitionATRMult:      1.0,
+
+		SLATRMult:    3.0,
+		TrailATRMult: 3.0,
+
+		EntryStartMin:       9*60 + 30,
+		EntryCutoffMin:      14*60 + 31,
+		SquareOffMin:        14*60 + 57,
+		RiskPct:             0.5,
+		MaxDailyLossPct:     2.0,
+		MaxConcurrent:       5,
+		MaxEntriesPerSymbol: 4,
+		TargetDelta:         0.80,
+		MinDaysToExpiry:     intPtr(2),
+		AllowShort:          boolPtr(true),
+		ExitOnOppositeBreak: boolPtr(true),
 	}
 }
 
@@ -337,6 +510,10 @@ func DefaultORBConfig() ORBConfig {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func floatPtr(f float64) *float64 { return &f }
+
+func intPtr(i int) *int { return &i }
 
 func LoadConfig(path string) (*Config, error) {
 	var config Config
@@ -537,6 +714,76 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.GapFade.GateFailOpen == nil {
 		config.GapFade.GateFailOpen = gfD.GateFailOpen
+	}
+
+	// Donchian defaults.
+	dcD := DefaultDonchianConfig()
+	if config.Donchian.Timeframe == "" {
+		config.Donchian.Timeframe = dcD.Timeframe
+	}
+	if config.Donchian.CSVFile == "" {
+		config.Donchian.CSVFile = dcD.CSVFile
+	}
+	if config.Donchian.Limit == 0 {
+		config.Donchian.Limit = dcD.Limit
+	}
+	if config.Donchian.DonchianLookback == 0 {
+		config.Donchian.DonchianLookback = dcD.DonchianLookback
+	}
+	if config.Donchian.ATRPeriod == 0 {
+		config.Donchian.ATRPeriod = dcD.ATRPeriod
+	}
+	if config.Donchian.MinATRPct == 0 {
+		config.Donchian.MinATRPct = dcD.MinATRPct
+	}
+	if config.Donchian.BreakoutBufferPoints == 0 {
+		config.Donchian.BreakoutBufferPoints = dcD.BreakoutBufferPoints
+	}
+	if config.Donchian.IgnitionATRMult == 0 {
+		config.Donchian.IgnitionATRMult = dcD.IgnitionATRMult
+	}
+	if config.Donchian.UseIgnition == nil {
+		config.Donchian.UseIgnition = dcD.UseIgnition
+	}
+	if config.Donchian.SLATRMult == 0 {
+		config.Donchian.SLATRMult = dcD.SLATRMult
+	}
+	if config.Donchian.TrailATRMult == 0 {
+		config.Donchian.TrailATRMult = dcD.TrailATRMult
+	}
+	if config.Donchian.EntryStartMin == 0 {
+		config.Donchian.EntryStartMin = dcD.EntryStartMin
+	}
+	if config.Donchian.EntryCutoffMin == 0 {
+		config.Donchian.EntryCutoffMin = dcD.EntryCutoffMin
+	}
+	if config.Donchian.SquareOffMin == 0 {
+		config.Donchian.SquareOffMin = dcD.SquareOffMin
+	}
+	if config.Donchian.RiskPct == 0 {
+		config.Donchian.RiskPct = dcD.RiskPct
+	}
+	if config.Donchian.MaxDailyLossPct == 0 {
+		config.Donchian.MaxDailyLossPct = dcD.MaxDailyLossPct
+	}
+	if config.Donchian.MaxConcurrent == 0 {
+		config.Donchian.MaxConcurrent = dcD.MaxConcurrent
+	}
+	if config.Donchian.TargetDelta == 0 {
+		config.Donchian.TargetDelta = dcD.TargetDelta
+	}
+	// nil -> default; an explicit min_days_to_expiry = 0 survives.
+	if config.Donchian.MinDaysToExpiry == nil {
+		config.Donchian.MinDaysToExpiry = dcD.MinDaysToExpiry
+	}
+	if config.Donchian.MaxEntriesPerSymbol == 0 {
+		config.Donchian.MaxEntriesPerSymbol = dcD.MaxEntriesPerSymbol
+	}
+	if config.Donchian.AllowShort == nil {
+		config.Donchian.AllowShort = dcD.AllowShort
+	}
+	if config.Donchian.ExitOnOppositeBreak == nil {
+		config.Donchian.ExitOnOppositeBreak = dcD.ExitOnOppositeBreak
 	}
 
 	// Upstox gate defaults. AccessToken and BlockKeywords are intentionally

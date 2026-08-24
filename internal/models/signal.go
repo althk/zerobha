@@ -36,6 +36,31 @@ type Signal struct {
 	PartialExitPct decimal.Decimal `json:"partial_exit_pct"`
 	// ProductType: "MIS" (Intraday) or "CNC" (Delivery)
 	ProductType string `json:"product_type"`
+	// Exchange the instrument trades on: "NSE" (cash) or "NFO" (derivatives).
+	// Empty means NSE.
+	Exchange string `json:"exchange"`
+
+	// TrailDistance arms a chandelier trailing stop when positive: the stop
+	// follows the highest high (long) or lowest low (short) reached since
+	// entry, at this fixed distance, and only ever ratchets in the position's
+	// favour. Zero leaves the initial StopLoss where the strategy put it.
+	TrailDistance decimal.Decimal `json:"trail_distance"`
+
+	// BreakevenTrigger and BreakevenStop implement the BREAKEVEN+ move: once
+	// price trades through BreakevenTrigger, the stop is parked at
+	// BreakevenStop, which is entry plus (long) or minus (short) an offset, so
+	// the trade is locked green rather than merely free. Both must be non-zero
+	// to arm it. This is independent of PartialExitPrice above, which books
+	// part of the position on the way; here nothing is sold.
+	BreakevenTrigger decimal.Decimal `json:"breakeven_trigger"`
+	BreakevenStop    decimal.Decimal `json:"breakeven_stop"`
+
+	// RiskPct overrides the sizer's default 1% risk budget, as a fraction
+	// (0.005 = 0.5%). Zero keeps the default.
+	RiskPct decimal.Decimal `json:"risk_pct"`
+	// LotSize rounds the position down to a whole multiple of the contract lot.
+	// Zero or 1 means "sizeable in single units", i.e. cash equities.
+	LotSize int `json:"lot_size"`
 
 	// Metadata allows strategies to attach context (e.g., "RSI_Overbought")
 	// useful for the Risk Manager and Logs.

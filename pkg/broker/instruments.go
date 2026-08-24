@@ -50,7 +50,9 @@ func (im *InstrumentManager) FetchInstruments(kc *kiteconnect.Client) error {
 	// sometimes downloading the CSV directly is preferred. However, let's use the library first.
 	// We need both NSE (for indices) and NFO (for options).
 
-	exchanges := []string{"NSE", "NFO"}
+	// BSE/BFO carry SENSEX and its options; without them a SENSEX strategy
+	// finds an empty chain and silently never trades.
+	exchanges := []string{"NSE", "NFO", "BSE", "BFO"}
 	var allInstruments []kiteconnect.Instrument
 
 	for _, ex := range exchanges {
@@ -69,7 +71,7 @@ func (im *InstrumentManager) FetchInstruments(kc *kiteconnect.Client) error {
 
 	// First pass: Process NSE instruments (Indices/Equities) to populate nameToToken
 	for _, kInst := range allInstruments {
-		if kInst.Exchange == "NSE" {
+		if kInst.Exchange == "NSE" || kInst.Exchange == "BSE" {
 			nameToToken[kInst.Name] = uint32(kInst.InstrumentToken)
 			// Also map Tradingsymbol to Token for direct lookups
 			im.symbolToToken[kInst.Tradingsymbol] = uint32(kInst.InstrumentToken)
@@ -93,7 +95,7 @@ func (im *InstrumentManager) FetchInstruments(kc *kiteconnect.Client) error {
 		}
 
 		// Link underlying
-		if kInst.Exchange == "NFO" {
+		if kInst.Exchange == "NFO" || kInst.Exchange == "BFO" {
 			if token, ok := nameToToken[kInst.Name]; ok {
 				inst.UnderlyingToken = token
 			}
@@ -105,7 +107,7 @@ func (im *InstrumentManager) FetchInstruments(kc *kiteconnect.Client) error {
 
 		// Group by underlying name (e.g., "NIFTY")
 		// Note: kInst.Name for Nifty 50 is usually "NIFTY"
-		if kInst.Exchange == "NFO" {
+		if kInst.Exchange == "NFO" || kInst.Exchange == "BFO" {
 			im.underlyingMap[kInst.Name] = append(im.underlyingMap[kInst.Name], inst)
 		}
 	}
@@ -255,6 +257,20 @@ func (im *InstrumentManager) FindOptionWithSpot(underlying string, side string, 
 	}
 
 	return bestInst, nil
+}
+
+// SymbolTokenMaps returns the symbol->token and token->symbol lookups built by
+// FetchInstruments, covering every exchange it loaded. The live trader needs
+// both to subscribe to the websocket and to name the instrument a tick belongs
+// to; returning copies keeps the manager's own maps immutable from outside.
+func (im *InstrumentManager) SymbolTokenMaps() (map[string]uint32, map[uint32]string) {
+	symbolToToken := make(map[string]uint32, len(im.symbolToToken))
+	tokenToSymbol := make(map[uint32]string, len(im.symbolToToken))
+	for sym, token := range im.symbolToToken {
+		symbolToToken[sym] = token
+		tokenToSymbol[token] = sym
+	}
+	return symbolToToken, tokenToSymbol
 }
 
 // GetSymbol returns the trading symbol for a given token

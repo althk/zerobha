@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 	"zerobha/pkg/broker"
 	"zerobha/pkg/db"
 	"zerobha/pkg/journal"
+	"zerobha/pkg/options"
 	"zerobha/pkg/strategy"
 	"zerobha/pkg/upstox"
 
@@ -142,13 +144,20 @@ func main() {
 		watchlist = watchlist[:ss.Limit]
 	}
 
-	fmt.Printf("Loaded %d symbols for trading.\n", len(watchlist))
-	log.Println("Fetching Instrument Master list from Zerodha...")
-	symbolToToken, tokenToSymbol, err := fetchInstruments(kc)
-	if err != nil {
+	// One instrument dump serves the NSE cash symbols the equity strategies
+	// watch, and the NFO contracts the option work will need.
+	im := broker.NewInstrumentManager()
+	log.Println("Fetching Instrument Master list from Zerodha (NSE & NFO)...")
+	if err := im.FetchInstruments(kc); err != nil {
 		log.Fatalf("Failed to fetch instruments: %v", err)
 	}
+	symbolToToken, tokenToSymbol := im.SymbolTokenMaps()
 	log.Printf("Loaded %d instruments", len(symbolToToken))
+
+	// Broker Adapter (The Execution Arm).
+	kiteAdapter := broker.NewZerodhaAdapter(kc, symbolToToken)
+
+	fmt.Printf("Loaded %d symbols for trading.\n", len(watchlist))
 
 	// Database (SQLite)
 	store, err := db.NewStore("zerobha.db")
@@ -170,9 +179,6 @@ func main() {
 	}
 
 	// 4. Setup Core Components
-	// Broker Adapter (The Execution Arm)
-	kiteAdapter := broker.NewZerodhaAdapter(kc, symbolToToken)
-
 	// Risk Manager (The Gatekeeper)
 	riskMgr := risk.NewManager(store,
 		decimal.NewFromInt(int64(cfg.Risk.MaxDailyLoss)),
@@ -203,9 +209,15 @@ func main() {
 		}
 		strat = strategy.NewGapFadeStrategy(watchlist, cfg.GapFade, gate)
 		maxConcurrent = cfg.GapFade.MaxConcurrent
+	case config.StrategyDonchian:
+		dc := strategy.NewDonchianStrategy(watchlist, cfg.Donchian)
+		dc.SetOptionExecution(buildOptionExecutor(cfg, im, kc))
+		strat = dc
+		maxConcurrent = cfg.Donchian.MaxConcurrent
 	default:
-		log.Fatalf("live trading supports strategy=%q or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
-			config.StrategyORB, config.StrategyGapFade, cfg.Strategy, cfg.Strategy, cfg.Strategy)
+		log.Fatalf("live trading supports strategy=%q, %q or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
+			config.StrategyORB, config.StrategyGapFade, config.StrategyDonchian,
+			cfg.Strategy, cfg.Strategy, cfg.Strategy)
 	}
 
 	if err := strat.Init(kiteAdapter); err != nil {
@@ -220,13 +232,6 @@ func main() {
 		defer j.Close()
 	}
 
-	// Instrument Manager
-	im := broker.NewInstrumentManager()
-	log.Println("Fetching Instruments (NSE & NFO)...")
-	if err := im.FetchInstruments(kc); err != nil {
-		log.Fatalf("Failed to fetch instruments: %v", err)
-	}
-
 	// Engine (The Orchestrator)
 	engine := core.NewEngine(strat, kiteAdapter, riskMgr, j, im, store)
 	engine.MaxConcurrent = maxConcurrent
@@ -236,6 +241,29 @@ func main() {
 	engine.MinCapitalPerTrade = int64(cfg.Engine.MinCapitalPerTrade)
 	engine.MaxCapitalPerTrade = int64(cfg.Engine.MaxCapitalPerTrade)
 	engine.TradeCutoffMin = cfg.Engine.TradeCutoffMin
+
+	if cfg.Strategy == config.StrategyDonchian {
+		// The engine's global cutoff gates every signal and is earlier than
+		// Donchian's own last-entry time, so it has to give way to it.
+		engine.TradeCutoffMin = cfg.Donchian.EntryCutoffMin + 1
+		// The NIFTY uptrend filter blocks every signal on a down day, not just
+		// the longs. On a symmetric long/short strategy that is not a filter,
+		// it is a switch that turns off half the strategy on exactly the days
+		// the short side exists to trade.
+		if engine.UptrendOnly {
+			log.Println("Donchian: disabling the NIFTY uptrend filter — it would gate the short side out of existence")
+			engine.UptrendOnly = false
+		}
+		// Donchian states its kill switch as a percent of capital, not rupees.
+		if balance, err := kiteAdapter.GetBalance(); err == nil {
+			riskMgr.MaxDailyLoss = balance.Mul(decimal.NewFromFloat(cfg.Donchian.MaxDailyLossPct / 100))
+			log.Printf("Donchian kill switch: %.2f%% of Rs%s = Rs%s",
+				cfg.Donchian.MaxDailyLossPct, balance.StringFixed(0), riskMgr.MaxDailyLoss.StringFixed(0))
+		} else {
+			log.Printf("WARNING: could not read balance to size the daily-loss limit (%v); keeping [risk] max_daily_loss = %d",
+				err, cfg.Risk.MaxDailyLoss)
+		}
+	}
 	engine.InitNiftyEMAs()
 
 	// Web Dashboard
@@ -343,8 +371,12 @@ func main() {
 
 		// Target Ticker Stop: 15:05 Today
 		targetTickerStop := time.Date(now.Year(), now.Month(), now.Day(), 15, 5, 0, 0, loc)
-		// Target SquareOff: 15:13 Today
-		targetSquareOff := time.Date(now.Year(), now.Month(), now.Day(), 15, 13, 0, 0, loc)
+		// Target SquareOff: 15:13 Today, or the strategy's own earlier flatten.
+		squareOffMin := 15*60 + 13
+		if cfg.Strategy == config.StrategyDonchian {
+			squareOffMin = cfg.Donchian.SquareOffMin
+		}
+		targetSquareOff := time.Date(now.Year(), now.Month(), now.Day(), squareOffMin/60, squareOffMin%60, 0, 0, loc)
 		// Target Flush: 15:23 Today
 		targetFlush := time.Date(now.Year(), now.Month(), now.Day(), 15, 23, 0, 0, loc)
 		// Target Shutdown: 15:30 Today
@@ -360,9 +392,9 @@ func main() {
 
 		// 1. Handle SquareOff
 		durationSquareOff := targetSquareOff.Sub(now)
-		log.Printf("Scheduled Auto-SquareOff in %v (at 15:13 IST)", durationSquareOff)
+		log.Printf("Scheduled Auto-SquareOff in %v (at %02d:%02d IST)", durationSquareOff, squareOffMin/60, squareOffMin%60)
 		time.AfterFunc(durationSquareOff, func() {
-			log.Println("⏰ 15:13 PM Trigger: Initiating Auto-SquareOFF...")
+			log.Println("⏰ Square-off trigger: Initiating Auto-SquareOFF...")
 			engine.SquareOff()
 		})
 
@@ -537,25 +569,56 @@ func isTradingTime() bool {
 }
 
 // fetchInstruments downloads the master CSV from Zerodha and builds lookup maps
-func fetchInstruments(kc *kiteconnect.Client) (map[string]uint32, map[uint32]string, error) {
-	instruments, err := kc.GetInstrumentsByExchange("NSE") // Fetch only NSE
-	if err != nil {
-		return nil, nil, err
-	}
-
-	symToTok := make(map[string]uint32)
-	tokToSym := make(map[uint32]string)
-
-	for _, inst := range instruments {
-		if inst.Exchange != "NSE" {
-			continue
+// buildOptionExecutor assembles the live option-execution path: the Kite
+// instrument dump as the chain, Kite quotes as the premium source, and
+// pkg/options for the strike selection.
+//
+// The selection code is shared with cmd/optbt, which is the point — a strike
+// chosen in a backtest is chosen the same way in production, rather than by two
+// lookalike implementations that drift apart.
+func buildOptionExecutor(cfg *config.Config, im *broker.InstrumentManager, kc *kiteconnect.Client) strategy.OptionExecutor {
+	quote := func(tokens []uint32) (map[uint32]float64, error) {
+		if len(tokens) == 0 {
+			return map[uint32]float64{}, nil
 		}
-
-		symToTok[inst.Tradingsymbol] = uint32(inst.InstrumentToken)
-		tokToSym[uint32(inst.InstrumentToken)] = inst.Tradingsymbol
+		keys := make([]string, 0, len(tokens))
+		byKey := make(map[string]uint32, len(tokens))
+		for _, tok := range tokens {
+			k := strconv.FormatUint(uint64(tok), 10)
+			keys = append(keys, k)
+			byKey[k] = tok
+		}
+		quotes, err := kc.GetLTP(keys...)
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[uint32]float64, len(quotes))
+		for k, q := range quotes {
+			if tok, ok := byKey[k]; ok {
+				out[tok] = q.LastPrice
+			}
+		}
+		return out, nil
 	}
 
-	return symToTok, tokToSym, nil
+	minDTE := 2
+	if cfg.Donchian.MinDaysToExpiry != nil {
+		minDTE = *cfg.Donchian.MinDaysToExpiry
+	}
+	log.Printf("Donchian option execution: target delta %.2f, min %d day(s) to expiry, fallback IV %.1f%%",
+		cfg.Donchian.TargetDelta, minDTE, cfg.Donchian.FallbackIV*100)
+	if minDTE == 0 {
+		log.Println("WARNING: min_days_to_expiry = 0 — expiry-day trades measured at -1571 bps each. See CLAUDE.md.")
+	}
+
+	return broker.OptionExecutor{
+		Chain: broker.NewKiteChain(im, quote),
+		Selector: options.Selector{
+			TargetDelta:     cfg.Donchian.TargetDelta,
+			MinDaysToExpiry: minDTE,
+			FallbackIV:      cfg.Donchian.FallbackIV,
+		},
+	}
 }
 
 func loadSymbolsFromCSV(filename string) ([]string, error) {

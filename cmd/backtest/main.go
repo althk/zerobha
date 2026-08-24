@@ -26,7 +26,7 @@ func main() {
 	// Parse command line flags
 	startDateStr := flag.String("start", "", "Start date for backtest (YYYY-MM-DD)")
 	endDateStr := flag.String("end", "", "End date for backtest (YYYY-MM-DD)")
-	strategyName := flag.String("strategy", "orb", "Strategy to run: orb (intraday 5m) or dailyrev (daily short-term reversal)")
+	strategyName := flag.String("strategy", "orb", "Strategy to run: orb, gapfade, donchian (all intraday 5m) or dailyrev (daily short-term reversal)")
 	csvFile := flag.String("csv", "high_beta_stocks.csv", "CSV file containing symbols")
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
 	timeframe := flag.String("timeframe", "5m", "Timeframe for candles (e.g. 1d, 1h)")
@@ -115,6 +115,13 @@ func main() {
 	}
 
 	fmt.Printf("=== ZEROBHA MULTI-STOCK BACKTEST [%s] ===\n", *strategyName)
+	if *strategyName == config.StrategyDonchian {
+		fmt.Println("!! DONCHIAN IS A SIGNAL TEST ONLY. It is intended for execution in weekly")
+		fmt.Println("!! index options, and this run prices the SIGNAL INSTRUMENT (the index or")
+		fmt.Println("!! whatever CSV was given), not the option that would actually be traded.")
+		fmt.Println("!! An option adds bid-ask, theta over the hold, and per-order charges, all")
+		fmt.Println("!! of which subtract. Read the per-trade return in bps, not the rupee PnL.")
+	}
 	if *strategyName == config.StrategyGapFade {
 		fmt.Println("!! GAPFADE IS UNGATED IN BACKTEST: the Upstox news/earnings check has no")
 		fmt.Println("!! as-of-date history, so this run fades EVERY qualifying gap, including the")
@@ -157,6 +164,13 @@ func main() {
 		fmt.Printf("Uptrend filter ENGAGED: loaded %d NIFTY-50 daily candles.\n", len(niftyByDate))
 	}
 
+	// Donchian's timing knobs are needed in three places inside the loop (engine
+	// cutoff, strategy, square-off), so resolve them once up front.
+	dcCfg := config.DefaultDonchianConfig()
+	if appCfg != nil {
+		dcCfg = appCfg.Donchian
+	}
+
 	for _, sym := range symbols {
 		fmt.Printf("\n--------------------------------------------------\n")
 		fmt.Printf("TESTING SYMBOL: %s\n", sym)
@@ -173,6 +187,13 @@ func main() {
 			maxLoss = decimal.NewFromInt(int64(appCfg.Risk.MaxDailyLoss))
 			maxTrades = appCfg.Risk.MaxTradesPerDay
 			maxPerStock = appCfg.Risk.MaxTradesPerStock
+		}
+		// Donchian states its kill switch as a percent of capital rather than a
+		// rupee figure. NOTE: the engine never feeds realised PnL back to the
+		// risk manager (see the TODO in engine.Execute), so this limit is
+		// carried but never actually trips in a backtest.
+		if *strategyName == config.StrategyDonchian {
+			maxLoss = initialCapital.Mul(decimal.NewFromFloat(dcCfg.MaxDailyLossPct / 100))
 		}
 		riskMgr := risk.NewManager(nil, maxLoss, maxTrades, maxPerStock)
 
@@ -195,6 +216,8 @@ func main() {
 				drCfg = appCfg.DailyRev
 			}
 			myStrategy = strategy.NewDailyReversalStrategy([]string{sym}, drCfg)
+		case config.StrategyDonchian:
+			myStrategy = strategy.NewDonchianStrategy([]string{sym}, dcCfg)
 		case config.StrategyGapFade:
 			gfCfg := config.DefaultGapFadeConfig()
 			if appCfg != nil {
@@ -215,6 +238,29 @@ func main() {
 		// it off we disable it explicitly so the engine doesn't fail-open + warn.
 		engine := core.NewEngine(myStrategy, simBroker, riskMgr, j, nil, nil)
 		engine.UptrendOnly = *uptrend
+
+		// Apply the [engine] section, as cmd/trader does. Without this the
+		// backtester silently ignored it and ran on the built-in defaults, so
+		// the same config file produced different capital allocation and a
+		// different entry cutoff in backtest than in live. It also made an
+		// instrument priced above max_capital_per_trade untradeable with no
+		// diagnostic: quantity floors to zero and the signal vanishes, which
+		// reads as "the strategy found nothing" (SENSEX at 78,000 against the
+		// 50,000 stock-sized cap).
+		if appCfg != nil {
+			engine.MinBalance = int64(appCfg.Engine.MinBalance)
+			engine.MinCapitalPerTrade = int64(appCfg.Engine.MinCapitalPerTrade)
+			engine.MaxCapitalPerTrade = int64(appCfg.Engine.MaxCapitalPerTrade)
+			engine.TradeCutoffMin = appCfg.Engine.TradeCutoffMin
+		}
+
+		// The engine's own cutoff (14:05 by default) is earlier than Donchian's
+		// last-entry time, and it gates every signal — left alone it would
+		// silently truncate the strategy's entry window.
+		if *strategyName == config.StrategyDonchian {
+			engine.TradeCutoffMin = dcCfg.EntryCutoffMin + 1
+			engine.MaxConcurrent = dcCfg.MaxConcurrent
+		}
 
 		// 2. Load Data
 		// Try timeframe specific folder first
@@ -277,7 +323,12 @@ func main() {
 			istTime := candle.StartTime.In(loc)
 			h, m, _ := istTime.Clock()
 			timeInMinutes := h*60 + m
-			squareOffTime := 15*60 + 15 // 15:15
+			// 15:15 for the strategies written against the exchange's MIS
+			// square-off; Donchian flattens earlier, on its own knob.
+			squareOffTime := 15*60 + 15
+			if *strategyName == config.StrategyDonchian {
+				squareOffTime = dcCfg.SquareOffMin
+			}
 
 			if timeInMinutes >= squareOffTime {
 				simBroker.SquareOffAll(candle)
@@ -563,7 +614,36 @@ func buildColumnIndex(header []string) map[string]int {
 	return idx
 }
 
+// parseDuration turns a -timeframe value into the bar length used to stamp
+// Candle.EndTime.
+//
+// It must understand BOTH spellings the data tree uses. test/data/5m/ comes
+// from the Yahoo downloader and is named in Go duration syntax; test/data/
+// 5minute/ comes from cmd/histdl and cmd/idxdl and is named the way Kite and
+// Upstox name intervals. time.ParseDuration only accepts the first, and the
+// old fallback of one hour was silently wrong for the second: every bar's
+// EndTime landed an hour late, and since Engine.Execute gates entries on
+// EndTime, the effective entry cutoff ran an hour EARLY. On a donchian index
+// run that truncated the entry window at 13:30 instead of 14:31.
 func parseDuration(tf string) time.Duration {
+	switch strings.ToLower(tf) {
+	case "minute", "1minute":
+		return time.Minute
+	case "3minute":
+		return 3 * time.Minute
+	case "5minute":
+		return 5 * time.Minute
+	case "10minute":
+		return 10 * time.Minute
+	case "15minute":
+		return 15 * time.Minute
+	case "30minute":
+		return 30 * time.Minute
+	case "60minute", "hour":
+		return time.Hour
+	case "day", "1day":
+		return 24 * time.Hour
+	}
 	if strings.HasSuffix(tf, "d") {
 		daysStr := strings.TrimSuffix(tf, "d")
 		days, err := strconv.Atoi(daysStr)
@@ -574,7 +654,10 @@ func parseDuration(tf string) time.Duration {
 	}
 	d, err := time.ParseDuration(tf)
 	if err != nil {
-		return time.Hour // Default fallback
+		// Refuse to guess: an unrecognised timeframe silently shifts every
+		// EndTime, and the only symptom is a strategy that stops trading
+		// earlier in the day than its config says.
+		log.Fatalf("unrecognised -timeframe %q: cannot derive the bar length that stamps Candle.EndTime", tf)
 	}
 	return d
 }

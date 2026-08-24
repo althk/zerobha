@@ -75,6 +75,12 @@ func (s *SimBroker) PlaceOrder(order models.Order) (models.Order, error) {
 	order.ID = fmt.Sprintf("SIM-%d", len(s.Orders)+1)
 	order.Status = models.OrderFilled
 
+	// Anchor the chandelier trail at the fill: before any bar has printed, the
+	// best price reached since entry is the entry itself.
+	if order.TrailDistance.IsPositive() && order.TrailAnchor.IsZero() {
+		order.TrailAnchor = order.Price
+	}
+
 	// Use existing Timestamp if set, otherwise try Metadata
 	if order.Timestamp.IsZero() {
 		if tStr, ok := order.Metadata["CandleTime"]; ok {
@@ -155,12 +161,14 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 			var exitPrice decimal.Decimal
 			var exitReason string
 
-			// 1. Check Stop Loss
-			if candle.Low.LessThanOrEqual(o.StopLoss) {
+			// 1. Check Stop Loss. A zero stop means "no stop", not "stop at
+			// zero" — without the guard every long would exit on its first bar.
+			if o.StopLoss.IsPositive() && candle.Low.LessThanOrEqual(o.StopLoss) {
 				exitPrice = o.StopLoss
 				exitReason = "SL-HIT"
-			} else if candle.High.GreaterThanOrEqual(o.Target) {
-				// 2. Check Target
+			} else if o.Target.IsPositive() && candle.High.GreaterThanOrEqual(o.Target) {
+				// 2. Check Target. Same guard: strategies that run a pure
+				// trailing exit (tp_rr = 0) leave Target zero on purpose.
 				exitPrice = o.Target
 				exitReason = "TARGET-HIT"
 			} else if timeStopReached(o, candle) {
@@ -196,6 +204,8 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 				s.Trades = append(s.Trades, trade)
 
 				log.Printf(">>> EXIT TRIGGERED (LONG): %s | %s @ %s\n", exitReason, o.Symbol, exitPrice)
+			} else {
+				advanceProtectiveStops(o, candle)
 			}
 		}
 
@@ -235,11 +245,11 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 			var exitPrice decimal.Decimal
 			var exitReason string
 
-			// 1. Check Stop Loss (Price goes UP)
-			if candle.High.GreaterThanOrEqual(o.StopLoss) {
+			// 1. Check Stop Loss (Price goes UP). Zero means "no stop".
+			if o.StopLoss.IsPositive() && candle.High.GreaterThanOrEqual(o.StopLoss) {
 				exitPrice = o.StopLoss
 				exitReason = "SL-HIT"
-			} else if candle.Low.LessThanOrEqual(o.Target) {
+			} else if o.Target.IsPositive() && candle.Low.LessThanOrEqual(o.Target) {
 				// 2. Check Target (Price goes DOWN)
 				exitPrice = o.Target
 				exitReason = "TARGET-HIT"
@@ -272,6 +282,8 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 				s.Trades = append(s.Trades, trade)
 
 				log.Printf(">>> EXIT TRIGGERED (SHORT): %s | %s @ %s\n", exitReason, o.Symbol, exitPrice)
+			} else {
+				advanceProtectiveStops(o, candle)
 			}
 		}
 	}
@@ -359,53 +371,147 @@ func (s *SimBroker) GetTrades() ([]models.Order, error) {
 	return s.Orders, nil
 }
 
+// advanceProtectiveStops moves an open order's stop for the BREAKEVEN+ trigger
+// and the chandelier trail, using the bar that has just been evaluated.
+//
+// It runs only after CheckExits has decided that this bar did NOT exit the
+// trade, and that ordering is deliberate. Within a single bar the sequence of
+// high and low is unknown, so crediting a stop improvement earned by this bar's
+// high and then letting the same bar's low exit at the improved stop would be
+// lookahead in the strategy's favour. Evaluating exits against the stop as it
+// stood at the bar's open, and only then advancing it, is the pessimistic read.
+//
+// The stop only ever ratchets towards profit — for a long it can rise and never
+// fall — and it is never placed on the wrong side of the market: see
+// stopNoBetterThanMarket.
+func advanceProtectiveStops(o *models.Order, candle models.Candle) {
+	if o.Side == models.BuySignal {
+		if !o.BreakevenApplied && o.BreakevenTrigger.IsPositive() && candle.High.GreaterThanOrEqual(o.BreakevenTrigger) {
+			o.BreakevenApplied = true
+			if candidate := stopNoBetterThanMarket(o.Side, o.BreakevenStop, candle.Close); candidate.GreaterThan(o.StopLoss) {
+				o.StopLoss = candidate
+				log.Printf(">>> BREAKEVEN+ (LONG): %s | SL moved to %s\n", o.Symbol, o.StopLoss)
+			}
+		}
+		if o.TrailDistance.IsPositive() {
+			if candle.High.GreaterThan(o.TrailAnchor) {
+				o.TrailAnchor = candle.High
+			}
+			trailed := stopNoBetterThanMarket(o.Side, o.TrailAnchor.Sub(o.TrailDistance), candle.Close)
+			if trailed.GreaterThan(o.StopLoss) {
+				o.StopLoss = trailed
+			}
+		}
+		return
+	}
+
+	if !o.BreakevenApplied && o.BreakevenTrigger.IsPositive() && candle.Low.LessThanOrEqual(o.BreakevenTrigger) {
+		o.BreakevenApplied = true
+		candidate := stopNoBetterThanMarket(o.Side, o.BreakevenStop, candle.Close)
+		if o.StopLoss.IsZero() || candidate.LessThan(o.StopLoss) {
+			o.StopLoss = candidate
+			log.Printf(">>> BREAKEVEN+ (SHORT): %s | SL moved to %s\n", o.Symbol, o.StopLoss)
+		}
+	}
+	if o.TrailDistance.IsPositive() {
+		if o.TrailAnchor.IsZero() || candle.Low.LessThan(o.TrailAnchor) {
+			o.TrailAnchor = candle.Low
+		}
+		trailed := stopNoBetterThanMarket(o.Side, o.TrailAnchor.Add(o.TrailDistance), candle.Close)
+		if o.StopLoss.IsZero() || trailed.LessThan(o.StopLoss) {
+			o.StopLoss = trailed
+		}
+	}
+}
+
+// stopNoBetterThanMarket caps a protective stop at the current market price: a
+// long's stop may not sit above it, a short's may not sit below it.
+//
+// Without this cap the two stop-advancing rules quietly manufacture profit. A
+// BREAKEVEN+ offset of 10 points against a 4-point ATR trigger parks the stop
+// 6 points above where the bar actually traded, and a chandelier trail measured
+// from a high the bar gave back does the same; the next bar then "fills" the
+// stop at a price the market never printed. Every such fill was a winner, which
+// is exactly how the bug hides — it reads as a strategy that works.
+//
+// Capping at the close, rather than refusing the move, keeps the meaning of
+// both rules: the stop is as tight as the rule asks for and still achievable.
+func stopNoBetterThanMarket(side models.SignalType, stop, market decimal.Decimal) decimal.Decimal {
+	if side == models.BuySignal {
+		return decimal.Min(stop, market)
+	}
+	return decimal.Max(stop, market)
+}
+
+// ClosePosition implements core.PositionCloser: it flattens one symbol's open
+// position on the given side at price, booking the trade under reason.
+//
+// The engine needs this because a simulated position is a row in this broker's
+// own order book, not a real exchange position — placing a counter order (what
+// the live path does) would open a second position here instead of closing the
+// first.
+func (s *SimBroker) ClosePosition(symbol string, side models.SignalType, price decimal.Decimal, at time.Time, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	closed := false
+	for i := range s.Orders {
+		o := &s.Orders[i]
+		if o.Status != models.OrderFilled || o.Symbol != symbol || o.Side != side {
+			continue
+		}
+		if o.Quantity.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		s.closeOrderLocked(o, price, reason, at)
+		closed = true
+	}
+	return closed, nil
+}
+
+// closeOrderLocked flattens one filled order at exitPrice, updating the balance
+// and appending the trade. The caller must hold s.mu. A zero exitTime is left
+// as-is for callers that have no candle to attribute the exit to.
+func (s *SimBroker) closeOrderLocked(o *models.Order, exitPrice decimal.Decimal, exitReason string, exitTime time.Time) {
+	var realizedPnL decimal.Decimal
+	direction := "SHORT"
+	if o.Side == models.BuySignal {
+		direction = "LONG"
+		revenue := exitPrice.Mul(o.Quantity)
+		s.Balance = s.Balance.Add(revenue)
+		realizedPnL = revenue.Sub(o.Price.Mul(o.Quantity))
+	} else {
+		buyBackCost := exitPrice.Mul(o.Quantity)
+		s.Balance = s.Balance.Sub(buyBackCost)
+		realizedPnL = o.Price.Mul(o.Quantity).Sub(buyBackCost) // (Entry - Exit) * Qty
+	}
+
+	o.Status = models.OrderClosed
+
+	s.Trades = append(s.Trades, models.Trade{
+		Symbol:     o.Symbol,
+		EntryPrice: o.Price,
+		ExitPrice:  exitPrice,
+		Quantity:   o.Quantity,
+		Direction:  direction,
+		PnL:        realizedPnL,
+		EntryTime:  o.Timestamp,
+		ExitTime:   exitTime,
+		ExitReason: exitReason,
+	})
+
+	log.Printf(">>> POSITION CLOSED (%s): %s | %s @ %s | PnL %s\n", direction, exitReason, o.Symbol, exitPrice, realizedPnL)
+}
+
 func (s *SimBroker) SquareOffAll(candle models.Candle) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for i := range s.Orders {
 		o := &s.Orders[i]
-		if o.Status == models.OrderFilled {
-			exitReason := "EOD-SQUAREOFF"
-			exitPrice := candle.Close
-
-			if o.Quantity.LessThanOrEqual(decimal.Zero) {
-				continue
-			}
-
-			// Calculate PnL
-			var realizedPnL decimal.Decimal
-			if o.Side == models.BuySignal {
-				revenue := exitPrice.Mul(o.Quantity)
-				s.Balance = s.Balance.Add(revenue)
-				realizedPnL = revenue.Sub(o.Price.Mul(o.Quantity))
-			} else {
-				buyBackCost := exitPrice.Mul(o.Quantity)
-				s.Balance = s.Balance.Sub(buyBackCost)
-				realizedPnL = o.Price.Mul(o.Quantity).Sub(buyBackCost) // (Entry - Exit) * Qty
-			}
-
-			o.Status = models.OrderClosed
-
-			trade := models.Trade{
-				Symbol:     o.Symbol,
-				EntryPrice: o.Price,
-				ExitPrice:  exitPrice,
-				Quantity:   o.Quantity,
-				PnL:        realizedPnL,
-				EntryTime:  o.Timestamp,
-				ExitTime:   candle.EndTime,
-				ExitReason: exitReason,
-			}
-
-			if o.Side == models.BuySignal {
-				trade.Direction = "LONG"
-			} else {
-				trade.Direction = "SHORT"
-			}
-
-			s.Trades = append(s.Trades, trade)
-			log.Printf(">>> EOD SQUAREOFF: %s | %s @ %s\n", o.Symbol, exitPrice, realizedPnL)
+		if o.Status != models.OrderFilled || o.Quantity.LessThanOrEqual(decimal.Zero) {
+			continue
 		}
+		s.closeOrderLocked(o, candle.Close, "EOD-SQUAREOFF", candle.EndTime)
 	}
 }

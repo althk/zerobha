@@ -71,6 +71,45 @@ type Broker interface {
 	GetTrades() ([]models.Order, error)
 }
 
+// ExitAdvice tells the engine to close an existing position at market, outside
+// the stop/target the broker already holds. It is advice rather than an order:
+// the strategy cannot see whether its signal was ever filled (risk limits and
+// concurrency caps may have dropped it), so the engine acts only if a matching
+// position actually exists.
+type ExitAdvice struct {
+	Symbol string
+	// ForSide is the side of the position this applies to — a long-exit advice
+	// must not close a short that happens to be open in the same symbol.
+	ForSide models.SignalType
+	Reason  string
+}
+
+// ExitAdvisor is implemented by strategies that own an exit condition the
+// broker cannot evaluate on its own — one that depends on indicator state
+// rather than on a price level, such as "close beyond the opposite Donchian
+// band". It is optional: the engine type-asserts for it, so strategies whose
+// exits are fully described by StopLoss/Target need not implement it.
+type ExitAdvisor interface {
+	ExitAdvice(candle models.Candle) *ExitAdvice
+}
+
+// PositionCloser is an optional Broker capability: closing one symbol's
+// position at a known price, in one call. Brokers that cannot do this (or do
+// not need to) simply omit it, and the engine falls back to placing a counter
+// order built from GetPositions.
+//
+// The simulator implements it because its positions live inside its own order
+// book with the PnL bookkeeping attached; a generic counter order would open a
+// second position there rather than closing the first.
+type PositionCloser interface {
+	// ClosePosition closes any open position in symbol on the given side at
+	// price, tagging the resulting trade with reason. `at` is the market time
+	// of the exit, not wall clock — the simulator has no other way to stamp the
+	// trade, and an unstamped one drops out of every time-ordered analysis.
+	// It reports whether a position was actually found and closed.
+	ClosePosition(symbol string, side models.SignalType, price decimal.Decimal, at time.Time, reason string) (bool, error)
+}
+
 // GateVerdict is the outcome of a NewsGate consultation. Reason is always
 // populated — it is journalled with the signal so a blocked or allowed entry
 // can be audited after the fact.

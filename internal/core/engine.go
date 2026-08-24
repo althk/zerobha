@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 	"zerobha/internal/models"
 	"zerobha/internal/risk"
 	"zerobha/pkg/broker"
@@ -46,7 +47,17 @@ type Engine struct {
 	// a position that exits before then is simply never cleaned up here (it's
 	// a lookup cache, not a source of truth — GetPositions remains authoritative).
 	openOrders map[string]*models.Order
+	// lastStopPush throttles how often a ratcheting trail is pushed to the
+	// broker, keyed by symbol. The in-memory ratchet stays exact; only the
+	// network call is rate-limited, and a breakeven move bypasses it.
+	lastStopPush map[string]time.Time
 }
+
+// trailPushInterval is the minimum gap between two broker-side stop
+// modifications for the same symbol. A chandelier trail on a trending 5-minute
+// bar would otherwise issue a modify on nearly every tick and spend the account's
+// rate limit on stop moves of a few paise.
+const trailPushInterval = 30 * time.Second
 
 func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *broker.InstrumentManager, d *db.Store) *Engine {
 	e := &Engine{
@@ -65,6 +76,7 @@ func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *br
 		niftyEMA50:         indicators.NewEMA(50),
 		niftyEMA200:        indicators.NewEMA(200),
 		openOrders:         make(map[string]*models.Order),
+		lastStopPush:       make(map[string]time.Time),
 	}
 	e.loadLeverageMap()
 	return e
@@ -175,6 +187,12 @@ func (e *Engine) loadLeverageMap() {
 
 // Execute is called whenever a candle closes
 func (e *Engine) Execute(candle models.Candle) {
+	// Exits first, and ahead of every gate below. The entry cutoff, the trade
+	// limits and the uptrend filter all decide whether a NEW position may be
+	// opened; none of them is a reason to keep holding one the strategy has
+	// just said to close.
+	e.applyExitAdvice(candle)
+
 	h, m, _ := candle.EndTime.Clock()
 	if h*60+m >= e.TradeCutoffMin {
 		return
@@ -350,12 +368,16 @@ func (e *Engine) Execute(candle models.Candle) {
 		Side:             signal.Type,
 		Type:             "MARKET", // Only market orders supported
 		ProductType:      signal.ProductType,
+		Exchange:         signal.Exchange,
 		Quantity:         qty.Floor(),
 		Price:            AdjustPriceToTick(signal.Price, GetTickSize(signal.Symbol, signal.Price)),
 		StopLoss:         AdjustPriceToTick(signal.StopLoss, GetTickSize(signal.Symbol, signal.StopLoss)),
 		Target:           AdjustPriceToTick(signal.Target, GetTickSize(signal.Symbol, signal.Target)),
 		PartialExitPrice: AdjustPriceToTick(signal.PartialExitPrice, GetTickSize(signal.Symbol, signal.PartialExitPrice)),
 		PartialExitPct:   signal.PartialExitPct,
+		TrailDistance:    signal.TrailDistance,
+		BreakevenTrigger: AdjustPriceToTick(signal.BreakevenTrigger, GetTickSize(signal.Symbol, signal.BreakevenTrigger)),
+		BreakevenStop:    AdjustPriceToTick(signal.BreakevenStop, GetTickSize(signal.Symbol, signal.BreakevenStop)),
 		Metadata:         signal.Metadata,
 		Timestamp:        candle.StartTime, // Set Timestamp from Candle
 	}
@@ -387,7 +409,10 @@ func (e *Engine) Execute(candle models.Candle) {
 		// the strategy attached a partial-exit level and the broker placed a
 		// GTT for it (GTTTriggerID is 0 for brokers without GTT support, e.g.
 		// the sim, where CheckExits handles the trail directly instead).
-		if !order.PartialExitPrice.IsZero() && order.GTTTriggerID != 0 {
+		needsTickManagement := !order.PartialExitPrice.IsZero() ||
+			order.TrailDistance.IsPositive() ||
+			order.BreakevenTrigger.IsPositive()
+		if needsTickManagement && order.GTTTriggerID != 0 {
 			ord := order
 			e.openOrdersMu.Lock()
 			e.openOrders[order.Symbol] = &ord
@@ -396,43 +421,197 @@ func (e *Engine) Execute(candle models.Candle) {
 	}
 }
 
-// OnTick checks live-quoted price for symbol against any tracked position's
-// partial-exit/breakeven-trail level and, once crossed, moves the GTT's stop
-// leg to breakeven. Called from the live tick handler (per tick, not per
-// candle) since the trail must react intracandle rather than waiting for the
-// bar to close. No-op for symbols with no tracked order or an already-applied
-// breakeven move.
+// applyExitAdvice asks the strategy whether an open position should be closed
+// for a reason no resting order can express — for Donchian, price closing beyond
+// the opposite channel band. Strategies that do not implement core.ExitAdvisor
+// make this a single type assertion per candle.
+//
+// The advice names a side, and the close only happens if a position on that side
+// exists: a strategy cannot see whether its entry signal was actually filled
+// (risk limits and the concurrency cap drop signals silently), so it can only
+// say "if you are long this, get out".
+func (e *Engine) applyExitAdvice(candle models.Candle) {
+	advisor, ok := e.Strategy.(ExitAdvisor)
+	if !ok {
+		return
+	}
+	advice := advisor.ExitAdvice(candle)
+	if advice == nil {
+		return
+	}
+
+	if closer, ok := e.Broker.(PositionCloser); ok {
+		closed, err := closer.ClosePosition(advice.Symbol, advice.ForSide, candle.Close, candle.EndTime, advice.Reason)
+		if err != nil {
+			log.Printf("ERROR: Failed to close %s on strategy exit advice: %v", advice.Symbol, err)
+			return
+		}
+		if closed {
+			log.Printf(">>> STRATEGY EXIT: %s | %s", advice.Symbol, advice.Reason)
+			e.forgetTrackedOrder(advice.Symbol)
+		}
+		return
+	}
+
+	// Live path: no dedicated close, so flatten with a counter market order.
+	positions, err := e.Broker.GetPositions()
+	if err != nil {
+		log.Printf("ERROR: Cannot act on exit advice for %s: %v", advice.Symbol, err)
+		return
+	}
+	for _, p := range positions {
+		if p.Tradingsymbol != advice.Symbol || p.NetQuantity == 0 {
+			continue
+		}
+		isLong := p.NetQuantity > 0
+		if isLong != (advice.ForSide == models.BuySignal) {
+			continue
+		}
+
+		qty := decimal.NewFromInt(int64(p.NetQuantity)).Abs()
+		side := models.SellSignal
+		if !isLong {
+			side = models.BuySignal
+		}
+		counter := models.Order{
+			Symbol:      p.Tradingsymbol,
+			Side:        side,
+			Type:        "MARKET",
+			ProductType: p.Product,
+			Quantity:    qty,
+			Metadata:    map[string]string{"Reason": advice.Reason},
+		}
+		placed, err := e.Broker.PlaceOrder(counter)
+		if err != nil {
+			log.Printf("ERROR: Failed to close %s on strategy exit advice: %v", advice.Symbol, err)
+			if e.Journal != nil {
+				e.Journal.LogOrder(counter, "FAILED", err.Error())
+			}
+			continue
+		}
+		log.Printf(">>> STRATEGY EXIT: %s | %s", advice.Symbol, advice.Reason)
+		if e.Journal != nil {
+			e.Journal.LogOrder(placed, "SUCCESS", advice.Reason)
+		}
+		if e.DB != nil {
+			_ = e.DB.SaveOrder(placed, "SUBMITTED")
+		}
+		e.forgetTrackedOrder(advice.Symbol)
+	}
+}
+
+// forgetTrackedOrder drops a symbol from the tick-driven stop manager once its
+// position is gone, so a later position in the same symbol does not inherit the
+// previous trade's trail anchor.
+func (e *Engine) forgetTrackedOrder(symbol string) {
+	e.openOrdersMu.Lock()
+	delete(e.openOrders, symbol)
+	delete(e.lastStopPush, symbol)
+	e.openOrdersMu.Unlock()
+}
+
+// stopAfterTick returns where the tracked order's stop should rest given the
+// latest traded price, whether that differs from the stop currently at the
+// broker, and whether the change is urgent (a one-off breakeven move rather than
+// an incremental trail step — urgent moves skip the push throttle).
+//
+// It mutates only TrailAnchor, which is a high-water mark and correct to advance
+// whether or not the broker call that follows succeeds.
+func stopAfterTick(o *models.Order, price decimal.Decimal) (stop decimal.Decimal, changed, urgent bool) {
+	stop = o.StopLoss
+
+	// A stop is never placed on the wrong side of the market: a long's stop
+	// above the last trade (or a short's below it) is not a stop but a limit
+	// order, and it would be filled at a price the market has not reached.
+	// See broker.stopNoBetterThanMarket for the same rule in the simulator.
+	capToMarket := func(candidate decimal.Decimal) decimal.Decimal {
+		if o.Side == models.BuySignal {
+			return decimal.Min(candidate, price)
+		}
+		return decimal.Max(candidate, price)
+	}
+
+	if o.Side == models.BuySignal {
+		// Partial-exit breakeven (the original ORB behaviour): once the
+		// partial level trades, the remainder's stop goes to entry.
+		if !o.BreakevenApplied && o.PartialExitPrice.IsPositive() && price.GreaterThanOrEqual(o.PartialExitPrice) && o.Price.GreaterThan(stop) {
+			stop, urgent = capToMarket(o.Price), true
+		}
+		if !o.BreakevenApplied && o.BreakevenTrigger.IsPositive() && price.GreaterThanOrEqual(o.BreakevenTrigger) && o.BreakevenStop.GreaterThan(stop) {
+			stop, urgent = capToMarket(o.BreakevenStop), true
+		}
+		if o.TrailDistance.IsPositive() {
+			if price.GreaterThan(o.TrailAnchor) {
+				o.TrailAnchor = price
+			}
+			if trailed := capToMarket(o.TrailAnchor.Sub(o.TrailDistance)); trailed.GreaterThan(stop) {
+				stop = trailed
+			}
+		}
+		return stop, stop.GreaterThan(o.StopLoss), urgent
+	}
+
+	improves := func(candidate decimal.Decimal) bool {
+		return stop.IsZero() || candidate.LessThan(stop)
+	}
+	if !o.BreakevenApplied && o.PartialExitPrice.IsPositive() && price.LessThanOrEqual(o.PartialExitPrice) && improves(o.Price) {
+		stop, urgent = capToMarket(o.Price), true
+	}
+	if !o.BreakevenApplied && o.BreakevenTrigger.IsPositive() && price.LessThanOrEqual(o.BreakevenTrigger) && improves(o.BreakevenStop) {
+		stop, urgent = capToMarket(o.BreakevenStop), true
+	}
+	if o.TrailDistance.IsPositive() {
+		if o.TrailAnchor.IsZero() || price.LessThan(o.TrailAnchor) {
+			o.TrailAnchor = price
+		}
+		if trailed := capToMarket(o.TrailAnchor.Add(o.TrailDistance)); improves(trailed) {
+			stop = trailed
+		}
+	}
+	return stop, !stop.Equal(o.StopLoss), urgent
+}
+
+// OnTick manages the protective stop of a live position against the traded
+// price: the BREAKEVEN+ move and the chandelier trail both have to react
+// intracandle rather than waiting for the 5-minute bar to close, so this is
+// called per tick from the live handler. It is a no-op for symbols with no
+// tracked order.
+//
+// The simulator does not use this path — SimBroker.CheckExits advances the same
+// stops bar by bar — so backtest and live agree on the rules but not on the
+// resolution at which they are applied. Live reacts sooner; a backtest number is
+// therefore the conservative one.
 func (e *Engine) OnTick(symbol string, price decimal.Decimal) {
 	e.openOrdersMu.Lock()
 	order, ok := e.openOrders[symbol]
-	if !ok || order.BreakevenApplied {
+	if !ok {
 		e.openOrdersMu.Unlock()
 		return
 	}
+	newStop, changed, urgent := stopAfterTick(order, price)
+	throttled := !urgent && time.Since(e.lastStopPush[symbol]) < trailPushInterval
+	snapshot := *order
 	e.openOrdersMu.Unlock()
 
-	crossed := false
-	if order.Side == models.BuySignal {
-		crossed = price.GreaterThanOrEqual(order.PartialExitPrice)
-	} else {
-		crossed = price.LessThanOrEqual(order.PartialExitPrice)
-	}
-	if !crossed {
+	if !changed || throttled {
 		return
 	}
 
-	if err := e.Broker.ModifyPositionStop(*order, order.Price); err != nil {
-		log.Printf("ERROR: Failed to move %s stop to breakeven: %v", symbol, err)
+	if err := e.Broker.ModifyPositionStop(snapshot, newStop); err != nil {
+		log.Printf("ERROR: Failed to move %s stop to %s: %v", symbol, newStop, err)
 		return
 	}
 
 	e.openOrdersMu.Lock()
-	order.BreakevenApplied = true
-	order.StopLoss = order.Price
+	order.StopLoss = newStop
+	if urgent {
+		order.BreakevenApplied = true
+	}
+	e.lastStopPush[symbol] = time.Now()
 	e.openOrdersMu.Unlock()
 
 	if e.Journal != nil {
-		e.Journal.LogOrder(*order, "BREAKEVEN", fmt.Sprintf("SL moved to entry %s at price %s", order.Price, price))
+		e.Journal.LogOrder(snapshot, "STOP-MOVED", fmt.Sprintf("SL moved to %s at price %s", newStop, price))
 	}
 }
 

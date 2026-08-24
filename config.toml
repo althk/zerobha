@@ -109,3 +109,80 @@ timeout_seconds = 5
 # Extra headline keywords that block a fade. Empty = the built-in list in
 # pkg/upstox/gate.go (fraud, probe, SEBI, resignation, downgrade, default, ...).
 block_keywords = []
+
+# Donchian intraday channel breakout on the NIFTY / SENSEX 5-minute INDEX
+# chart, executed in weekly index options.
+#
+# The signal instrument and the traded instrument are deliberately different:
+# the index says when to act, an option is what gets bought. cmd/backtest
+# trades the index directly (that is what every recorded result measures);
+# cmd/trader translates each signal into a contract. See CLAUDE.md.
+[donchian]
+timeframe = "5m"
+# Backtest universe: a CSV listing the index symbols to replay, matching files
+# in test/data/<timeframe>/ (nifty50_real.csv, sensex_real.csv from cmd/idxdl).
+csv_file = "indices.csv"
+limit = 2
+
+# Channel over the last N completed bars, excluding the bar being evaluated.
+# The close must clear it by breakout_buffer_points to count as a break.
+#
+# NOTE breakout_buffer_points is an ABSOLUTE points knob, so the same value
+# means different things across instruments: 2 points is 0.11 ATR on NIFTY but
+# 0.03 ATR on SENSEX. Set it per index rather than sharing one run.
+donchian_lookback = 30
+breakout_buffer_points = 2.0
+atr_period = 9
+
+use_ignition = true
+ignition_atr_mult = 1.0
+# Index 5-minute ATR runs 0.076-0.083% of price. The stock-sized 0.15 floor
+# rejected every single bar.
+min_atr_pct = 0.03
+
+# Initial stop, then a chandelier trail from the best price reached since entry.
+# The trail is the ONLY profit-taking exit: a target and BREAKEVEN+ were each
+# measured repeatedly and each cost more than it saved, so both knobs are gone.
+#
+# sl_atr_mult was 1.3, which stopped out 82% of trades before the move
+# developed while all of the profit sat in the ones that survived to run.
+sl_atr_mult = 3.0
+trail_atr_mult = 3.0
+
+# --- Option execution (live only; cmd/backtest trades the index directly) ---
+#
+# target_delta is what gets bought to express a signal: a call for a long view,
+# a put for a short. Never a sold option.
+#
+# A delta target is not the same as a fixed point offset. What sets delta is the
+# move in units of sigma*sqrt(T), so 150 points ITM is ~0.95 delta on expiry
+# morning and ~0.68 six days out.
+target_delta = 0.80
+
+# min_days_to_expiry is the most valuable knob here. As time to expiry
+# collapses, the target-delta strike walks in towards spot, so on expiry day it
+# buys a nearly worthless contract with enormous leverage and brutal decay per
+# rupee of premium: -1571 bps per trade against -104 to +106 for the rest of
+# the week. 2 skips expiry day and the day before.
+#
+# 0 is a meaningful value ("trade expiry day too"), so the field is a pointer
+# and an explicit 0 here survives rather than being replaced by the default.
+min_days_to_expiry = 2
+
+# Volatility used only when the at-the-money premium cannot be read. 0 means
+# "refuse to trade": picking a strike against a stale constant silently buys
+# the wrong contract, and not trading is the better failure.
+fallback_iv = 0.0
+
+# Minutes from midnight IST: 570 = 09:30, 871 = 14:31, 897 = 14:57.
+entry_start_min = 570
+entry_cutoff_min = 871
+squareoff_min = 897
+
+risk_pct = 0.5
+max_daily_loss_pct = 2.0
+max_concurrent = 5
+max_entries_per_symbol = 4
+
+allow_short = true
+exit_on_opposite_break = true
