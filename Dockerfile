@@ -29,8 +29,8 @@ COPY --from=builder /bin/trader /app/trader
 COPY indices.csv /app/indices.csv
 COPY config.local.toml /app/config.local.toml
 
-# Default volumes directory
-RUN mkdir -p /app/logs /app/data
+# Set working directory to data mount so zerobha.db is persisted automatically
+WORKDIR /app/data
 
 VOLUME ["/app/logs", "/app/data"]
 
