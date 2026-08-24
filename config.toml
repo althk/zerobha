@@ -158,6 +158,8 @@ trail_atr_mult = 3.0
 # move in units of sigma*sqrt(T), so 150 points ITM is ~0.95 delta on expiry
 # morning and ~0.68 six days out.
 target_delta = 0.80
+# Higher delta target closer to expiry (DTE <= 3) to reduce extrinsic time value and theta bleed
+target_delta_near_expiry = 0.90
 
 # min_days_to_expiry is the most valuable knob here. As time to expiry
 # collapses, the target-delta strike walks in towards spot, so on expiry day it
@@ -168,6 +170,10 @@ target_delta = 0.80
 # 0 is a meaningful value ("trade expiry day too"), so the field is a pointer
 # and an explicit 0 here survives rather than being replaced by the default.
 min_days_to_expiry = 2
+
+# Optional ADX trend filter (0 = disabled, e.g. 20.0 to filter low-volatility chop)
+adx_threshold = 0.0
+adx_period = 14
 
 # Volatility used only when the at-the-money premium cannot be read. 0 means
 # "refuse to trade": picking a strike against a stale constant silently buys

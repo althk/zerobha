@@ -44,6 +44,12 @@ type Selector struct {
 	// and a short signal buys a put; the strategy is never short an option.
 	TargetDelta float64
 
+	// TargetDeltaNearExpiry is the |delta| used when time to expiry is <= 3 days.
+	// Near expiry (Tue/Wed for a Thu expiry), time decay accelerates; buying a
+	// deeper ITM strike (e.g. 0.90) reduces extrinsic time value and theta bleed.
+	// If 0, TargetDelta is used for all DTEs.
+	TargetDeltaNearExpiry float64
+
 	// MinDaysToExpiry refuses to trade when the nearest expiry is closer than
 	// this. It is not a preference — near expiry a fixed delta buys a nearly
 	// worthless contract, because what sets delta is the move in units of
@@ -84,7 +90,8 @@ func (s Selector) Select(underlying string, spot decimal.Decimal, now time.Time,
 	if !ok {
 		return zero, fmt.Errorf("options: no expiry listed for %s after %s", underlying, now.Format("2006-01-02"))
 	}
-	if DaysToExpiry(now, expiry) < s.MinDaysToExpiry {
+	dte := DaysToExpiry(now, expiry)
+	if dte < s.MinDaysToExpiry {
 		return zero, ErrTooCloseToExpiry
 	}
 
@@ -104,7 +111,12 @@ func (s Selector) Select(underlying string, spot decimal.Decimal, now time.Time,
 		return zero, err
 	}
 
-	target := StrikeForDelta(spotF, years, iv, s.TargetDelta, isCall)
+	targetDelta := s.TargetDelta
+	if s.TargetDeltaNearExpiry > 0 && dte <= 3 {
+		targetDelta = s.TargetDeltaNearExpiry
+	}
+
+	target := StrikeForDelta(spotF, years, iv, targetDelta, isCall)
 	c, ok := nearestStrike(contracts, isCall, target)
 	if !ok {
 		return zero, fmt.Errorf("options: no %s strike near %.0f in the %s chain",

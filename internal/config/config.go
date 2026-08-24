@@ -260,6 +260,11 @@ type DonchianConfig struct {
 	// this buys instead.
 	TargetDelta float64 `toml:"target_delta"`
 
+	// TargetDeltaNearExpiry is the |delta| used when time to expiry is <= 3 days.
+	// Near expiry (Tue/Wed for Thu weekly expiry), theta accelerates. Target delta
+	// increases (default 0.90) to lower extrinsic time value and avoid theta bleed.
+	TargetDeltaNearExpiry float64 `toml:"target_delta_near_expiry"`
+
 	// MinDaysToExpiry refuses entries when the nearest weekly expiry is closer
 	// than this. Default 2 - skipping expiry day and the day before.
 	//
@@ -275,6 +280,11 @@ type DonchianConfig struct {
 	// means the default can never apply. That exact bug ran a whole backtest
 	// without the target it was meant to be testing.
 	MinDaysToExpiry *int `toml:"min_days_to_expiry"`
+
+	// ADXThreshold gates entries to bars where ADX >= ADXThreshold.
+	// Default 0 (disabled). When set > 0, filters low-energy sideways chop.
+	ADXThreshold float64 `toml:"adx_threshold"`
+	ADXPeriod    int     `toml:"adx_period"` // default 14
 
 	// FallbackIV is the volatility used when the at-the-money premium cannot
 	// be read. Default 0, which means "refuse to trade" - selecting a strike
@@ -430,7 +440,10 @@ func DefaultDonchianConfig() DonchianConfig {
 		MaxConcurrent:       5,
 		MaxEntriesPerSymbol: 4,
 		TargetDelta:         0.80,
+		TargetDeltaNearExpiry: 0.90,
 		MinDaysToExpiry:     intPtr(2),
+		ADXThreshold:        0,
+		ADXPeriod:           14,
 		AllowShort:          boolPtr(true),
 		ExitOnOppositeBreak: boolPtr(true),
 	}
@@ -772,9 +785,15 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Donchian.TargetDelta == 0 {
 		config.Donchian.TargetDelta = dcD.TargetDelta
 	}
+	if config.Donchian.TargetDeltaNearExpiry == 0 {
+		config.Donchian.TargetDeltaNearExpiry = dcD.TargetDeltaNearExpiry
+	}
 	// nil -> default; an explicit min_days_to_expiry = 0 survives.
 	if config.Donchian.MinDaysToExpiry == nil {
 		config.Donchian.MinDaysToExpiry = dcD.MinDaysToExpiry
+	}
+	if config.Donchian.ADXPeriod == 0 {
+		config.Donchian.ADXPeriod = dcD.ADXPeriod
 	}
 	if config.Donchian.MaxEntriesPerSymbol == 0 {
 		config.Donchian.MaxEntriesPerSymbol = dcD.MaxEntriesPerSymbol

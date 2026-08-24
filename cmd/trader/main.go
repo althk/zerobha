@@ -605,8 +605,12 @@ func buildOptionExecutor(cfg *config.Config, im *broker.InstrumentManager, kc *k
 	if cfg.Donchian.MinDaysToExpiry != nil {
 		minDTE = *cfg.Donchian.MinDaysToExpiry
 	}
-	log.Printf("Donchian option execution: target delta %.2f, min %d day(s) to expiry, fallback IV %.1f%%",
-		cfg.Donchian.TargetDelta, minDTE, cfg.Donchian.FallbackIV*100)
+	nearExpiryDelta := cfg.Donchian.TargetDeltaNearExpiry
+	if nearExpiryDelta == 0 {
+		nearExpiryDelta = 0.90
+	}
+	log.Printf("Donchian option execution: target delta %.2f (DTE<=3 delta %.2f), min %d day(s) to expiry, fallback IV %.1f%%",
+		cfg.Donchian.TargetDelta, nearExpiryDelta, minDTE, cfg.Donchian.FallbackIV*100)
 	if minDTE == 0 {
 		log.Println("WARNING: min_days_to_expiry = 0 — expiry-day trades measured at -1571 bps each. See CLAUDE.md.")
 	}
@@ -614,9 +618,10 @@ func buildOptionExecutor(cfg *config.Config, im *broker.InstrumentManager, kc *k
 	return broker.OptionExecutor{
 		Chain: broker.NewKiteChain(im, quote),
 		Selector: options.Selector{
-			TargetDelta:     cfg.Donchian.TargetDelta,
-			MinDaysToExpiry: minDTE,
-			FallbackIV:      cfg.Donchian.FallbackIV,
+			TargetDelta:           cfg.Donchian.TargetDelta,
+			TargetDeltaNearExpiry: nearExpiryDelta,
+			MinDaysToExpiry:       minDTE,
+			FallbackIV:            cfg.Donchian.FallbackIV,
 		},
 	}
 }

@@ -140,6 +140,8 @@ type strikeRule struct {
 	// TargetDelta, when > 0, selects the strike whose |delta| is closest to it
 	// under the vol implied by the at-the-money premium in the entry bar.
 	TargetDelta float64
+	// TargetDeltaNearExpiry is the |delta| used when DTE <= 3 (default 0.90).
+	TargetDeltaNearExpiry float64
 	// SpreadPct is a half-spread as a percent of premium. SpreadTicks is the
 	// same cost quoted the way an option book actually quotes it — an absolute
 	// number of ticks.
@@ -162,6 +164,7 @@ func main() {
 	under := flag.String("underlying", "nifty", "nifty, banknifty or sensex")
 	itm := flag.Float64("itm", 150, "how far in the money to buy, in index points (ignored when -delta is set)")
 	targetDelta := flag.Float64("delta", 0, "buy the strike with this |delta| instead of a fixed point offset, e.g. 0.8")
+	targetDeltaNearExpiry := flag.Float64("delta-near-expiry", 0.90, "buy this |delta| when DTE <= 3 (default 0.90, 0 to disable)")
 	lots := flag.Int("lots", 1, "position size in lots — brokerage is flat per order, so this changes the edge")
 	brokerage := flag.Float64("brokerage", 20, "flat brokerage per executed order, rupees")
 	sttPct := flag.Float64("stt-pct", 0.15, "STT on the sell leg, percent of premium turnover")
@@ -223,12 +226,13 @@ func main() {
 		log.Fatal("-lots must be at least 1")
 	}
 	rule := strikeRule{
-		MinDTE:      *minDTE,
-		Points:      *itm,
-		TargetDelta: *targetDelta,
-		SpreadPct:   *spreadPct,
-		SpreadTicks: *spreadTicks,
-		FlatCostBps: *costBps,
+		MinDTE:                *minDTE,
+		Points:                *itm,
+		TargetDelta:           *targetDelta,
+		TargetDeltaNearExpiry: *targetDeltaNearExpiry,
+		SpreadPct:             *spreadPct,
+		SpreadTicks:           *spreadTicks,
+		FlatCostBps:           *costBps,
 		Costs: costModel{
 			Lots:              *lots,
 			BrokeragePerOrder: *brokerage,
@@ -332,12 +336,17 @@ func priceTrade(store *contractStore, underlyingKey string, t indexTrade, expiri
 	// makes the two modes comparable, so it must not gate the trade there.
 	iv, why := store.atmIV(chain, t, exp)
 	var target float64
+	dte := int(exp.Sub(entryDay).Hours() / 24)
+	effectiveDelta := rule.TargetDelta
+	if rule.TargetDeltaNearExpiry > 0 && dte <= 3 {
+		effectiveDelta = rule.TargetDeltaNearExpiry
+	}
 	switch {
-	case rule.TargetDelta > 0:
+	case effectiveDelta > 0:
 		if why != "" {
 			return pricedTrade{}, why
 		}
-		target = options.StrikeForDelta(t.EntrySpot, options.YearsToExpiry(execAt, exp), iv, rule.TargetDelta, isCall)
+		target = options.StrikeForDelta(t.EntrySpot, options.YearsToExpiry(execAt, exp), iv, effectiveDelta, isCall)
 	case isCall:
 		target = t.EntrySpot - rule.Points
 	default:

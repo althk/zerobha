@@ -90,6 +90,22 @@ func TestSelectBuysTheRequestedDelta(t *testing.T) {
 	}
 }
 
+func TestSelectUsesHigherDeltaNearExpiry(t *testing.T) {
+	// 2 DTE with TargetDeltaNearExpiry = 0.90
+	sel, chain, quoter, now, spot := fixture(2)
+	sel.TargetDeltaNearExpiry = 0.90
+
+	c, err := sel.Select("NIFTY", spot, now, true, chain, quoter)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	years := YearsToExpiry(now, c.Expiry)
+	got := math.Abs(Delta(spot.InexactFloat64(), c.Strike.InexactFloat64(), years, quoter.iv, true))
+	if math.Abs(got-0.90) > 0.03 {
+		t.Errorf("strike %s has delta %.3f, want ~0.90 near expiry", c.Strike, got)
+	}
+}
+
 // The contract bought must be in the money: a call below spot, a put above.
 func TestSelectBuysInTheMoney(t *testing.T) {
 	sel, chain, quoter, now, spot := fixture(4)

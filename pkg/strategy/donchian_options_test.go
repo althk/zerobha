@@ -272,3 +272,27 @@ func TestDonchianWithoutOptionExecutionIsUnchanged(t *testing.T) {
 		t.Error("an option leg was recorded without an executor")
 	}
 }
+
+// An active position or option leg must prevent re-entries until closed.
+func TestDonchianBlocksReentryWhilePositionActive(t *testing.T) {
+	exec := newFakeExecutor()
+	s := optionStrategy(t, exec)
+
+	sig1 := s.OnCandle(dcCandle(10, 15, 100, 106, 99, 105, 5000))
+	if sig1 == nil {
+		t.Fatal("no first signal")
+	}
+	st := s.stateFor("TEST")
+	if !st.openValid || st.leg == nil {
+		t.Fatal("state not marked open")
+	}
+
+	// Another breakout while position is active should NOT fire or overwrite st.leg
+	sig2 := s.OnCandle(dcCandle(10, 20, 105, 115, 104, 114, 5000))
+	if sig2 != nil {
+		t.Errorf("expected no signal while position active, got %+v", sig2)
+	}
+	if st.entriesToday != 1 {
+		t.Errorf("entriesToday = %d, want 1", st.entriesToday)
+	}
+}

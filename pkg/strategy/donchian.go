@@ -76,6 +76,7 @@ type ContractSpec struct {
 type donchianState struct {
 	channel *indicators.Donchian
 	atr     *indicators.ATR
+	adx     *indicators.ADX
 
 	lastDate     string
 	entriesToday int
@@ -133,9 +134,14 @@ func (s *Donchian) SetContracts(specs map[string]ContractSpec) {
 }
 
 func (s *Donchian) newState() *donchianState {
+	adxPeriod := s.cfg.ADXPeriod
+	if adxPeriod <= 0 {
+		adxPeriod = 14
+	}
 	return &donchianState{
 		channel: indicators.NewDonchian(s.cfg.DonchianLookback),
 		atr:     indicators.NewATR(s.cfg.ATRPeriod),
+		adx:     indicators.NewADX(adxPeriod),
 	}
 }
 
@@ -155,6 +161,9 @@ func (st *donchianState) ingest(candle models.Candle) (upper, lower, atr decimal
 	ready = st.channel.IsReady()
 	upper, lower = st.channel.Update(candle)
 	atr = st.atr.Update(candle)
+	if st.adx != nil {
+		st.adx.Update(candle)
+	}
 	return upper, lower, atr, ready
 }
 
@@ -307,6 +316,10 @@ func (s *Donchian) OnCandle(candle models.Candle) *models.Signal {
 	if st.entriesToday >= s.cfg.MaxEntriesPerSymbol {
 		return nil
 	}
+	// No re-entries or pyramiding while a position or option leg is active.
+	if st.openValid || st.leg != nil {
+		return nil
+	}
 	// No flip in v1: the bar that broke the opposite band closes the trade and
 	// does nothing else.
 	if candle.StartTime.Equal(st.exitAdvisedAt) {
@@ -327,7 +340,7 @@ func (s *Donchian) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
-	if !s.passesFilters(candle, atr) {
+	if !s.passesFilters(candle, atr, st) {
 		return nil
 	}
 
@@ -365,9 +378,16 @@ func (s *Donchian) OnCandle(candle models.Candle) *models.Signal {
 	return signal
 }
 
-// passesFilters applies the two quality gates that separate a breakout with
+// passesFilters applies the quality gates that separate a breakout with
 // energy behind it from a drift over the line.
-func (s *Donchian) passesFilters(candle models.Candle, atr decimal.Decimal) bool {
+func (s *Donchian) passesFilters(candle models.Candle, atr decimal.Decimal, st *donchianState) bool {
+
+	// ADX trend filter: reject entries during low-energy sideways chop.
+	if s.cfg.ADXThreshold > 0 && st.adx != nil {
+		if st.adx.Value().LessThan(decimal.NewFromFloat(s.cfg.ADXThreshold)) {
+			return false
+		}
+	}
 
 	// Ignition: the bar's own range must be a real fraction of recent ATR.
 	// A breakout on a doji is the one that gets given back on the next bar.
