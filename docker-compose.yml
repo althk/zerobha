@@ -5,11 +5,14 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Kolkata
+    ports:
+      - "9880:9880" # Kite OAuth Login Callback
+      - "9080:9080" # Web Dashboard & Metrics
     volumes:
       - ./config.local.toml:/app/config.local.toml:ro
       - ./indices.csv:/app/indices.csv:ro
       - ./logs:/app/logs
-      - ./:/app/data
+      - ./data:/app/data
     logging:
       driver: "json-file"
       options:

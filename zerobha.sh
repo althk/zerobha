@@ -134,15 +134,19 @@ cmd_docker_run() {
         docker rm "${CONTAINER_NAME}" &>/dev/null || true
     fi
 
-    log_info "Starting '${CONTAINER_NAME}' container..."
+    log_info "Starting '${CONTAINER_NAME}' container on ports 9880 (Kite Auth) and 9080 (Web Dashboard)..."
     docker run -d \
         --name "${CONTAINER_NAME}" \
         --restart unless-stopped \
+        -p 9880:9880 \
+        -p 9080:9080 \
         -v "${LOGS_DIR}:/app/logs" \
         -v "${DATA_DIR}:/app/data" \
         "${IMAGE_NAME}"
 
     log_success "Container '${CONTAINER_NAME}' started successfully."
+    log_info "  - Web Dashboard: http://localhost:9080 (or http://VM_IP:9080)"
+    log_info "  - Kite Auth Callback: http://localhost:9880/auth/kite/callback"
     log_info "Run '$0 logs' to view live trading output."
 }
 
