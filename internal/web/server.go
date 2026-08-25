@@ -17,17 +17,19 @@ import (
 )
 
 type Server struct {
-	engine *core.Engine
-	port   int
-	srv    *http.Server
-	done   chan struct{}
+	engine    *core.Engine
+	port      int
+	PaperMode bool
+	srv       *http.Server
+	done      chan struct{}
 }
 
-func NewServer(engine *core.Engine, port int) *Server {
+func NewServer(engine *core.Engine, port int, paperMode bool) *Server {
 	return &Server{
-		engine: engine,
-		port:   port,
-		done:   make(chan struct{}),
+		engine:    engine,
+		port:      port,
+		PaperMode: paperMode,
+		done:      make(chan struct{}),
 	}
 }
 
@@ -80,6 +82,7 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 		"realized_pnl":   data.RealizedPnL,
 		"unrealized_pnl": data.UnrealizedPnL,
 		"open_positions": data.OpenPositions,
+		"paper_mode":     s.PaperMode,
 	})
 }
 
@@ -183,7 +186,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	}
 	since := time.Now().AddDate(0, 0, -days)
 
-	trades, err := s.engine.DB.GetTradeHistory(since)
+	trades, err := s.engine.DB.GetTradeHistory(since, s.PaperMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -287,7 +290,7 @@ func (s *Server) handleIntraday(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	points, err := s.engine.DB.GetEquitySnapshots(nseutils.MarketOpenTime(time.Now()))
+	points, err := s.engine.DB.GetEquitySnapshots(nseutils.MarketOpenTime(time.Now()), s.PaperMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"zerobha/internal/models"
@@ -50,6 +51,7 @@ func (s *Store) initSchema() error {
 			price REAL,
 			status TEXT,
 			strategy TEXT,
+			is_paper INTEGER DEFAULT 0,
 			timestamp DATETIME
 		);`,
 		// Signals Table
@@ -83,7 +85,8 @@ func (s *Store) initSchema() error {
 			pnl REAL,
 			entry_time DATETIME,
 			exit_time DATETIME,
-			exit_reason TEXT
+			exit_reason TEXT,
+			is_paper INTEGER DEFAULT 0
 		);`,
 		// Periodic intraday equity snapshots for the dashboard PnL curve.
 		`CREATE TABLE IF NOT EXISTS equity_snapshots (
@@ -92,7 +95,18 @@ func (s *Store) initSchema() error {
 			balance REAL,
 			realized_pnl REAL,
 			unrealized_pnl REAL,
-			open_positions INTEGER
+			open_positions INTEGER,
+			is_paper INTEGER DEFAULT 0
+		);`,
+		// Paper-broker state, one row per trading date. The paper broker holds
+		// balance, positions and resting protective orders in memory, so a
+		// mid-session restart would otherwise come back flat with full virtual
+		// capital while the day's positions are still open. Keyed by date so a
+		// stale day's state can never be restored into a new session.
+		`CREATE TABLE IF NOT EXISTS paper_state (
+			trade_date TEXT PRIMARY KEY,
+			state TEXT NOT NULL,
+			updated_at DATETIME
 		);`,
 	}
 
@@ -101,21 +115,33 @@ func (s *Store) initSchema() error {
 			return fmt.Errorf("failed to execute migration: %w", err)
 		}
 	}
+
+	// Dynamic column migrations for existing databases
+	migrations := []string{
+		`ALTER TABLE orders ADD COLUMN is_paper INTEGER DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN is_paper INTEGER DEFAULT 0;`,
+		`ALTER TABLE equity_snapshots ADD COLUMN is_paper INTEGER DEFAULT 0;`,
+	}
+	for _, m := range migrations {
+		_, _ = s.db.Exec(m) // Ignore if column already exists
+	}
+
 	return nil
 }
 
 // --- Order Methods ---
 
 func (s *Store) SaveOrder(o models.Order, status string) error {
-	query := `INSERT INTO orders (order_id, symbol, side, quantity, price, status, strategy, timestamp)
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			  ON CONFLICT(order_id) DO UPDATE SET status=excluded.status;`
+	query := `INSERT INTO orders (order_id, symbol, side, quantity, price, status, strategy, is_paper, timestamp)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, is_paper=excluded.is_paper;`
 
 	qty, _ := o.Quantity.Float64()
 	price, _ := o.Price.Float64()
 	strategy := o.Metadata["Strategy"]
+	isPaper := boolToInt(o.IsPaper || strings.HasPrefix(o.ID, PaperOrderPrefix))
 
-	_, err := s.db.Exec(query, o.ID, o.Symbol, o.Side, qty, price, status, strategy, time.Now())
+	_, err := s.db.Exec(query, o.ID, o.Symbol, o.Side, qty, price, status, strategy, isPaper, time.Now())
 	return err
 }
 
@@ -151,25 +177,32 @@ func (s *Store) SaveSignal(sig *models.Signal) error {
 // reconciler over the same broker fills is idempotent.
 func (s *Store) SaveTrade(key string, t models.Trade) error {
 	query := `INSERT OR IGNORE INTO trades
-			  (trade_key, symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason)
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+			  (trade_key, symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason, is_paper)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
 
 	qty, _ := t.Quantity.Float64()
 	entry, _ := t.EntryPrice.Float64()
 	exit, _ := t.ExitPrice.Float64()
 	pnl, _ := t.PnL.Float64()
+	isPaper := boolToInt(t.IsPaper || strings.HasPrefix(key, PaperOrderPrefix))
 
-	_, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason)
+	_, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason, isPaper)
 	return err
 }
 
 // GetTradeHistory returns completed trades exited after `since`,
 // in chronological order (oldest first).
-func (s *Store) GetTradeHistory(since time.Time) ([]models.Trade, error) {
-	query := `SELECT symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason
-			  FROM trades WHERE exit_time >= ? ORDER BY exit_time ASC;`
+//
+// Results are scoped to one execution mode. Paper and live trades share this
+// table, and blending them would contaminate every aggregate the dashboard
+// derives from it — win rate, profit factor, Sharpe, drawdown, the equity
+// curve — with fills that were never real. Callers pass the mode they are
+// running in.
+func (s *Store) GetTradeHistory(since time.Time, paper bool) ([]models.Trade, error) {
+	query := `SELECT symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason, is_paper
+			  FROM trades WHERE exit_time >= ? AND is_paper = ? ORDER BY exit_time ASC;`
 
-	rows, err := s.db.Query(query, since)
+	rows, err := s.db.Query(query, since, boolToInt(paper))
 	if err != nil {
 		return nil, err
 	}
@@ -179,13 +212,15 @@ func (s *Store) GetTradeHistory(since time.Time) ([]models.Trade, error) {
 	for rows.Next() {
 		var t models.Trade
 		var qty, entry, exit, pnl float64
-		if err := rows.Scan(&t.Symbol, &t.Strategy, &t.Direction, &qty, &entry, &exit, &pnl, &t.EntryTime, &t.ExitTime, &t.ExitReason); err != nil {
+		var isPaper int
+		if err := rows.Scan(&t.Symbol, &t.Strategy, &t.Direction, &qty, &entry, &exit, &pnl, &t.EntryTime, &t.ExitTime, &t.ExitReason, &isPaper); err != nil {
 			return nil, err
 		}
 		t.Quantity = decimal.NewFromFloat(qty)
 		t.EntryPrice = decimal.NewFromFloat(entry)
 		t.ExitPrice = decimal.NewFromFloat(exit)
 		t.PnL = decimal.NewFromFloat(pnl)
+		t.IsPaper = (isPaper == 1)
 		trades = append(trades, t)
 	}
 	return trades, rows.Err()
@@ -201,21 +236,24 @@ type EquityPoint struct {
 	RealizedPnL   float64   `json:"realized_pnl"`
 	UnrealizedPnL float64   `json:"unrealized_pnl"`
 	OpenPositions int       `json:"open_positions"`
+	IsPaper       bool      `json:"is_paper"`
 }
 
 func (s *Store) SaveEquitySnapshot(p EquityPoint) error {
-	query := `INSERT INTO equity_snapshots (timestamp, balance, realized_pnl, unrealized_pnl, open_positions)
-			  VALUES (?, ?, ?, ?, ?);`
-	_, err := s.db.Exec(query, p.Timestamp, p.Balance, p.RealizedPnL, p.UnrealizedPnL, p.OpenPositions)
+	query := `INSERT INTO equity_snapshots (timestamp, balance, realized_pnl, unrealized_pnl, open_positions, is_paper)
+			  VALUES (?, ?, ?, ?, ?, ?);`
+	_, err := s.db.Exec(query, p.Timestamp, p.Balance, p.RealizedPnL, p.UnrealizedPnL, p.OpenPositions, boolToInt(p.IsPaper))
 	return err
 }
 
-// GetEquitySnapshots returns snapshots taken after `since`, oldest first.
-func (s *Store) GetEquitySnapshots(since time.Time) ([]EquityPoint, error) {
-	query := `SELECT timestamp, balance, realized_pnl, unrealized_pnl, open_positions
-			  FROM equity_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC;`
+// GetEquitySnapshots returns snapshots taken after `since`, oldest first,
+// scoped to one execution mode for the same reason as GetTradeHistory: a
+// virtual-capital curve and a real one are not points on the same series.
+func (s *Store) GetEquitySnapshots(since time.Time, paper bool) ([]EquityPoint, error) {
+	query := `SELECT timestamp, balance, realized_pnl, unrealized_pnl, open_positions, is_paper
+			  FROM equity_snapshots WHERE timestamp >= ? AND is_paper = ? ORDER BY timestamp ASC;`
 
-	rows, err := s.db.Query(query, since)
+	rows, err := s.db.Query(query, since, boolToInt(paper))
 	if err != nil {
 		return nil, err
 	}
@@ -224,9 +262,11 @@ func (s *Store) GetEquitySnapshots(since time.Time) ([]EquityPoint, error) {
 	var points []EquityPoint
 	for rows.Next() {
 		var p EquityPoint
-		if err := rows.Scan(&p.Timestamp, &p.Balance, &p.RealizedPnL, &p.UnrealizedPnL, &p.OpenPositions); err != nil {
+		var isPaper int
+		if err := rows.Scan(&p.Timestamp, &p.Balance, &p.RealizedPnL, &p.UnrealizedPnL, &p.OpenPositions, &isPaper); err != nil {
 			return nil, err
 		}
+		p.IsPaper = (isPaper == 1)
 		points = append(points, p)
 	}
 	return points, rows.Err()
@@ -261,4 +301,46 @@ func (s *Store) GetState(key string, dest interface{}) error {
 	}
 
 	return json.Unmarshal([]byte(valueStr), dest)
+}
+
+// --- Paper Trading State ---
+
+// PaperOrderPrefix tags every order id the paper broker mints. It is the
+// last-resort mode marker: an order that reaches persistence without IsPaper
+// set is still recognisable by its id, so a live row can never be created from
+// a simulated fill through a path that forgot to propagate the flag.
+const PaperOrderPrefix = "PAPER-"
+
+// boolToInt converts a mode flag to the INTEGER SQLite stores it as.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// SavePaperState persists the paper broker's opaque state blob for one trading
+// date, replacing any previous snapshot for that date. The broker owns the
+// encoding; this layer only stores bytes, so the broker's internal shape can
+// change without a schema migration.
+func (s *Store) SavePaperState(tradeDate string, state []byte) error {
+	query := `INSERT INTO paper_state (trade_date, state, updated_at)
+			  VALUES (?, ?, ?)
+			  ON CONFLICT(trade_date) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at;`
+	_, err := s.db.Exec(query, tradeDate, string(state), time.Now())
+	return err
+}
+
+// LoadPaperState returns the blob saved for tradeDate, or nil when there is
+// none. A missing row is the normal first-run case, not an error.
+func (s *Store) LoadPaperState(tradeDate string) ([]byte, error) {
+	var state string
+	err := s.db.QueryRow(`SELECT state FROM paper_state WHERE trade_date = ?;`, tradeDate).Scan(&state)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []byte(state), nil
 }

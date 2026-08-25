@@ -339,7 +339,17 @@ func (e *Engine) Execute(candle models.Candle) {
 		log.Printf("Skipping signal for %s: failed to fetch positions: %v", signal.Symbol, err)
 		return
 	}
-	openCount := int64(len(openPositions))
+	// Count only positions that are actually open. A broker's position book
+	// keeps the day's closed positions in the list with a zero net quantity
+	// (Kite does, and the paper broker mirrors it so the two agree), and
+	// counting those would retire a concurrency slot for every trade already
+	// exited — the cap would tighten as the day went on.
+	openCount := int64(0)
+	for _, p := range openPositions {
+		if p.NetQuantity != 0 {
+			openCount++
+		}
+	}
 	maxConcurrent := int64(e.MaxConcurrent)
 	remainingSlots := decimal.NewFromInt(maxConcurrent - openCount)
 	if remainingSlots.LessThanOrEqual(decimal.Zero) {
@@ -582,6 +592,14 @@ func stopAfterTick(o *models.Order, price decimal.Decimal) (stop decimal.Decimal
 // resolution at which they are applied. Live reacts sooner; a backtest number is
 // therefore the conservative one.
 func (e *Engine) OnTick(symbol string, price decimal.Decimal) {
+	// A broker holding its own resting stops and targets has no other way to
+	// learn that a price traded. This runs ahead of the trail logic below and
+	// for every symbol, not just tracked ones: a position whose strategy sets
+	// no trail still has a stop that must be able to fire.
+	if observer, ok := e.Broker.(TickObserver); ok {
+		observer.OnTick(symbol, price, time.Now())
+	}
+
 	e.openOrdersMu.Lock()
 	order, ok := e.openOrders[symbol]
 	if !ok {

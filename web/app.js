@@ -53,6 +53,17 @@ function updateSummary(summary) {
         <span class="sep">|</span>
         <span class="${pnlClass(summary.unrealized_pnl)}">U: ${formatCurrency(summary.unrealized_pnl)}</span>
     `;
+
+    const badge = document.getElementById('status-badge');
+    if (badge) {
+        if (summary.paper_mode) {
+            badge.textContent = 'PAPER TRADING';
+            badge.className = 'status-indicator paper';
+        } else {
+            badge.textContent = 'LIVE';
+            badge.className = 'status-indicator online';
+        }
+    }
 }
 
 function updatePositions(positions) {
@@ -164,7 +175,7 @@ function updateTradeHistory(trades) {
         return `
         <tr>
             <td class="mono">${exit.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
-            <td>${t.symbol}</td>
+            <td>${t.symbol} ${t.is_paper ? '<span class="paper-pill">PAPER</span>' : ''}</td>
             <td><small class="text-muted">${t.strategy || '--'}</small></td>
             <td><span class="badge ${t.direction === 'LONG' ? 'badge-open' : 'badge-short'}">${t.direction}</span></td>
             <td>${parseFloat(t.quantity)}</td>

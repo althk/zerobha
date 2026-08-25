@@ -3,6 +3,13 @@
 # Strategy to run: orb | gapfade (both intraday/MIS), or dailyrev (backtest only)
 strategy = "orb"
 uptrend_only = false
+# Paper trading: real market data and real quotes, simulated fills against
+# virtual capital. The paper broker holds the stop and target itself, so
+# positions exit on the same rules they would live. Also settable with -paper.
+# Note the usual convention here: paper_capital = 0 means "absent" and gets
+# the default below, not a zero-capital account.
+paper_trading = false
+paper_capital = 1000000.0
 
 # Zerodha API Credentials.
 # These are bare keys: they MUST stay above the first [section] header, or TOML

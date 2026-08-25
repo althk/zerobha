@@ -354,6 +354,10 @@ type Config struct {
 	Strategy  string `toml:"strategy"`
 	APIKey    string `toml:"api_key"`
 	APISecret string `toml:"api_secret"`
+	// PaperTrading, when true, runs with simulated order fills and virtual balance
+	// while consuming live market feeds and live option quotes.
+	PaperTrading bool    `toml:"paper_trading"`
+	PaperCapital float64 `toml:"paper_capital"`
 	// UpstoxAccessToken authorises the read-only Upstox news and fundamentals
 	// calls behind the GapFade gate. It is a long-lived (~1 year) read-only
 	// token, unrelated to the Kite credentials above.
@@ -823,6 +827,10 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Upstox.TimeoutSeconds == 0 {
 		config.Upstox.TimeoutSeconds = upD.TimeoutSeconds
+	}
+
+	if config.PaperCapital == 0 {
+		config.PaperCapital = 1000000.0 // 10 Lakhs INR default virtual capital
 	}
 
 	return &config, nil

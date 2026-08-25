@@ -132,3 +132,20 @@ type GateVerdict struct {
 type NewsGate interface {
 	Assess(symbol string, asOf time.Time) (GateVerdict, error)
 }
+
+// TickObserver is an optional Broker capability: a broker that has to fill its
+// own resting protective orders needs to see the traded price.
+//
+// The live Zerodha adapter does not implement it — its stops rest at the
+// exchange as GTTs and trigger without the engine's help. The paper broker
+// does, because nothing else will ever trigger them: without a price feed a
+// simulated position has no stop at all, and every strategy here except
+// Donchian's option mode exits solely through broker-held stops and targets.
+//
+// It is deliberately separate from ModifyPositionStop. The engine still owns
+// where the stop belongs (stopAfterTick applies the breakeven and chandelier
+// rules identically in both modes); this only tells the broker what price
+// traded, so it can decide whether a resting order has been hit.
+type TickObserver interface {
+	OnTick(symbol string, price decimal.Decimal, at time.Time)
+}

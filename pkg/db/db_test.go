@@ -105,7 +105,7 @@ func TestDB(t *testing.T) {
 			t.Fatalf("SaveTrade (repeat) failed: %v", err)
 		}
 
-		trades, err := store.GetTradeHistory(time.Now().Add(-24 * time.Hour))
+		trades, err := store.GetTradeHistory(time.Now().Add(-24*time.Hour), false)
 		if err != nil {
 			t.Fatalf("GetTradeHistory failed: %v", err)
 		}
@@ -121,12 +121,65 @@ func TestDB(t *testing.T) {
 		}
 
 		// A cutoff in the future must exclude the trade
-		trades, err = store.GetTradeHistory(time.Now().Add(time.Hour))
+		trades, err = store.GetTradeHistory(time.Now().Add(time.Hour), false)
 		if err != nil {
 			t.Fatalf("GetTradeHistory (future cutoff) failed: %v", err)
 		}
 		if len(trades) != 0 {
 			t.Errorf("Expected 0 trades after future cutoff, got %d", len(trades))
+		}
+
+		// Paper and live trades share this table, and every dashboard aggregate
+		// is derived from it. A query must never mix the two.
+		paperTrade := trade
+		paperTrade.IsPaper = true
+		paperTrade.PnL = decimal.NewFromFloat(-500)
+		if err := store.SaveTrade("PAPER-EXIT-000001:0", paperTrade); err != nil {
+			t.Fatalf("SaveTrade (paper) failed: %v", err)
+		}
+
+		live, err := store.GetTradeHistory(time.Now().Add(-24*time.Hour), false)
+		if err != nil {
+			t.Fatalf("GetTradeHistory (live) failed: %v", err)
+		}
+		if len(live) != 1 || live[0].IsPaper {
+			t.Errorf("live query returned %d trades, want 1 live-only: %+v", len(live), live)
+		}
+
+		paper, err := store.GetTradeHistory(time.Now().Add(-24*time.Hour), true)
+		if err != nil {
+			t.Fatalf("GetTradeHistory (paper) failed: %v", err)
+		}
+		if len(paper) != 1 || !paper[0].IsPaper {
+			t.Errorf("paper query returned %d trades, want 1 paper-only: %+v", len(paper), paper)
+		}
+	})
+
+	// Test Paper State round-trip
+	t.Run("PaperState", func(t *testing.T) {
+		if blob, err := store.LoadPaperState("2026-01-01"); err != nil || blob != nil {
+			t.Fatalf("expected no state for an untouched date, got %q (err %v)", blob, err)
+		}
+
+		if err := store.SavePaperState("2026-01-01", []byte(`{"cash":"100"}`)); err != nil {
+			t.Fatalf("SavePaperState failed: %v", err)
+		}
+		// Saving again for the same date replaces rather than duplicates.
+		if err := store.SavePaperState("2026-01-01", []byte(`{"cash":"200"}`)); err != nil {
+			t.Fatalf("SavePaperState (replace) failed: %v", err)
+		}
+
+		blob, err := store.LoadPaperState("2026-01-01")
+		if err != nil {
+			t.Fatalf("LoadPaperState failed: %v", err)
+		}
+		if string(blob) != `{"cash":"200"}` {
+			t.Errorf("got state %q, want the replacement", blob)
+		}
+
+		// A different trading date must not see it.
+		if other, err := store.LoadPaperState("2026-01-02"); err != nil || other != nil {
+			t.Errorf("state leaked across trading dates: %q (err %v)", other, err)
 		}
 	})
 
@@ -144,7 +197,7 @@ func TestDB(t *testing.T) {
 			t.Fatalf("SaveEquitySnapshot failed: %v", err)
 		}
 
-		points, err := store.GetEquitySnapshots(time.Now().Add(-time.Hour))
+		points, err := store.GetEquitySnapshots(time.Now().Add(-time.Hour), false)
 		if err != nil {
 			t.Fatalf("GetEquitySnapshots failed: %v", err)
 		}

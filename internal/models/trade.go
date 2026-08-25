@@ -18,4 +18,5 @@ type Trade struct {
 	EntryTime  time.Time       `json:"entry_time"`
 	ExitTime   time.Time       `json:"exit_time"`
 	ExitReason string          `json:"exit_reason"` // SL-HIT, TARGET-HIT
+	IsPaper    bool            `json:"is_paper"`    // true for paper trading simulation
 }

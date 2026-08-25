@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 	"zerobha/internal/models"
 	"zerobha/pkg/db"
@@ -100,6 +101,7 @@ func (s *Server) recordSnapshot() {
 		RealizedPnL:   data.RealizedPnL,
 		UnrealizedPnL: data.UnrealizedPnL,
 		OpenPositions: data.OpenPositions,
+		IsPaper:       s.PaperMode,
 	}
 	if err := s.engine.DB.SaveEquitySnapshot(point); err != nil {
 		log.Printf("Tracker: failed to save equity snapshot: %v", err)
@@ -108,10 +110,11 @@ func (s *Server) recordSnapshot() {
 
 // lot is an open entry fill awaiting an opposite-side exit.
 type lot struct {
-	side  models.SignalType
-	qty   decimal.Decimal
-	price decimal.Decimal
-	time  time.Time
+	side    models.SignalType
+	qty     decimal.Decimal
+	price   decimal.Decimal
+	time    time.Time
+	isPaper bool
 }
 
 // reconcileTrades FIFO-pairs the day's broker fills into completed
@@ -141,11 +144,12 @@ func (s *Server) reconcileTrades() {
 			continue
 		}
 
+		isPaper := f.IsPaper || s.PaperMode || strings.HasPrefix(f.ID, db.PaperOrderPrefix)
 		lots := openLots[f.Symbol]
 
 		// Same direction as existing lots (or flat): this fill opens/adds.
 		if len(lots) == 0 || lots[0].side == f.Side {
-			openLots[f.Symbol] = append(lots, lot{side: f.Side, qty: f.Quantity, price: f.Price, time: f.Timestamp})
+			openLots[f.Symbol] = append(lots, lot{side: f.Side, qty: f.Quantity, price: f.Price, time: f.Timestamp, isPaper: isPaper})
 			continue
 		}
 
@@ -179,6 +183,7 @@ func (s *Server) reconcileTrades() {
 				PnL:        pnl,
 				EntryTime:  entry.time,
 				ExitTime:   f.Timestamp,
+				IsPaper:    entry.isPaper || isPaper,
 			}
 
 			key := fmt.Sprintf("%s:%d", f.ID, lotIndex)

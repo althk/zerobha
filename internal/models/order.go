@@ -21,6 +21,7 @@ type Order struct {
 	Side        SignalType `json:"side"`         // Reusing SignalType (Buy/Sell)
 	Type        string     `json:"type"`         // MARKET, LIMIT, SL-M
 	ProductType string     `json:"product_type"` // MIS, CNC
+	IsPaper     bool       `json:"is_paper"`     // true for simulated paper orders
 	// Exchange the instrument trades on: "NSE" for cash equities, "NFO" for
 	// futures and options. Empty means NSE — every strategy here except
 	// Donchian is a cash-equity strategy and never sets it.

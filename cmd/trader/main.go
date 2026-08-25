@@ -69,6 +69,7 @@ func fetchRequestToken(loginURL string) (string, error) {
 func main() {
 	// Config Path
 	configPath := flag.String("config", "config.toml", "Path to config file")
+	paperFlag := flag.Bool("paper", false, "Enable paper trading mode with virtual execution and live market feeds")
 	flag.Parse()
 
 	// Load Config
@@ -232,8 +233,50 @@ func main() {
 		defer j.Close()
 	}
 
+	// Declared ahead of the broker so the paper adapter's leverage lookup can
+	// close over it; it is assigned immediately below.
+	var engine *core.Engine
+
+	// Broker Adapter Selection (Live vs Paper)
+	isPaper := cfg.PaperTrading || *paperFlag
+	var brokerAdapter core.Broker = kiteAdapter
+	var paperAdapter *broker.PaperAdapter
+	if isPaper {
+		paperCap := decimal.NewFromFloat(cfg.PaperCapital)
+		if !paperCap.IsPositive() {
+			paperCap = decimal.NewFromInt(1000000) // Default Rs 10 Lakhs
+		}
+		// The engine sizes MIS positions with leverage, so the paper broker has
+		// to block margin on the same basis or it would reject positions the
+		// real account takes. The map is loaded by the engine below, hence the
+		// closure — it reads whatever the engine ended up with.
+		paperAdapter = broker.NewPaperAdapter(kiteAdapter, paperCap,
+			broker.WithPaperStore(store),
+			broker.WithPaperLeverage(func(symbol string) float64 {
+				if engine == nil {
+					return 1
+				}
+				if lev, ok := engine.LeverageMap[symbol]; ok {
+					return lev
+				}
+				return 1
+			}))
+		brokerAdapter = paperAdapter
+		log.Println("==================================================================")
+		log.Printf("  >>> [PAPER TRADING MODE ACTIVE] Virtual Capital: Rs %s <<<", paperCap.StringFixed(2))
+		log.Println("  Live market data feeds active. Real orders will NOT be placed.")
+		log.Println("  Stops and targets are held and filled by the paper broker.")
+		log.Println("==================================================================")
+	}
+
 	// Engine (The Orchestrator)
-	engine := core.NewEngine(strat, kiteAdapter, riskMgr, j, im, store)
+	engine = core.NewEngine(strat, brokerAdapter, riskMgr, j, im, store)
+	if paperAdapter != nil {
+		// Refreshes marks for instruments the ticker does not subscribe to —
+		// an option contract above all — so their stops can still fire.
+		paperAdapter.Start()
+		defer paperAdapter.Close()
+	}
 	engine.MaxConcurrent = maxConcurrent
 	engine.UptrendOnly = *cfg.UptrendOnly
 	engine.DataProvider = kiteAdapter
@@ -255,7 +298,7 @@ func main() {
 			engine.UptrendOnly = false
 		}
 		// Donchian states its kill switch as a percent of capital, not rupees.
-		if balance, err := kiteAdapter.GetBalance(); err == nil {
+		if balance, err := brokerAdapter.GetBalance(); err == nil {
 			riskMgr.MaxDailyLoss = balance.Mul(decimal.NewFromFloat(cfg.Donchian.MaxDailyLossPct / 100))
 			log.Printf("Donchian kill switch: %.2f%% of Rs%s = Rs%s",
 				cfg.Donchian.MaxDailyLossPct, balance.StringFixed(0), riskMgr.MaxDailyLoss.StringFixed(0))
@@ -267,7 +310,7 @@ func main() {
 	engine.InitNiftyEMAs()
 
 	// Web Dashboard
-	webServer := web.NewServer(engine, 9080)
+	webServer := web.NewServer(engine, 9080, isPaper)
 	go webServer.Start()
 
 	// 5. Setup Data Pipeline

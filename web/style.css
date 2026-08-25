@@ -55,14 +55,30 @@ h1 {
     -webkit-text-fill-color: transparent;
 }
 
+/* The base state is deliberately neutral: the badge only learns the execution
+   mode from /api/summary, and defaulting to green LIVE would mislabel a paper
+   session for as long as that call is slow or failing. */
 .status-indicator {
     font-size: 0.75rem;
     padding: 0.25rem 0.75rem;
     border-radius: 999px;
-    background: rgba(16, 185, 129, 0.2);
-    color: #34d399;
+    background: rgba(148, 163, 184, 0.2);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.4);
     font-weight: 600;
     text-transform: uppercase;
+}
+
+.status-indicator.online {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.status-indicator.paper {
+    background: rgba(234, 179, 8, 0.2);
+    color: #facc15;
+    border: 1px solid rgba(234, 179, 8, 0.4);
 }
 
 .last-update {
@@ -286,4 +302,16 @@ tbody tr:last-child td {
 ::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.2);
     border-radius: 4px;
+}
+
+/* Marks a simulated trade in the history table. The dashboard scopes its
+   queries to one execution mode, so this is a reassurance rather than a
+   separator — it should never appear alongside live rows. */
+.paper-pill {
+    background: rgba(234, 179, 8, 0.2);
+    color: #facc15;
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
 }

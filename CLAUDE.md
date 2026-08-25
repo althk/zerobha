@@ -47,6 +47,9 @@ go run ./cmd/histdl -csv ind_nifty200list.csv -interval 5minute -days 400
 
 # Live trading (interactive Kite login; refuses to start outside 08:55–15:30 IST)
 go run ./cmd/trader -config config.local.toml
+
+# Paper trading: same code path, real quotes and candles, simulated fills
+go run ./cmd/trader -config config.local.toml -paper
 ```
 
 Python scripts need the venv: `& 'C:\Users\Harish Kotha\.venv\Scripts\Activate.ps1'`
@@ -72,6 +75,7 @@ with `pkg/broker/sim.go`; the engine and strategy code are identical.
 | `pkg/indicators/donchian.go` | Donchian channel, excluding the current bar |
 | `pkg/upstox/` | Read-only Upstox client + the news/earnings `core.NewsGate` |
 | `pkg/broker/zerodha.go`, `sim.go` | Live and simulated brokers |
+| `pkg/broker/paper.go` | Paper broker: live data, simulated fills, own resting stops |
 | `pkg/indicators/` | EMA, SMA, ATR, ADX, RSI, VWAP — all streaming/O(1) |
 | `cmd/histdl/` | Kite historical downloader |
 | `cmd/idxdl/` | Upstox index-history downloader (anonymous, no entitlement) |
@@ -1128,6 +1132,50 @@ What is NOT verified is anything that needs a live session: order placement into
 NFO/BFO, real fills, and whether the ATM quote is readable fast enough on the
 candle hot path. Those are untested until the first live run.
 
+## Paper trading
+
+`-paper`, or `paper_trading = true`, swaps `broker.PaperAdapter` in for the
+Zerodha adapter. Quotes, candles and the tick feed stay real; only the fills are
+simulated, against `paper_capital` (default Rs10L).
+
+**The paper broker holds its own stops and targets, and this is the point of it.**
+Live, a position is protected by a GTT resting at the exchange, and ORB, gapfade
+and Donchian's futures mode exit *solely* through that GTT. A paper broker that
+only recorded fills would run every position to the 15:13 square-off and would
+therefore measure a different strategy from the one being run. So:
+
+- `PlaceOrder` arms a resting stop/target whenever the order carries a stop, and
+  returns a synthetic `GTTTriggerID` — which is what makes the engine arm its
+  tick-driven breakeven and chandelier monitor, exactly as a real trigger id does.
+- The engine still decides *where* the stop belongs (`stopAfterTick`, then
+  `ModifyPositionStop`); the broker only decides *when* it is hit. Same split as
+  live, one implementation of the rules.
+- `core.TickObserver` is how prices reach it. The engine forwards every tick.
+- A quote monitor polls instruments the ticker does not subscribe to. The
+  watchlist is subscribed, option contracts are not — and an option is exactly
+  the instrument whose stop must still fire.
+
+Other things it models rather than stubs, each of which was wrong in the first
+version and would have silently distorted results:
+
+| Behaviour | Why it matters |
+|---|---|
+| Blocks **margin**, not notional, using the engine's leverage map | Debiting full notional rejects leveraged positions the real account takes |
+| A short blocks margin too | Crediting the short's notional let the balance grow with every short and inflated the next trade's size |
+| Signed cost basis on reduce/reverse | The unsigned version turned a 400 average into 1250 on a partial exit, and negative on a flip |
+| Closed positions stay in the book at qty 0 with realised PnL | `computeSummary` splits realised from unrealised on exactly that; dropping them reported realised PnL as zero all session |
+| `ClosePosition` enforces `forSide` | A long-exit advice must not close a short in the same symbol — this is the path *every* Donchian option exit takes |
+| State persists per trading date | A container restart mid-session otherwise comes back flat with full capital while positions are open |
+
+**Paper and live rows are never mixed.** `is_paper` is written on orders, trades
+and equity snapshots, and `GetTradeHistory`/`GetEquitySnapshots` require the
+mode. Both modes share `zerobha.db`, so an unscoped query would fold simulated
+fills into the live track record's win rate, profit factor, Sharpe and drawdown.
+
+**What paper still cannot tell you**: slippage, queue position, partial fills,
+and whether a real order would have been accepted at all. Fills are at the
+observed price, and a stop fills at the tick that crossed it.
+
 ## Gotchas
 
 - **A zero `Target` used to mean "target at price 0".** `sim.go` compared
@@ -1164,6 +1212,15 @@ candle hot path. Those are untested until the first live run.
   earlier "spread is immaterial" note twice over: immaterial at one lot where
   flat brokerage swamped it, dominant at ten lots under the percentage model,
   and materially different per index once quoted properly.
+- **A paper broker that only records fills is not a paper broker.** Every
+  strategy here except Donchian's option mode exits through a stop resting at
+  the broker, so simulated positions with no resting stop run to the square-off
+  and measure something else entirely. `PaperAdapter` holds them; see the paper
+  trading section.
+- **`-strategy` is not a `cmd/trader` flag.** It defines only `-config` and
+  `-paper`; the strategy comes from the config's `strategy` key. The Dockerfile
+  passed `-strategy donchian` for four commits, which makes `flag.Parse` exit 2
+  before the trader starts.
 - **`cmd/backtest` ignored the `[engine]` section** until 2026-08-24, while
   `cmd/trader` applied it — so one config file meant different capital
   allocation and a different entry cutoff in backtest than in live. Fixed.

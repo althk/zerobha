@@ -35,4 +35,8 @@ WORKDIR /app/data
 VOLUME ["/app/logs", "/app/data"]
 
 ENTRYPOINT ["/app/trader"]
-CMD ["-config", "/app/config.local.toml", "-strategy", "donchian"]
+# The strategy is selected by the `strategy` key in the baked config, not by a
+# flag: cmd/trader defines only -config and -paper, and an unknown flag makes
+# flag.Parse exit before the trader starts. Add "-paper" here (or set
+# paper_trading = true in the config) to run the container in paper mode.
+CMD ["-config", "/app/config.local.toml"]
