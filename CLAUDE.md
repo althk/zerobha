@@ -1151,9 +1151,18 @@ therefore measure a different strategy from the one being run. So:
   `ModifyPositionStop`); the broker only decides *when* it is hit. Same split as
   live, one implementation of the rules.
 - `core.TickObserver` is how prices reach it. The engine forwards every tick.
-- A quote monitor polls instruments the ticker does not subscribe to. The
-  watchlist is subscribed, option contracts are not — and an option is exactly
-  the instrument whose stop must still fire.
+- **The broker subscribes the instruments it holds positions in.** The trader
+  subscribes its watchlist once, in `OnConnect`; an option contract is chosen at
+  signal time and is not in that list, so nothing would ever tick for the
+  instrument the position actually lives in. `broker.TickSubscriber` (implemented
+  by `kiteTickFeed` in `cmd/trader`) adds it on fill and drops it on close. This
+  is about the websocket *subscription*, not data availability — chains and
+  quotes are fetchable either way.
+- A quote monitor still polls anything the feed misses, so a subscription that
+  fails degrades a stop's resolution rather than removing it.
+- Subscriptions do not survive a Kite reconnect, and `OnConnect` only restores
+  the watchlist — `resubscribeAll` and `PaperAdapter.ResyncFeed` put the held
+  contracts back.
 
 Other things it models rather than stubs, each of which was wrong in the first
 version and would have silently distorted results:

@@ -83,6 +83,7 @@ type PaperAdapter struct {
 	live     *ZerodhaAdapter
 	leverage func(symbol string) float64
 	store    *db.Store
+	feed     TickSubscriber
 
 	mu        sync.Mutex
 	cash      decimal.Decimal
@@ -103,6 +104,20 @@ type PaperAdapter struct {
 	monitorWG sync.WaitGroup
 }
 
+// TickSubscriber adds and removes instruments on the live tick feed while it
+// is running.
+//
+// The trader subscribes its watchlist once, when the socket connects. An option
+// contract is chosen at signal time and is not in that list, so without this
+// nothing would ever tick for the instrument the position actually lives in —
+// and the paper broker fills its resting stops from ticks. Polling quotes is
+// the fallback; a real subscription gives the option the same tick resolution
+// an equity position gets.
+type TickSubscriber interface {
+	Subscribe(symbol string) error
+	Unsubscribe(symbol string) error
+}
+
 // PaperOption configures a PaperAdapter at construction.
 type PaperOption func(*PaperAdapter)
 
@@ -112,6 +127,13 @@ type PaperOption func(*PaperAdapter)
 // leveraged positions the live account would have accepted.
 func WithPaperLeverage(fn func(symbol string) float64) PaperOption {
 	return func(p *PaperAdapter) { p.leverage = fn }
+}
+
+// WithPaperTickFeed lets the broker subscribe the instruments it holds
+// positions in, so their stops are evaluated tick by tick rather than on the
+// monitor's polling interval.
+func WithPaperTickFeed(f TickSubscriber) PaperOption {
+	return func(p *PaperAdapter) { p.feed = f }
 }
 
 // WithPaperStore persists the simulated book across a restart. Paper state is
@@ -148,11 +170,76 @@ func NewPaperAdapter(live *ZerodhaAdapter, initialCapital decimal.Decimal, opts 
 // tests, and any caller that drives prices itself, run without a background
 // goroutine or a live connection.
 func (p *PaperAdapter) Start() {
+	// A restart mid-session restores open positions from the store, and their
+	// instruments have to go back on the feed. Usually a no-op here — the
+	// trader attaches the feed later and calls ResyncFeed once the socket is up.
+	p.ResyncFeed()
+
 	if p.live == nil {
 		return
 	}
 	p.monitorWG.Add(1)
 	go p.monitorLoop()
+}
+
+// openSymbols lists the instruments currently holding a position.
+func (p *PaperAdapter) openSymbols() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var open []string
+	for symbol, pos := range p.positions {
+		if pos.Quantity != 0 {
+			open = append(open, symbol)
+		}
+	}
+	return open
+}
+
+// SetTickFeed attaches the tick feed after construction. The trader builds its
+// websocket well after the broker, so this cannot be a construction option
+// there; it must be called before trading starts.
+func (p *PaperAdapter) SetTickFeed(f TickSubscriber) {
+	p.mu.Lock()
+	p.feed = f
+	p.mu.Unlock()
+}
+
+// ResyncFeed subscribes every instrument currently holding a position. Call it
+// once the socket is up, and again after a reconnect: Kite drops every
+// subscription when the connection breaks, and the trader's own OnConnect
+// handler only restores the watchlist.
+func (p *PaperAdapter) ResyncFeed() {
+	for _, symbol := range p.openSymbols() {
+		p.syncFeed(symbol, true)
+	}
+}
+
+// syncFeed brings the tick subscription in line with whether a position is
+// open. It makes a network call, so it must run with the lock released.
+//
+// A failure is logged rather than propagated: the quote monitor still covers
+// the instrument, just at its polling interval instead of tick by tick, so a
+// subscription that does not take degrades the stop's resolution rather than
+// removing it.
+func (p *PaperAdapter) syncFeed(symbol string, want bool) {
+	p.mu.Lock()
+	feed := p.feed
+	p.mu.Unlock()
+
+	if feed == nil {
+		return
+	}
+	var err error
+	verb := "subscribe to"
+	if want {
+		err = feed.Subscribe(symbol)
+	} else {
+		verb, err = "unsubscribe from", feed.Unsubscribe(symbol)
+	}
+	if err != nil {
+		log.Printf("[PAPER] WARNING: could not %s %s on the tick feed: %v - falling back to polled quotes", verb, symbol, err)
+	}
 }
 
 // Close stops the monitor and flushes state. Safe to call more than once.
@@ -273,6 +360,15 @@ func (p *PaperAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 		signed = -qty
 	}
 
+	// Registered before the unlock defer so it runs after it: touching the tick
+	// feed is a network call and must not happen under the lock.
+	var feedSync func()
+	defer func() {
+		if feedSync != nil {
+			feedSync()
+		}
+	}()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -306,6 +402,9 @@ func (p *PaperAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 	p.orders = append(p.orders, order)
 	p.trades = append(p.trades, order)
 	p.persistLocked()
+
+	symbol, open := order.Symbol, pos.Quantity != 0
+	feedSync = func() { p.syncFeed(symbol, open) }
 
 	log.Printf("[PAPER] FILLED %s %s qty=%d @ %s | margin blocked Rs %s | free cash Rs %s",
 		order.Side, order.Symbol, qty, fillPrice.StringFixed(2),
@@ -658,6 +757,13 @@ func (p *PaperAdapter) warnStaleQuote(symbol string, err error) {
 // in the same symbol. The strategy cannot see whether its entry was filled, so
 // the side is the only thing tying its advice to a real position.
 func (p *PaperAdapter) ClosePosition(symbol string, forSide models.SignalType, price decimal.Decimal, timestamp time.Time, reason string) (bool, error) {
+	var feedSync func()
+	defer func() {
+		if feedSync != nil {
+			feedSync()
+		}
+	}()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -713,6 +819,9 @@ func (p *PaperAdapter) ClosePosition(symbol string, forSide models.SignalType, p
 	p.orders = append(p.orders, exit)
 	p.trades = append(p.trades, exit)
 	p.persistLocked()
+
+	// The position is flat, so the instrument no longer needs a tick feed.
+	feedSync = func() { p.syncFeed(symbol, false) }
 
 	log.Printf("[PAPER] CLOSED %s %s x%d @ %s | realised Rs %s | %s | free cash Rs %s",
 		exitSide, symbol, qty, price.StringFixed(2), realized.StringFixed(2), reason, p.cash.StringFixed(2))

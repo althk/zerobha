@@ -369,6 +369,15 @@ func main() {
 
 	// 7. Setup WebSocket Ticker (Producer)
 	ticker := kiteticker.New(apiKey, data.AccessToken)
+
+	// An option contract is picked at signal time and is not in the watchlist
+	// subscription, so without this nothing ticks for the instrument the
+	// position actually lives in — and the paper broker fills its resting stops
+	// from ticks.
+	tickFeed := newKiteTickFeed(ticker, symbolToToken, tokensToSubscribe)
+	if paperAdapter != nil {
+		paperAdapter.SetTickFeed(tickFeed)
+	}
 	var lastVolMap = sync.Map{}
 	// Callback: Triggered when a price update arrives
 	ticker.OnTick(func(tick kitemodels.Tick) {
@@ -427,6 +436,15 @@ func main() {
 		}
 		// Set mode to Full to get Volume/OHLC data
 		_ = ticker.SetMode(kiteticker.ModeFull, tokensToSubscribe)
+
+		// Kite drops every subscription when the connection breaks, and the
+		// list above only covers the watchlist. Put back the contracts held by
+		// open positions, or their stops would silently fall back to polling
+		// after a reconnect.
+		tickFeed.resubscribeAll()
+		if paperAdapter != nil {
+			paperAdapter.ResyncFeed()
+		}
 	})
 
 	// 8. Start Everything
@@ -745,4 +763,113 @@ func buildUpstoxGate(cfg *config.Config) (core.NewsGate, error) {
 		MaxProfitDropPct:  cfg.Upstox.MaxProfitDropPct,
 		MaxResultsAgeDays: cfg.Upstox.MaxResultsAgeDays,
 	}), nil
+}
+
+// kiteTickFeed adds and removes instruments on a running Kite websocket.
+//
+// The trader subscribes its watchlist once, in OnConnect. An option contract is
+// chosen at signal time and is not in that list, so the instrument the position
+// actually lives in would never tick. This closes that gap for positions opened
+// during the session.
+//
+// It tracks what it added so it can never unsubscribe a watchlist instrument —
+// those carry the strategy's candles, and dropping one would stop the strategy
+// rather than just a stop.
+type kiteTickFeed struct {
+	ticker        *kiteticker.Ticker
+	symbolToToken map[string]uint32
+
+	mu    sync.Mutex
+	base  map[uint32]bool   // watchlist tokens, subscribed for the whole session
+	added map[string]uint32 // tokens this feed subscribed itself
+}
+
+func newKiteTickFeed(t *kiteticker.Ticker, symbolToToken map[string]uint32, watchlistTokens []uint32) *kiteTickFeed {
+	base := make(map[uint32]bool, len(watchlistTokens))
+	for _, tok := range watchlistTokens {
+		base[tok] = true
+	}
+	return &kiteTickFeed{
+		ticker:        t,
+		symbolToToken: symbolToToken,
+		base:          base,
+		added:         make(map[string]uint32),
+	}
+}
+
+// Subscribe puts one instrument on the feed in full mode, which is what the
+// aggregator and the paper broker's stops read.
+func (f *kiteTickFeed) Subscribe(symbol string) error {
+	token, ok := f.symbolToToken[symbol]
+	if !ok {
+		return fmt.Errorf("no instrument token for %s", symbol)
+	}
+
+	f.mu.Lock()
+	if f.base[token] {
+		// Already covered by the watchlist subscription for the whole session.
+		f.mu.Unlock()
+		return nil
+	}
+	if _, dup := f.added[symbol]; dup {
+		f.mu.Unlock()
+		return nil
+	}
+	f.added[symbol] = token
+	f.mu.Unlock()
+
+	if err := f.ticker.Subscribe([]uint32{token}); err != nil {
+		f.forget(symbol)
+		return err
+	}
+	if err := f.ticker.SetMode(kiteticker.ModeFull, []uint32{token}); err != nil {
+		f.forget(symbol)
+		return err
+	}
+	log.Printf("Ticker: subscribed %s (token %d)", symbol, token)
+	return nil
+}
+
+// Unsubscribe drops an instrument this feed added. Watchlist instruments and
+// anything it did not add itself are left alone.
+func (f *kiteTickFeed) Unsubscribe(symbol string) error {
+	f.mu.Lock()
+	token, ok := f.added[symbol]
+	if !ok {
+		f.mu.Unlock()
+		return nil
+	}
+	delete(f.added, symbol)
+	f.mu.Unlock()
+
+	if err := f.ticker.Unsubscribe([]uint32{token}); err != nil {
+		return err
+	}
+	log.Printf("Ticker: unsubscribed %s (token %d)", symbol, token)
+	return nil
+}
+
+func (f *kiteTickFeed) forget(symbol string) {
+	f.mu.Lock()
+	delete(f.added, symbol)
+	f.mu.Unlock()
+}
+
+// resubscribeAll puts every instrument this feed added back on a reconnected
+// socket. Kite drops all subscriptions when the connection breaks, and OnConnect
+// only restores the watchlist.
+func (f *kiteTickFeed) resubscribeAll() {
+	f.mu.Lock()
+	symbols := make([]string, 0, len(f.added))
+	for symbol := range f.added {
+		symbols = append(symbols, symbol)
+	}
+	f.added = make(map[string]uint32)
+	f.mu.Unlock()
+
+	for _, symbol := range symbols {
+		if err := f.Subscribe(symbol); err != nil {
+			log.Printf("Ticker: failed to resubscribe %s after reconnect: %v", symbol, err)
+		}
+	}
 }
