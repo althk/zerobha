@@ -22,6 +22,22 @@ api_secret = ""
 # same placement rule.
 upstox_access_token = ""
 
+[paths]
+# Where the trader writes. Both are relative to the working directory: the repo
+# root for a local run, /app in the container. Missing directories are created.
+#
+# The two destinations are independent because they land on different Docker
+# volumes. In the container set:
+#
+#   db_path = "data/zerobha.db"   -> /app/data, the data volume
+#   log_dir = "logs"              -> /app/logs, the logs volume
+#
+# Keep them apart. A single WORKDIR pointing at the data volume would resolve a
+# relative log_dir inside it, and the backup — which reads the logs volume —
+# would silently find nothing to upload.
+db_path = "zerobha.db"
+log_dir = "logs"
+
 [risk]
 max_daily_loss       = 5000   # INR; kill switch triggers when daily PnL drops below -max_daily_loss
 max_trades_per_day   = 10     # total signals executed across all symbols
@@ -168,7 +184,7 @@ trail_atr_mult = 3.0
 # Keep it well under the 5L the backtester funds an account with: above that,
 # SimBroker refuses longs for insufficient cash and a long/short strategy
 # quietly becomes short-only.
-max_capital_per_trade = 150000
+max_capital_per_trade = 450000
 
 # --- Option execution (live only; cmd/backtest trades the index directly) ---
 #

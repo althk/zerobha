@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,14 +95,25 @@ func main() {
 		loc = time.Local
 	}
 	today := time.Now().In(loc)
-	logFileName := fmt.Sprintf("logs/zerobha_%s.log", today.Format("2006-01-02"))
-	logFile, _ := os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	defer func(logFile *os.File) {
-		_ = logFile.Close()
-	}(logFile)
-	// Write to BOTH terminal and file
-	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+
+	// Failing to open the log file used to be discarded with `logFile, _ :=`.
+	// Because os.Stdout comes first in the MultiWriter the process then kept
+	// logging normally, so a deployment writing its journal nowhere looked
+	// perfectly healthy in `docker logs`. Report it, and fall back to stdout
+	// alone rather than wiring a nil file into the writer.
+	if err := os.MkdirAll(cfg.Paths.LogDir, 0o755); err != nil {
+		log.Printf("WARNING: cannot create log directory %s: %v - logging to stdout only", cfg.Paths.LogDir, err)
+	}
+	logFileName := filepath.Join(cfg.Paths.LogDir, fmt.Sprintf("zerobha_%s.log", today.Format("2006-01-02")))
+	if logFile, err := os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666); err != nil {
+		log.Printf("WARNING: cannot open log file %s: %v - logging to stdout only", logFileName, err)
+	} else {
+		defer func() { _ = logFile.Close() }()
+		// Write to BOTH terminal and file
+		log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	}
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Printf("Paths: db=%s log_dir=%s", cfg.Paths.DBPath, cfg.Paths.LogDir)
 
 	if isMarketClosed() {
 		log.Println("Market is closed today, not starting trader")
@@ -161,7 +173,14 @@ func main() {
 	fmt.Printf("Loaded %d symbols for trading.\n", len(watchlist))
 
 	// Database (SQLite)
-	store, err := db.NewStore("zerobha.db")
+	// db_path may name a subdirectory (the container points it at the data
+	// volume as "data/zerobha.db"), and SQLite will not create one.
+	if dir := filepath.Dir(cfg.Paths.DBPath); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Fatalf("Failed to create database directory %s: %v", dir, err)
+		}
+	}
+	store, err := db.NewStore(cfg.Paths.DBPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -226,7 +245,7 @@ func main() {
 	}
 
 	// Journal
-	j, err := journal.NewJournal(fmt.Sprintf("logs/journal_%s.csv", today.Format("2006-01-02")))
+	j, err := journal.NewJournal(filepath.Join(cfg.Paths.LogDir, fmt.Sprintf("journal_%s.csv", today.Format("2006-01-02"))))
 	if err != nil {
 		log.Printf("WARNING: Failed to create journal: %v", err)
 	} else {

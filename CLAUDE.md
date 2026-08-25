@@ -1217,6 +1217,16 @@ observed price, and a stop fills at the tick that crossed it.
   the broker, so simulated positions with no resting stop run to the square-off
   and measure something else entirely. `PaperAdapter` holds them; see the paper
   trading section.
+- **A relative write path resolves against WORKDIR, not against a `VOLUME`.**
+  The Dockerfile declared `/app/logs` and `/app/data` as volumes but set
+  `WORKDIR /app/data`, so the trader's relative `logs/...` resolved to
+  `/app/data/logs` — a directory nothing creates. `os.OpenFile` failed, the
+  error was discarded (`logFile, _ :=`), and because `os.Stdout` comes first in
+  the `MultiWriter` the process logged normally, so `docker logs` looked
+  healthy while the daily log and the order journal were written nowhere and
+  the backup uploaded an empty logs volume. WORKDIR is now `/app` and both
+  destinations are explicit `[paths]` knobs (`db_path`, `log_dir`), each
+  relative and landing on its own volume.
 - **`-strategy` is not a `cmd/trader` flag.** It defines only `-config` and
   `-paper`; the strategy comes from the config's `strategy` key. The Dockerfile
   passed `-strategy donchian` for four commits, which makes `flag.Parse` exit 2

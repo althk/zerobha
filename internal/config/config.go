@@ -363,10 +363,37 @@ type EngineConfig struct {
 	TradeCutoffMin     int `toml:"trade_cutoff_min"`      // minutes from midnight, default 845 (14:05)
 }
 
+// PathsConfig locates the files the trader writes. Both default to paths
+// relative to the working directory, which is what a local run wants.
+//
+// They are settable because a deployment's working directory is not the
+// repository root. The container sets WORKDIR to the data volume so the
+// relative database lands there — which silently put the log directory inside
+// the data volume too, rather than the logs volume mounted beside it. The two
+// destinations are independent, so they get independent knobs.
+type PathsConfig struct {
+	// DBPath is the SQLite file holding orders, trades, signals, equity
+	// snapshots and paper-broker state. Default "zerobha.db".
+	DBPath string `toml:"db_path"`
+	// LogDir holds the daily log file and the order journal CSV. It is created
+	// if missing. Default "logs".
+	LogDir string `toml:"log_dir"`
+}
+
+// DefaultPathsConfig returns the relative locations used by a local run.
+func DefaultPathsConfig() PathsConfig {
+	return PathsConfig{
+		DBPath: "zerobha.db",
+		LogDir: "logs",
+	}
+}
+
 type Config struct {
 	Strategy  string `toml:"strategy"`
 	APIKey    string `toml:"api_key"`
 	APISecret string `toml:"api_secret"`
+	// Paths holds the on-disk locations the trader writes to.
+	Paths PathsConfig `toml:"paths"`
 	// PaperTrading, when true, runs with simulated order fills and virtual balance
 	// while consuming live market feeds and live option quotes.
 	PaperTrading bool    `toml:"paper_trading"`
@@ -847,6 +874,14 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Upstox.TimeoutSeconds == 0 {
 		config.Upstox.TimeoutSeconds = upD.TimeoutSeconds
+	}
+
+	pathD := DefaultPathsConfig()
+	if config.Paths.DBPath == "" {
+		config.Paths.DBPath = pathD.DBPath
+	}
+	if config.Paths.LogDir == "" {
+		config.Paths.LogDir = pathD.LogDir
 	}
 
 	if config.PaperCapital == 0 {

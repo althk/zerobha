@@ -7,12 +7,20 @@ A step-by-step guide to building the Docker container on your local machine, dep
 ## Architecture Summary
 
 - **Local Machine (Windows)**: Builds the self-contained Docker image (`zerobha:latest`).
-- **VM (Debian)**: Runs the container in the background, maps ports `9880` (Kite Auth) and `9080` (Dashboard), and persists `zerobha.db` + `logs/`.
+- **VM (Debian)**: Runs the container in the background, maps ports `9880` (Kite Auth) and `9080` (Dashboard), and persists two volumes — `/app/data` (holding `zerobha.db`) and `/app/logs` (the daily log and the order journal CSV).
+  Both are plain relative paths under the image's `/app` working directory, set by `[paths]` in the baked config: `db_path = "data/zerobha.db"` and `log_dir = "logs"`. Keep them on separate volumes — the backup reads the logs volume, so a `log_dir` that resolves inside the data volume silently uploads nothing.
 - **Cloud Backup (Google Drive)**: `rclone` creates a safe SQLite database snapshot and compresses logs daily at 15:45 IST.
 
 ---
 
 ## Step 1: Build & Export Container (Local Windows PC)
+
+**Prerequisite:** the Dockerfile does `COPY config.local.toml`, and that file is
+gitignored — a fresh clone does not have it and the build will fail. Create it
+from `config.toml` first and fill in `api_key` / `api_secret` (both must stay
+above the first `[section]` header, or TOML silently assigns them to the wrong
+table). It is baked into the image, so it also decides the strategy, the paper
+mode flag, and the `[paths]` below.
 
 Open PowerShell in the project directory:
 
@@ -74,11 +82,26 @@ Run the interactive rclone setup wizard:
 ./zerobha.sh docker-run
 ```
 
+**The container only stays up during market hours.** The trader exits
+immediately if today is a holiday or the time is outside 08:55–15:30 IST, and
+the `unless-stopped` restart policy restarts it on a clean exit — so outside the
+window `status` shows it restarting and `logs` repeats:
+
+```text
+Outside trading hours (08:55 - 15:30 IST), not starting trader
+```
+
+That is expected, not a failed deployment. It settles once the window opens.
+
 ---
 
 ## Step 5: Morning Kite Login (from your Local PC)
 
 Because cloud VMs are headless (no web browser), use **SSH Port Forwarding** to log in through your local Windows browser.
+
+**Prerequisite (one-time):** register `http://localhost:9880/auth/kite/callback`
+as the redirect URL of your app in the Kite developer console. Zerodha will only
+redirect there if it matches exactly.
 
 ### 1. Open an SSH Tunnel from Windows
 
@@ -130,12 +153,23 @@ All common operations are handled by `./zerobha.sh`:
 | **Stop Strategy** | `./zerobha.sh stop` |
 | **Trigger Immediate Backup** | `./zerobha.sh backup` |
 
+> **Use `zerobha.sh` or `docker-compose.yml`, not both.** The repo carries a
+> compose file that names the container `zerobha-trader` and bind-mounts the
+> config, while `zerobha.sh` names it `zerobha` and relies on the baked config.
+> Every script command matches on `^zerobha$`, so if you start via compose,
+> `logs`, `stop`, `restart` and `backup` will all silently fail to find it.
+
+> **Both ports bind `0.0.0.0`.** The dashboard on `9080` has no authentication,
+> so on a cloud VM it is world-readable unless you firewall it. The SSH tunnel
+> in Step 5 is for reaching the callback from your browser, not a substitute for
+> closing the ports — restrict both in your VM's firewall or security group.
+
 ### Automatic Backup Schedule
 
 The setup script automatically adds a cron job to snapshot the database and upload logs:
 
 - **Frequency**: Every Monday through Friday at **15:45 IST** (after 15:30 market squareoff).
-- **Destination**: `Google Drive: /zerobha_backups/YYYY-MM-DD/`
+- **Destination**: `gdrive:zerobha_backups/YYYY-MM-DD` (rclone paths are remote-relative — no leading slash). Override the remote name with `GDRIVE_REMOTE=myremote`.
 - **Integrity**: Uses SQLite's online `.backup` API to prevent database corruption during writes.
 
 ---
@@ -159,10 +193,12 @@ paper_capital = 1000000.0   # virtual capital; 0 means "absent" and takes the de
 ./trader -config config.local.toml -paper
 ```
 
-For the container, add the flag to the compose/`docker run` command, or set
-`paper_trading = true` in the config that gets baked into the image. Note the
-Dockerfile's `CMD` passes only `-config`: the strategy is selected by the
-config's `strategy` key, and an undefined flag makes the trader exit on start-up.
+For the container, set `paper_trading = true` in `config.local.toml` before
+building — `./zerobha.sh docker-run` builds its `docker run` invocation
+internally and accepts no extra arguments, so the baked config is the only way
+in. (You can also add `"-paper"` to the Dockerfile's `CMD`.) Note that `CMD`
+passes only `-config`: the strategy comes from the config's `strategy` key, and
+an undefined flag makes `flag.Parse` exit before the trader starts.
 
 **What is simulated and what is not.** Positions get the same protective stop and
 target they would live — the paper broker holds them itself and fills them from

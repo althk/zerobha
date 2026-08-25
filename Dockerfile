@@ -29,10 +29,14 @@ COPY --from=builder /bin/trader /app/trader
 COPY indices.csv /app/indices.csv
 COPY config.local.toml /app/config.local.toml
 
-# Set working directory to data mount so zerobha.db is persisted automatically
-WORKDIR /app/data
-
 VOLUME ["/app/logs", "/app/data"]
+
+# WORKDIR stays /app, where the app actually lives. The two write destinations
+# are then plain relative paths under it, each landing on its own mounted
+# volume: [paths].db_path = "data/zerobha.db" and log_dir = "logs" in the baked
+# config. Pointing WORKDIR at the data volume instead would resolve a relative
+# log_dir inside it, so the journal would miss the logs volume the backup
+# reads.
 
 ENTRYPOINT ["/app/trader"]
 # The strategy is selected by the `strategy` key in the baked config, not by a
