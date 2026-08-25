@@ -232,6 +232,19 @@ type DonchianConfig struct {
 	EntryCutoffMin int `toml:"entry_cutoff_min"`
 	SquareOffMin   int `toml:"squareoff_min"`
 
+	// MaxCapitalPerTrade overrides [engine].max_capital_per_trade for this
+	// strategy only. Zero means "absent" and the engine's value stands.
+	//
+	// It exists because the engine's cap is calibrated for cash equities and
+	// this strategy trades indices, where the same number silently means
+	// "no trades at all": quantity floors to zero for any instrument priced
+	// above the cap and every signal vanishes, which reads as the strategy
+	// finding no setups. SENSEX at ~78,000 against the 50,000 stock-sized cap
+	// produced exactly zero trades. Raising the engine's cap globally would
+	// instead rescale ORB and gapfade, whose recorded results were all
+	// measured at the stock-sized value.
+	MaxCapitalPerTrade int64 `toml:"max_capital_per_trade"`
+
 	// RiskPct is the fraction of capital risked per trade, in percent.
 	// Default 0.5 - half the 1% the other strategies use, because this one
 	// runs both directions and takes more entries.
@@ -436,20 +449,24 @@ func DefaultDonchianConfig() DonchianConfig {
 		SLATRMult:    3.0,
 		TrailATRMult: 3.0,
 
-		EntryStartMin:       9*60 + 30,
-		EntryCutoffMin:      14*60 + 31,
-		SquareOffMin:        14*60 + 57,
-		RiskPct:             0.5,
-		MaxDailyLossPct:     2.0,
-		MaxConcurrent:       5,
-		MaxEntriesPerSymbol: 4,
-		TargetDelta:         0.80,
+		EntryStartMin:  9*60 + 30,
+		EntryCutoffMin: 14*60 + 31,
+		SquareOffMin:   14*60 + 57,
+		// Sized for the indices this strategy is specified on: enough for one
+		// SENSEX unit at ~78,000 and still far below the 5L the backtester
+		// funds an account with, above which SimBroker silently drops longs.
+		MaxCapitalPerTrade:    150000,
+		RiskPct:               0.5,
+		MaxDailyLossPct:       2.0,
+		MaxConcurrent:         5,
+		MaxEntriesPerSymbol:   4,
+		TargetDelta:           0.80,
 		TargetDeltaNearExpiry: 0.90,
-		MinDaysToExpiry:     intPtr(2),
-		ADXThreshold:        0,
-		ADXPeriod:           4,
-		AllowShort:          boolPtr(true),
-		ExitOnOppositeBreak: boolPtr(true),
+		MinDaysToExpiry:       intPtr(2),
+		ADXThreshold:          0,
+		ADXPeriod:             4,
+		AllowShort:            boolPtr(true),
+		ExitOnOppositeBreak:   boolPtr(true),
 	}
 }
 
@@ -776,6 +793,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Donchian.SquareOffMin == 0 {
 		config.Donchian.SquareOffMin = dcD.SquareOffMin
+	}
+	if config.Donchian.MaxCapitalPerTrade == 0 {
+		config.Donchian.MaxCapitalPerTrade = dcD.MaxCapitalPerTrade
 	}
 	if config.Donchian.RiskPct == 0 {
 		config.Donchian.RiskPct = dcD.RiskPct

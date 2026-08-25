@@ -260,6 +260,12 @@ func main() {
 		if *strategyName == config.StrategyDonchian {
 			engine.TradeCutoffMin = dcCfg.EntryCutoffMin + 1
 			engine.MaxConcurrent = dcCfg.MaxConcurrent
+			// The engine's cap is calibrated for cash equities; this strategy
+			// trades indices, where the same number floors quantity to zero and
+			// produces no trades at all rather than smaller ones.
+			if dcCfg.MaxCapitalPerTrade > 0 {
+				engine.MaxCapitalPerTrade = dcCfg.MaxCapitalPerTrade
+			}
 		}
 
 		// 2. Load Data

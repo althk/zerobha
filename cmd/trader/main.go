@@ -289,6 +289,14 @@ func main() {
 		// The engine's global cutoff gates every signal and is earlier than
 		// Donchian's own last-entry time, so it has to give way to it.
 		engine.TradeCutoffMin = cfg.Donchian.EntryCutoffMin + 1
+		// Same reasoning for capital: the engine's cap is sized for cash
+		// equities, and an index priced above it is not traded smaller, it is
+		// not traded at all.
+		if cfg.Donchian.MaxCapitalPerTrade > 0 {
+			engine.MaxCapitalPerTrade = cfg.Donchian.MaxCapitalPerTrade
+			log.Printf("Donchian: max capital per trade Rs%d (overrides [engine] Rs%d)",
+				cfg.Donchian.MaxCapitalPerTrade, int64(cfg.Engine.MaxCapitalPerTrade))
+		}
 		// The NIFTY uptrend filter blocks every signal on a down day, not just
 		// the longs. On a symmetric long/short strategy that is not a filter,
 		// it is a switch that turns off half the strategy on exactly the days

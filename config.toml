@@ -156,6 +156,20 @@ min_atr_pct = 0.03
 sl_atr_mult = 3.0
 trail_atr_mult = 3.0
 
+# Overrides [engine].max_capital_per_trade for this strategy only.
+#
+# The engine's cap is sized for cash equities. An index priced above it is not
+# traded smaller, it is not traded AT ALL: quantity floors to zero and every
+# signal vanishes, which reads as the strategy finding no setups. SENSEX at
+# ~78,000 against the stock-sized 50,000 produced exactly zero trades. Raising
+# the engine's cap instead would rescale ORB and gapfade, whose recorded
+# results were all measured at the stock-sized value.
+#
+# Keep it well under the 5L the backtester funds an account with: above that,
+# SimBroker refuses longs for insufficient cash and a long/short strategy
+# quietly becomes short-only.
+max_capital_per_trade = 150000
+
 # --- Option execution (live only; cmd/backtest trades the index directly) ---
 #
 # target_delta is what gets bought to express a signal: a call for a long view,
