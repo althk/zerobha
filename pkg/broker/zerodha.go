@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"zerobha/internal/models"
@@ -43,32 +44,32 @@ func (z *ZerodhaAdapter) GetBalance() (decimal.Decimal, error) {
 }
 
 // GetQuote fetches the current market price for a symbol
+// GetQuote returns the last traded price for a symbol.
+//
+// It queries by instrument token rather than by "EXCHANGE:SYMBOL". The previous
+// version tried "NSE:" and then "NFO:", which silently excluded BSE and BFO —
+// so every SENSEX option quote failed, and the paper broker's fallback for a
+// contract whose tick subscription had not taken could never mark it. A token
+// carries its own exchange, so this works for all four the instrument dump
+// loads.
 func (z *ZerodhaAdapter) GetQuote(symbol string) (decimal.Decimal, error) {
-	// We need the instrument token to fetch the quote.
-	// If we only have the symbol, we need to look it up.
-	_, ok := z.symbolToToken[symbol]
+	token, ok := z.symbolToToken[symbol]
 	if !ok {
-		// Try fetching it from the API directly if not in our map?
-		// Or just error out.
-		return decimal.Zero, fmt.Errorf("symbol %s not found in map", symbol)
+		return decimal.Zero, fmt.Errorf("symbol %s not found in instrument map", symbol)
 	}
 
-	// Fetch Quote
-	quotes, err := z.client.GetQuote(fmt.Sprintf("NSE:%s", symbol)) // Try NSE first
+	key := strconv.FormatUint(uint64(token), 10)
+	quotes, err := z.client.GetLTP(key)
 	if err != nil {
-		// Try NFO
-		quotes, err = z.client.GetQuote(fmt.Sprintf("NFO:%s", symbol))
-		if err != nil {
-			return decimal.Zero, err
+		return decimal.Zero, fmt.Errorf("quote for %s (token %d): %w", symbol, token, err)
+	}
+
+	for _, q := range quotes {
+		if q.LastPrice > 0 {
+			return decimal.NewFromFloat(q.LastPrice), nil
 		}
 	}
-
-	// The key in the response will be "NSE:SYMBOL" or "NFO:SYMBOL"
-	for _, q := range quotes {
-		return decimal.NewFromFloat(q.LastPrice), nil
-	}
-
-	return decimal.Zero, fmt.Errorf("no quote found for %s", symbol)
+	return decimal.Zero, fmt.Errorf("no quote found for %s (token %d)", symbol, token)
 }
 
 func (z *ZerodhaAdapter) HasOpenPosition(symbol string) (bool, error) {
