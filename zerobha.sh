@@ -66,7 +66,7 @@ cmd_setup_prereqs() {
     local script_path
     script_path=$(realpath "$0")
     local cron_job="45 15 * * 1-5 ${script_path} backup >> ${LOGS_DIR}/backup.log 2>&1"
-    
+
     if crontab -l 2>/dev/null | grep -F "${script_path} backup" > /dev/null; then
         log_info "Cron backup job already exists."
     else
@@ -115,6 +115,18 @@ cmd_docker_load() {
             exit 1
         fi
     fi
+
+    case "${tar_file}" in
+        *.gz|*.tgz)
+            local decompressed="${tar_file%.*}"
+            case "${tar_file}" in
+                *.tgz) decompressed="${tar_file%.tgz}.tar" ;;
+            esac
+            log_info "Decompressing '${tar_file}' to '${decompressed}'..."
+            gunzip -c "${tar_file}" > "${decompressed}"
+            tar_file="${decompressed}"
+            ;;
+    esac
 
     log_info "Loading Docker image from '${tar_file}'..."
     docker load < "${tar_file}"
@@ -193,7 +205,7 @@ cmd_backup() {
     local date_day
     date_day=$(date +'%Y-%m-%d')
     local backup_tmp="/tmp/zerobha_backup_${date_str}"
-    
+
     mkdir -p "${backup_tmp}"
     log_info "[$(date)] Starting backup process..."
 

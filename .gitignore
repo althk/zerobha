@@ -127,3 +127,9 @@ backtest_orb_watchlist.log
 
 # Cached Kite access token (cmd/histdl)
 .kite_token.json
+
+# archives
+*.zip
+*.tar.gz
+*.tar
+*.tgz
