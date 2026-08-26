@@ -102,23 +102,35 @@ cmd_rclone_setup() {
 # 3. Docker Image Load
 # ------------------------------------------------------------------------------
 cmd_docker_load() {
-    local tar_file="${1:-zerobha.tar.gz}"
-    if [ ! -f "${tar_file}" ]; then
-        # Check common fallback locations
-        if [ -f "$HOME/${tar_file}" ]; then
-            tar_file="$HOME/${tar_file}"
-        elif [ -f "${BASE_DIR}/${tar_file}" ]; then
-            tar_file="${BASE_DIR}/${tar_file}"
-        else
-            log_error "Docker archive '${tar_file}' not found."
-            log_info "Usage: $0 docker-load [path_to_zerobha.tar.gz]"
-            exit 1
-        fi
+    local requested="${1:-zerobha.tar.gz}"
+
+    # An uncompressed sibling is preferred: it loads directly, no gunzip.
+    local uncompressed="${requested}"
+    case "${requested}" in
+        *.tgz) uncompressed="${requested%.tgz}.tar" ;;
+        *.gz)  uncompressed="${requested%.gz}" ;;
+    esac
+
+    local tar_file=""
+    local dir candidate
+    for dir in "" "$HOME/" "${BASE_DIR}/"; do
+        for candidate in "${uncompressed}" "${requested}"; do
+            if [ -f "${dir}${candidate}" ]; then
+                tar_file="${dir}${candidate}"
+                break 2
+            fi
+        done
+    done
+
+    if [ -z "${tar_file}" ]; then
+        log_error "Docker archive '${requested}' not found."
+        log_info "Usage: $0 docker-load [path_to_zerobha.tar.gz]"
+        exit 1
     fi
 
     case "${tar_file}" in
         *.gz|*.tgz)
-            local decompressed="${tar_file%.*}"
+            local decompressed="${tar_file%.gz}"
             case "${tar_file}" in
                 *.tgz) decompressed="${tar_file%.tgz}.tar" ;;
             esac
