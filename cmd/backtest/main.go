@@ -270,10 +270,10 @@ func main() {
 
 		// 2. Load Data
 		// Try timeframe specific folder first
-		filename := fmt.Sprintf("test/data/%s/%s_real.csv", *timeframe, strings.ToLower(sym))
+		filename := fmt.Sprintf("test/data/%s/%s_real.csv", *timeframe, dataFileStem(sym))
 		if _, err := os.Stat(filename); os.IsNotExist(err) {
 			// Fallback to root test/data
-			filename = fmt.Sprintf("test/data/%s_real.csv", strings.ToLower(sym))
+			filename = fmt.Sprintf("test/data/%s_real.csv", dataFileStem(sym))
 			if _, err := os.Stat(filename); os.IsNotExist(err) {
 				fmt.Printf("Skipping %s: Data file %s not found\n", sym, filename)
 				continue
@@ -778,4 +778,16 @@ func loadSymbolsFromCSV(filename string, minBeta float64) ([]string, error) {
 		}
 	}
 	return symbols, nil
+}
+
+// dataFileStem turns a trading symbol into the file stem the data tree uses.
+//
+// The live symbol is the Kite tradingsymbol, which for an index carries a
+// space ("NIFTY 50"); the downloaders (cmd/idxdl, cmd/histdl) name their
+// output without one ("nifty50_real.csv"). Stripping spaces lets one universe
+// CSV serve both the backtest and the trader — spelling the symbol "NIFTY50"
+// instead makes it unresolvable against the instrument dump, and the strategy
+// then fails warm-up with "symbol NIFTY50 not found".
+func dataFileStem(symbol string) string {
+	return strings.ReplaceAll(strings.ToLower(symbol), " ", "")
 }
