@@ -538,7 +538,8 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 	log.Println("=== UPTREND ONLY:", *cfg.UptrendOnly)
 	log.Printf("=== TIMEFRAME: %s | CSV: %s | LIMIT: %d", tf, ss.CSVFile, ss.Limit)
 
-	if cfg.Strategy == config.StrategyGapFade {
+	switch cfg.Strategy {
+	case config.StrategyGapFade:
 		c := cfg.GapFade
 		log.Printf("--- GAPFADE CONFIG ---")
 		log.Printf("  Gap Band         : %.2f%% – %.2f%% down", c.MinGapDownPct, c.MaxGapDownPct)
@@ -549,11 +550,30 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 		log.Printf("  Max Concurrent   : %d  Gate Fail Open: %v", c.MaxConcurrent, *c.GateFailOpen)
 		log.Printf("  Gate             : news %dh lookback, max profit drop %.1f%%, ISIN map %s",
 			cfg.Upstox.NewsLookbackHours, cfg.Upstox.MaxProfitDropPct, cfg.Upstox.ISINCSV)
-		log.Println("==========================================")
-		return
-	}
 
-	{
+	case config.StrategyDonchian:
+		c := cfg.Donchian
+		minDTE := 2
+		if c.MinDaysToExpiry != nil {
+			minDTE = *c.MinDaysToExpiry
+		}
+		log.Printf("--- DONCHIAN CONFIG ---")
+		log.Printf("  Channel / ATR    : %d bars / ATR(%d)", c.DonchianLookback, c.ATRPeriod)
+		log.Printf("  Breakout Buffer  : %.2f pts  Min ATR Pct: %.3f%%", c.BreakoutBufferPoints, c.MinATRPct)
+		log.Printf("  Ignition         : %v  Mult: %.2f ATR", *c.UseIgnition, c.IgnitionATRMult)
+		log.Printf("  Stop / Trail     : %.2f ATR / %.2f ATR (0 = no trail)", c.SLATRMult, c.TrailATRMult)
+		log.Printf("  Entry Window     : %02d:%02d – %02d:%02d   Square Off: %02d:%02d",
+			c.EntryStartMin/60, c.EntryStartMin%60, c.EntryCutoffMin/60, c.EntryCutoffMin%60,
+			c.SquareOffMin/60, c.SquareOffMin%60)
+		log.Printf("  Risk / Max Loss  : %.2f%% per trade / %.2f%% daily", c.RiskPct, c.MaxDailyLossPct)
+		log.Printf("  Max Concurrent   : %d  Entries/Symbol/Day: %d", c.MaxConcurrent, c.MaxEntriesPerSymbol)
+		log.Printf("  Max Capital/Trade: %d (0 = engine default)", c.MaxCapitalPerTrade)
+		log.Printf("  ADX              : threshold %.1f  period %d (0 = disabled)", c.ADXThreshold, c.ADXPeriod)
+		log.Printf("  Sides            : long + short: %v  Exit On Opposite Break: %v", *c.AllowShort, *c.ExitOnOppositeBreak)
+		log.Printf("  Option Exec      : target delta %.2f (DTE<=3: %.2f), min DTE %d, fallback IV %.1f%%",
+			c.TargetDelta, c.TargetDeltaNearExpiry, minDTE, c.FallbackIV*100)
+
+	default:
 		c := cfg.ORB
 		log.Printf("--- ORB CONFIG ---")
 		log.Printf("  Entry Window End : %d min from midnight (%02d:%02d)", c.EntryWindowEnd, c.EntryWindowEnd/60, c.EntryWindowEnd%60)
