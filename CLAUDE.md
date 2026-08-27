@@ -1132,6 +1132,77 @@ What is NOT verified is anything that needs a live session: order placement into
 NFO/BFO, real fills, and whether the ATM quote is readable fast enough on the
 candle hot path. Those are untested until the first live run.
 
+### The ADX gate, and the reference config (2026-08-27)
+
+`config.local.toml` is gitignored, so **this section is the authoritative record
+of the measured-best donchian values**. `DefaultDonchianConfig` and `config.toml`
+carry them too; if a local file disagrees, it is the local file that drifted.
+
+| Knob | Value | Why |
+|---|---|---|
+| `donchian_lookback` | 30 | see the lookback sweep above; 4 is decisively worse |
+| `atr_period` | 9 | +0.7 bps over 14 on both indices |
+| `sl_atr_mult` / `trail_atr_mult` | 3.0 / 3.0 | the trail is the only profit-taking exit |
+| `adx_threshold` / `adx_period` | **15 / 14** | this section |
+| `max_entries_per_symbol` | 4 | 1 makes an early entry displace a better later one |
+| `min_days_to_expiry` | 2 | option leg; -1571 bps a trade on expiry day |
+
+**The ADX sweep: 32 cells, `adx_period` in {4, 7, 10, 14} x `adx_threshold` in
+{0, 15, 20, 25, 30, 35, 40, 45}**, lookback 30, 733 sessions, gross index bps.
+
+| period | thr | Trades | NIFTY OOS | SENSEX OOS | Mean OOS |
+|---|---|---|---|---|---|
+| 14 | **15** | 1,490 | +2.20 | +1.34 | **+1.77** |
+| 7 | 30 | 1,377 | +2.08 | +1.33 | +1.71 |
+| 7 | 25 | 1,493 | +2.23 | +1.10 | +1.67 |
+| 4 | 40 | 1,447 | +1.96 | +1.35 | +1.66 |
+| any | 0 (off) | 1,585 | +2.03 | +1.10 | +1.57 |
+
+**No cell beats the filter being off by anything the sample can resolve** — the
+whole grid spans +1.57 to +1.77 mean OOS against a per-cell standard error of
+~1.8 bps. Do not read the ranking; 32 cells guarantee a best-looking one.
+
+**The reason to keep 14/15 anyway is trade count, not edge.** It takes 95 FEWER
+trades than no filter and still produces MORE total gross in both windows
+(+6,292 vs +6,215 bps overall; +902 vs +851 OOS), with PF 1.432 vs 1.405. The
+entries it removes were net-negative contributors paying a flat Rs20 per order.
+That argument does not depend on the per-trade ranking, which is where the noise
+lives.
+
+**Tightening it past mild inverts the two windows, visibly.** In-sample rises
+almost monotonically with the threshold while out-of-sample collapses:
+
+| period / thr | IS | OOS |
+|---|---|---|
+| 7 / 25 | +5.49 | +2.23 |
+| 7 / 40 | **+8.91** | **-0.03** |
+| 7 / 45 | +8.28 | -1.99 |
+| 14 / 45 | **+9.10** | -2.12 |
+
+Every cell whose in-sample figure clears ~7 bps is negative out of sample on
+both indices. NIFTY IS nearly doubles (+5.38 -> +9.10) as the gate tightens
+while OOS goes +2.03 -> -2.12. **A rising in-sample number is the warning sign
+here, not the result.**
+
+Two mechanical notes:
+
+- **At `adx_period = 4`, thresholds 0/15/20 are byte-identical.** ADX(4) on
+  5-minute index bars essentially never drops below 20, so the gate is inert
+  there; 40 is the first value that binds at that period.
+- **Short ADX periods degrade gracefully, long ones do not.** Period 4 stays
+  positive OOS at every threshold; period 10 turns negative past 30 and period
+  14 past 25. A short ADX is noisy enough that even a high threshold passes a
+  broad set of bars, where a long one narrows to a genuinely fitted subset.
+
+Verdict unchanged: OOS is +1.76 bps per trade blended, against a break-even of
+~3.1-3.5 on the option leg. The configuration is now clean and defensible; it is
+not profitable out of sample, and the ADX gate was never going to close a 2x gap.
+
+**`donchianTestConfig` pins `ADXThreshold = 0`.** Making 15 the default silenced
+13 strategy tests at once — their fixtures are a handful of quiet synthetic bars
+that never lift ADX over the gate. Same trap CLAUDE.md already records for tests
+inheriting defaults; the fix is to pin, not to soften the default.
+
 ## Paper trading
 
 `-paper`, or `paper_trading = true`, swaps `broker.PaperAdapter` in for the

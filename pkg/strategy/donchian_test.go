@@ -26,6 +26,11 @@ func donchianTestConfig() config.DonchianConfig {
 	on := true
 	cfg.UseIgnition = &on
 	cfg.IgnitionATRMult = 1.0
+	// The ADX gate is off in these fixtures: none of them is about the trend
+	// filter, and the synthetic bars are too few and too quiet to lift ADX
+	// over the shipped default of 15, so leaving it on silences every entry
+	// these tests exist to assert on.
+	cfg.ADXThreshold = 0
 	return cfg
 }
 

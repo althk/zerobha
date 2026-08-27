@@ -208,9 +208,20 @@ target_delta_near_expiry = 0.90
 # and an explicit 0 here survives rather than being replaced by the default.
 min_days_to_expiry = 2
 
-# Optional ADX trend filter (0 = disabled, 40.0 with period 4 or 20.0 with period 9 filters chop)
-adx_threshold = 40.0
-adx_period = 4
+# Optional ADX trend filter, rejecting breakouts that fire in sideways chop.
+# 0 disables it. These are the measured best of a 32-cell period x threshold
+# sweep (2026-08-27, 733 sessions, both indices).
+#
+# The value of the filter is NOT a better per-trade edge - out of sample the
+# whole grid, filter off included, sits between +1.1 and +2.2 bps. It is that
+# 14/15 takes 95 FEWER trades than no filter and still produces more total
+# gross (+6,292 vs +6,215 bps), so the entries it removes were net-negative
+# contributors paying full brokerage.
+#
+# Keep it mild. Tightening the gate raises the tuning window and destroys the
+# held-out year: period 7 threshold 40 reads +8.91 bps in sample and -0.03 out.
+adx_threshold = 15.0
+adx_period = 14
 
 # Volatility used only when the at-the-money premium cannot be read. 0 means
 # "refuse to trade": picking a strike against a stale constant silently buys

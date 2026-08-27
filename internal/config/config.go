@@ -294,8 +294,17 @@ type DonchianConfig struct {
 	// without the target it was meant to be testing.
 	MinDaysToExpiry *int `toml:"min_days_to_expiry"`
 
-	// ADXThreshold gates entries to bars where ADX >= ADXThreshold.
-	// Default 0 (disabled). When set > 0, filters low-energy sideways chop.
+	// ADXThreshold gates entries to bars where ADX >= ADXThreshold, rejecting
+	// breakouts that fire in low-energy sideways chop. 0 disables it.
+	// Default 15 on ADXPeriod 14, the measured best of a 32-cell sweep.
+	//
+	// Keep it MILD. Out of sample the entire grid - filter off included - lands
+	// between +1.1 and +2.2 bps, so the gate is worth ~0.2 bps per trade and is
+	// not a lever. What it does buy is fewer trades for the same gross, which
+	// matters against a flat per-order brokerage. Tightening it inverts the
+	// two windows: at period 7 threshold 40 the tuning window reads +8.91 bps
+	// and the held-out year -0.03, and every cell whose in-sample figure clears
+	// ~7 bps is negative out of sample on both indices.
 	ADXThreshold float64 `toml:"adx_threshold"`
 	ADXPeriod    int     `toml:"adx_period"` // default 14
 
@@ -490,10 +499,15 @@ func DefaultDonchianConfig() DonchianConfig {
 		TargetDelta:           0.80,
 		TargetDeltaNearExpiry: 0.90,
 		MinDaysToExpiry:       intPtr(2),
-		ADXThreshold:          0,
-		ADXPeriod:             4,
-		AllowShort:            boolPtr(true),
-		ExitOnOppositeBreak:   boolPtr(true),
+		// Measured best of a 32-cell period x threshold sweep (2026-08-27).
+		// A mild filter is the whole of the effect: it drops ~6% of entries and
+		// still produces MORE total gross bps than no filter at all, in both
+		// windows. Tightening it further only fits the tuning window - see the
+		// ADX sweep section in CLAUDE.md.
+		ADXThreshold:        15,
+		ADXPeriod:           14,
+		AllowShort:          boolPtr(true),
+		ExitOnOppositeBreak: boolPtr(true),
 	}
 }
 
