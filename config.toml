@@ -169,6 +169,15 @@ min_atr_pct = 0.03
 #
 # sl_atr_mult was 1.3, which stopped out 82% of trades before the move
 # developed while all of the profit sat in the ones that survived to run.
+#
+# trail_atr_mult swept 1.5-8.0 on a matched entry list (2026-08-27): tightening
+# it is destructive (1.5 costs 61% of per-trade edge and takes the held-out year
+# to zero), and 2.5-6.0 is a flat plateau. 3.5 tops every aggregate but the two
+# indices swap places under it out of sample, so 3.0 stands.
+#
+# An explicit trail_atr_mult = 0 disables the trail and leaves the initial stop.
+# The field is a pointer so that zero survives; as a float64 it was replaced by
+# the default and the trail-free case could not be measured at all.
 sl_atr_mult = 3.0
 trail_atr_mult = 3.0
 

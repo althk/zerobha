@@ -22,7 +22,8 @@ func donchianTestConfig() config.DonchianConfig {
 	cfg.DonchianLookback = 4
 	cfg.MaxEntriesPerSymbol = 1
 	cfg.SLATRMult = 1.3
-	cfg.TrailATRMult = 3.0
+	trail := 3.0
+	cfg.TrailATRMult = &trail
 	on := true
 	cfg.UseIgnition = &on
 	cfg.IgnitionATRMult = 1.0

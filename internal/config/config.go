@@ -214,12 +214,19 @@ type DonchianConfig struct {
 	SLATRMult float64 `toml:"sl_atr_mult"`
 	// TrailATRMult is the chandelier trail distance in ATR, measured from the
 	// highest high (long) or lowest low (short) since entry. The stop only
-	// ratchets. Default 3.0; 0 disables trailing and leaves the initial stop.
+	// ratchets. Nil means absent and takes DefaultTrailATRMult; an explicit
+	// 0 disables trailing and leaves the initial stop.
 	//
 	// This is the only profit-taking exit the strategy has, so it is
 	// load-bearing: 3 beats 2 on both indices, and every attempt to cap the
 	// winning side ahead of it has cost more than it saved.
-	TrailATRMult float64 `toml:"trail_atr_mult"`
+	//
+	// It is a pointer for the reason MinDaysToExpiry is: 0 is a meaningful
+	// setting, and with a plain float64 "absent from the TOML" and "explicitly
+	// zero" are the same value, so the default always won. Setting 0 to
+	// measure the trail-free case silently measured the 3.0 default instead —
+	// byte-identical trade lists, and nothing in the output said so.
+	TrailATRMult *float64 `toml:"trail_atr_mult"`
 
 	// EntryStartMin skips the opening auction noise; EntryCutoffMin is the last
 	// minute a new entry may trigger; SquareOffMin is the hard flatten. All are
@@ -483,7 +490,7 @@ func DefaultDonchianConfig() DonchianConfig {
 		IgnitionATRMult:      1.0,
 
 		SLATRMult:    3.0,
-		TrailATRMult: 3.0,
+		TrailATRMult: floatPtr(DefaultTrailATRMult),
 
 		EntryStartMin:  9*60 + 30,
 		EntryCutoffMin: 14*60 + 31,
@@ -582,6 +589,20 @@ func DefaultORBConfig() ORBConfig {
 		PartialExitAtRMultiple: 0,
 		PartialExitPct:         0.5,
 	}
+}
+
+// DefaultTrailATRMult is the chandelier trail distance applied when
+// trail_atr_mult is absent. Named because TrailATRMult is a pointer: the
+// value has to be reachable from the accessor as well as from the defaults.
+const DefaultTrailATRMult = 3.0
+
+// TrailMult resolves the trail distance: an explicit value (0 included) wins,
+// and a nil pointer means the key was absent and takes the default.
+func (c DonchianConfig) TrailMult() float64 {
+	if c.TrailATRMult == nil {
+		return DefaultTrailATRMult
+	}
+	return *c.TrailATRMult
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -823,7 +844,7 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Donchian.SLATRMult == 0 {
 		config.Donchian.SLATRMult = dcD.SLATRMult
 	}
-	if config.Donchian.TrailATRMult == 0 {
+	if config.Donchian.TrailATRMult == nil {
 		config.Donchian.TrailATRMult = dcD.TrailATRMult
 	}
 	if config.Donchian.EntryStartMin == 0 {

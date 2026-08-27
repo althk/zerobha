@@ -561,7 +561,7 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 		log.Printf("  Channel / ATR    : %d bars / ATR(%d)", c.DonchianLookback, c.ATRPeriod)
 		log.Printf("  Breakout Buffer  : %.2f pts  Min ATR Pct: %.3f%%", c.BreakoutBufferPoints, c.MinATRPct)
 		log.Printf("  Ignition         : %v  Mult: %.2f ATR", *c.UseIgnition, c.IgnitionATRMult)
-		log.Printf("  Stop / Trail     : %.2f ATR / %.2f ATR (0 = no trail)", c.SLATRMult, c.TrailATRMult)
+		log.Printf("  Stop / Trail     : %.2f ATR / %.2f ATR (0 = no trail)", c.SLATRMult, c.TrailMult())
 		log.Printf("  Entry Window     : %02d:%02d – %02d:%02d   Square Off: %02d:%02d",
 			c.EntryStartMin/60, c.EntryStartMin%60, c.EntryCutoffMin/60, c.EntryCutoffMin%60,
 			c.SquareOffMin/60, c.SquareOffMin%60)

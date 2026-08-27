@@ -1198,6 +1198,62 @@ Verdict unchanged: OOS is +1.76 bps per trade blended, against a break-even of
 ~3.1-3.5 on the option leg. The configuration is now clean and defensible; it is
 not profitable out of sample, and the ADX gate was never going to close a 2x gap.
 
+### The chandelier trail sweep, and a knob that could not be turned off (2026-08-27)
+
+`trail_atr_mult` swept 1.5 -> 8.0, lookback 30 / ADX 15-14 / SL 3, 733 sessions.
+The trail touches only exits, so **all ten runs share an identical 1,490-trade
+entry list** — a clean matched comparison, unlike every parameter sweep above it.
+
+| trail | All | t | Win% | PF | IS | OOS | NIFTY OOS | SENSEX OOS |
+|---|---|---|---|---|---|---|---|---|
+| 1.5 | +1.65 | 3.43 | 40.2% | 1.31 | +2.38 | +0.27 | -0.09 | +0.61 |
+| 2.0 | +2.24 | 3.63 | 40.3% | 1.32 | +3.18 | +0.43 | +0.33 | +0.52 |
+| 2.5 | +3.20 | 4.28 | 41.7% | 1.37 | +4.06 | +1.57 | +1.07 | +2.04 |
+| **3.0** | +4.22 | 4.86 | 43.6% | 1.43 | +5.52 | +1.76 | +2.20 | +1.34 |
+| 3.5 | +4.80 | 5.21 | 45.9% | 1.46 | +6.33 | +1.89 | +1.45 | +2.31 |
+| 4.0 | +4.50 | 4.75 | 46.2% | 1.40 | +5.98 | +1.66 | +1.40 | +1.92 |
+| 6.0 | +4.16 | 4.21 | 46.6% | 1.34 | +5.47 | +1.66 | +1.37 | +1.94 |
+| 8.0 | +3.94 | 3.98 | 46.4% | 1.32 | +5.24 | +1.47 | +1.18 | +1.74 |
+
+**3.5 tops every aggregate and 3.0 stands anyway.** The two indices swap places
+under it out of sample — NIFTY prefers 3.0 (+2.20 vs +1.45), SENSEX prefers 3.5
+(+2.31 vs +1.34), almost exactly trading halves — and 2.5-6.0 is a flat plateau
+where the peak of ten cells is where fitting lives.
+
+**The real finding is the shape below 2.5, and it is the fourth independent
+confirmation of the same mechanism.** A 1.5 ATR trail costs 61% of per-trade
+edge and takes the held-out year to zero. Exit mix says why: at trail 2.0 the
+trail knocks out 1,379 of 1,490 positions (-0.7 bps each) and only 103 survive
+to the close to collect +40.9 bps, which is what funds the whole strategy. Every
+cap on the winning side here — BREAKEVEN+, the 1:2 target, a tight trail — costs
+more than it saves.
+
+A far target is a fifth confirmation, measured offline against the same trade
+list (replay the bars between entry and exit; book the target if touched):
+
+| TP (xATR) | Hit% | All bps | OOS bps |
+|---|---|---|---|
+| 3 | 34.5% | +2.27 | +0.97 |
+| 6 | 11.3% | +3.80 | +1.04 |
+| 10 | 2.6% | +4.31 | +1.85 |
+| none | - | +4.22 | +1.76 |
+
+A 10 ATR target fires on 38 of 1,490 trades and adds +0.09 bps. Targets stop
+hurting only once they stop binding; "harmless" is the ceiling. `tp_rr` stays
+out.
+
+**`trail_atr_mult = 0` could not disable the trail.** `LoadConfig` treated zero
+as absent and substituted 3.0, while the struct comment promised that 0 left the
+initial stop — so the trail-free case was unmeasurable and a run configured for
+it produced a **byte-identical trade list** to the default, with nothing in the
+output saying so. The sweep found it because the 0 row matched the 3.0 row
+exactly. `TrailATRMult` is now `*float64` with a `TrailMult()` accessor
+(`DefaultTrailATRMult` when nil, so a hand-built zero-value config still
+trails). This is the second instance of the trap `tp_rr` set: **any knob whose
+zero is a meaningful setting must be a pointer.** Regression test:
+`internal/config/donchian_trail_test.go`. With the trail genuinely off, the same
+1,490 entries give PF 1.29 against 1.43 — the trail is worth ~14 PF points.
+
 **`donchianTestConfig` pins `ADXThreshold = 0`.** Making 15 the default silenced
 13 strategy tests at once — their fixtures are a handful of quiet synthetic bars
 that never lift ADX over the gate. Same trap CLAUDE.md already records for tests

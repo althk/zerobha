@@ -419,7 +419,7 @@ func (s *Donchian) buildSignal(candle models.Candle, side models.SignalType, atr
 		return nil
 	}
 
-	trail := atr.Mul(decimal.NewFromFloat(s.cfg.TrailATRMult))
+	trail := atr.Mul(decimal.NewFromFloat(s.cfg.TrailMult()))
 
 	// No target and no breakeven: the chandelier trail is the only exit that
 	// takes profit. Both alternatives were measured and both cost more than
@@ -437,7 +437,7 @@ func (s *Donchian) buildSignal(candle models.Candle, side models.SignalType, atr
 		return nil
 	}
 
-	if s.cfg.TrailATRMult <= 0 {
+	if s.cfg.TrailMult() <= 0 {
 		trail = decimal.Zero
 	}
 
