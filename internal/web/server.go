@@ -12,6 +12,7 @@ import (
 	"zerobha/internal/models"
 	"zerobha/pkg/nseutils"
 	"zerobha/pkg/statistics"
+	webui "zerobha/web"
 
 	"github.com/shopspring/decimal"
 )
@@ -36,7 +37,7 @@ func NewServer(engine *core.Engine, port int, paperMode bool) *Server {
 func (s *Server) Start() {
 	mux := http.NewServeMux()
 
-	fileServer := http.FileServer(http.Dir("web"))
+	fileServer := http.FileServer(http.FS(webui.Files))
 	mux.Handle("/", fileServer)
 
 	mux.HandleFunc("/api/summary", s.handleSummary)
