@@ -253,6 +253,13 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 				// 2. Check Target (Price goes DOWN)
 				exitPrice = o.Target
 				exitReason = "TARGET-HIT"
+			} else if timeStopReached(o, candle) {
+				// 3. Time stop, for any strategy that holds a short across
+				// sessions. Checked last, as on the long side, so a bar that
+				// also touches stop or target is attributed to the price level
+				// it actually hit.
+				exitPrice = candle.Close
+				exitReason = "TIME-STOP"
 			}
 
 			// If triggered, Execute the Buy to Cover

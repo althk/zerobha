@@ -112,3 +112,74 @@ func TestMalformedDeadlineIsIgnored(t *testing.T) {
 		t.Fatalf("malformed deadline must not close the position, got %d trades", len(s.Trades))
 	}
 }
+
+// openShort places a filled short with the given stop, target, and time stop.
+func openShort(t *testing.T, s *SimBroker, sym string, entry, stop, target float64, deadline string) {
+	t.Helper()
+	meta := map[string]string{}
+	if deadline != "" {
+		meta[models.MetaExitOnOrAfter] = deadline
+	}
+	_, err := s.PlaceOrder(models.Order{
+		Symbol:      sym,
+		Side:        models.SellSignal,
+		Type:        "MARKET",
+		ProductType: "NRML",
+		Quantity:    decimal.NewFromInt(10),
+		Price:       decimal.NewFromFloat(entry),
+		StopLoss:    decimal.NewFromFloat(stop),
+		Target:      decimal.NewFromFloat(target),
+		Timestamp:   time.Date(2026, 1, 1, 0, 0, 0, 0, simIST),
+		Metadata:    meta,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+}
+
+// Regression: the short branch used to ignore the time stop entirely, so a
+// carried short that touched neither level was held to
+// the end of the backtest — a short-horizon rule silently turned permanent.
+func TestTimeStopClosesShortAtDeadline(t *testing.T) {
+	s := NewSimBroker(decimal.NewFromInt(500000))
+	openShort(t, s, "TEST", 100, 110, 90, "2026-01-09")
+
+	s.CheckExits(bar("TEST", time.Date(2026, 1, 8, 0, 0, 0, 0, simIST), 100, 102, 98, 101))
+	if len(s.Trades) != 0 {
+		t.Fatalf("expected no exit before the deadline, got %d trades", len(s.Trades))
+	}
+
+	s.CheckExits(bar("TEST", time.Date(2026, 1, 9, 0, 0, 0, 0, simIST), 101, 103, 99, 102))
+	if len(s.Trades) != 1 {
+		t.Fatalf("expected one exit on the deadline, got %d", len(s.Trades))
+	}
+	tr := s.Trades[0]
+	if tr.Direction != "SHORT" {
+		t.Errorf("direction = %q, want SHORT", tr.Direction)
+	}
+	if tr.ExitReason != "TIME-STOP" {
+		t.Errorf("exit reason = %q, want TIME-STOP", tr.ExitReason)
+	}
+	if !tr.ExitPrice.Equal(decimal.NewFromFloat(102)) {
+		t.Errorf("exit price = %s, want 102 (the bar close)", tr.ExitPrice)
+	}
+	// PnL = (entry - exit) * qty = (100 - 102) * 10.
+	if !tr.PnL.Equal(decimal.NewFromInt(-20)) {
+		t.Errorf("pnl = %s, want -20", tr.PnL)
+	}
+}
+
+// A bar that reaches the short's target on the deadline is a TARGET-HIT, not a
+// time stop at the worse close — the same ordering the long side guarantees.
+func TestShortTimeStopDoesNotPreemptTarget(t *testing.T) {
+	s := NewSimBroker(decimal.NewFromInt(500000))
+	openShort(t, s, "TEST", 100, 110, 90, "2026-01-09")
+
+	s.CheckExits(bar("TEST", time.Date(2026, 1, 9, 0, 0, 0, 0, simIST), 95, 96, 88, 94))
+	if len(s.Trades) != 1 {
+		t.Fatalf("expected one exit, got %d", len(s.Trades))
+	}
+	if got := s.Trades[0].ExitReason; got != "TARGET-HIT" {
+		t.Errorf("exit reason = %q, want TARGET-HIT", got)
+	}
+}
