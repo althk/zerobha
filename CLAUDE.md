@@ -7,7 +7,7 @@ Intraday algorithmic trading system for NSE equities via Zerodha Kite. Go core
 daily short-term reversal added to test the lower-frequency thesis, and
 `gapfade`, an intraday gap-down recovery trade gated on Upstox news and
 earnings, and `donchian`, an intraday channel breakout specified on NSE stock
-futures (long and short). Other
+futures (long and short), and Other
 strategies existed and were removed in `6f8ef50` after backtests showed no edge
 — see [Findings](#findings-do-not-re-derive) before proposing to add them back.
 `dailyrev` also has no edge once benchmarked; it is kept as the worked example
@@ -318,6 +318,51 @@ If pursuing this further: the cost structure argues for lower-frequency, larger-
 target trades (daily bars, multi-day holds), where ₹24–32 of cost is negligible
 rather than 100%+ of expectancy. `histdl -interval day -days 1800` pulls 7 years
 of daily candles quickly.
+
+### Shorting an exhausted extension - built, measured, REMOVED (2026-08-29)
+
+Built as `extshort` and removed the same week; the code is not in the tree. The
+idea was to short a move that has run away from its short mean while its volume
+dries up. Both an intraday and a daily version were measured; neither works, and
+the reasons generalise past this rule set.
+
+Rule set, at its final settings: short-only, specified on stock futures, entry
+`RSI(9) > 80` with the close at least 2.5 ATR above SMA(5) on volume below 0.8x
+the previous 20 bars, stop/target 1.5 ATR either side, no regime filter, 5-minute
+bars, flat at the square-off. Nifty 200, 271 sessions, 3 bps both legs:
+
+| Variant | Trades | Net | Win% | PF | Gross bps | t (gross) |
+|---|---|---|---|---|---|---|
+| RSI 9, ext 2.5, 1.5:1.5, vol 0.8 | 74 | -Rs2,796 | 48.6% | 0.85 | +2.93 | 0.60 |
+| same, volume filter off | 3,858 | -Rs332,624 | 47.2% | 0.70 | **-1.57** | -1.82 |
+| RSI 2, ext 1.5, 2:3, vol 0.8 | 4,021 | -Rs345,457 | 38.8% | 0.72 | **-2.31** | -2.40 |
+| RSI 2, ext 2.5, 2:3, vol 0.8 | 108 | -Rs1,084 | 41.7% | 0.96 | +4.50 | 0.73 |
+| RSI 2, ext 5.0, 2:3, vol 0.8 | 0 | - | - | - | - | - |
+| DAILY, cover at SMA(5), RSI(2) > 90, ext 0.5, carried | 2,705 | -Rs93,153 | 58.6% | 0.73 | **-41.8** | **-4.95** |
+
+**Every variant with a usable sample is negative gross; every positive-gross
+variant has under 110 trades.** That pattern is the finding.
+
+Four things worth keeping:
+
+- **Extension and volume dry-up are structurally anti-correlated**, so demanding
+  both deletes the signal rather than concentrating it. Of 1.2M 5-minute bars
+  (60 names) with `RSI(2) > 80`, 383 reach 5 ATR above SMA(5) and **one** of
+  those is on drying volume; on daily bars, 5 of 226,072 and none. A 5-bar MA
+  only lags a close that far on a violent print, and a violent print IS a volume
+  event.
+- **An RSI period is a frequency knob, not a selectivity knob.** `RSI(2) > 80`
+  fires constantly on 5-minute bars; `RSI(9) > 80` is rare, because a 9-bar
+  Wilder average cannot reach 80 without a sustained one-way run. 2 -> 9 at the
+  same extension took 108 trades to 74.
+- **A filter that cuts the sample to 74 trades cannot be shown to add edge.**
+  Switching the volume leg off went 74 -> 3,858 trades and -1.57 gross against
+  the kept +2.93, which is the right direction, and still means nothing: the
+  difference is about one standard error of the small sample.
+- **Short-only pays the universe's drift on every held day.** The daily carried
+  version lost 41.8 gross bps a trade against `dailyrev`'s +51.8 bps
+  unconditional 5-day forward return. Going intraday removes that headwind -
+  which is most of the gap between -41.8 and -1.6 bps - and still leaves nothing.
 
 ### Intraday gap fade (`gapfade`) — added 2026-08-24, no edge
 
