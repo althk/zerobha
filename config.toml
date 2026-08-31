@@ -249,3 +249,115 @@ max_entries_per_symbol = 4
 
 allow_short = true
 exit_on_opposite_break = true
+
+[srlevels]
+# Intraday support/resistance on the index charts, for weekly-option execution:
+# a break of a level buys the PE, a bounce off it buys the CE, and the
+# resistance cases mirror both. Backtest-only for now — cmd/trader has no case
+# for this strategy.
+timeframe = "5m"
+# NIFTY only. SENSEX was measured alongside and gave 29 priceable option trades
+# against NIFTY's 80 - too few to read, and its held-out window disagreed in
+# sign, which is one flat result sampled twice rather than two markets speaking.
+csv_file = "nifty.csv"
+limit = 1
+
+# Levels come from the PREVIOUS session's high/low/close. "traditional" is the
+# floor-trader formula and "fibonacci" places the bands at 0.382/0.618/1.000 of
+# the previous range. Traditional wins on every comparable cell of the sweep;
+# every fibonacci cell measured negative.
+pivot_method = "traditional"
+atr_period = 9
+
+# Every distance here is in ATR, never points: an absolute buffer is not
+# comparable across NIFTY (~24,000) and SENSEX (~78,000).
+#   break_buffer_atr — how far past the level the close must be to confirm
+#   touch_atr        — how close the wick must come for a bounce/rejection
+#   proximity_atr    — radius around the close inside which a level is in play
+break_buffer_atr = 0.10
+touch_atr = 0.25
+proximity_atr = 1.0
+
+# The higher-timeframe gate. It is the only thing keeping this signal above
+# zero: switching it off multiplies entries ~6x and takes gross to -1.34 bps at
+# t = -1.91. It also cuts the sample to ~0.16 trades a session, which is the
+# strategy's real problem — see the srlevels section of CLAUDE.md.
+use_htf_confirm = true
+htf_lookback_days = 20
+swing_strength = 2
+zone_width_pct = 0.15
+min_zone_touches = 1
+# Room to the next opposing zone. Measured INERT: 0, 1 and 2 ATR agree within a
+# quarter of a standard error. Shipped at 0 so this config reproduces the trade
+# list every recorded srlevels figure was measured on - a gate that does nothing
+# should not also make the numbers unreproducible.
+min_room_atr = 0.0
+
+# Index 5-minute ATR runs 0.076-0.083% of price; the stock-sized 0.15 floor
+# rejects every bar.
+min_atr_pct = 0.03
+
+# Exits: a far target plus a loose chandelier trail. Both are deliberately
+# loose - every tight version of either measured decisively worse.
+#
+# The target does NOT change which trades win. On a matched 120-trade entry list
+# the win rate is 36.7% and the stop-out count is exactly 72 at every setting
+# from 4 ATR out; what moves is the right tail. A 3 ATR target caps the largest
+# winner at 72 bps against 112 bps everywhere else and costs 2.6 of the 3.9 bps
+# available - pure amputation, the same "win rate unchanged, expectancy gone"
+# signature CLAUDE.md records for ORB's TP 5 -> 4.
+#
+#   TP   bind   bps   OOS      TP   bind   bps   OOS
+#    3   35/120 1.19  1.75      8    5/120 3.78  4.03
+#    4   23/120 2.54  3.82     10    2/120 3.68  3.79
+#    6   10/120 3.41  4.39   none        - 3.53  3.79
+#
+# 6 over 8 on BIND RATE, not on the point estimate: 8 fires on 5 of 120 trades,
+# which is the no-target case wearing a target, while 6 fires on 10-11 and
+# actually caps the risk of running to the 14:57 bell. 6 also wins out of sample.
+#
+# The trail was swept 1.5-4.0 on a matched entry list: 1.5 and 2.0 are
+# DECISIVELY NEGATIVE (-2.0 to -2.8 bps, t = -2.0) on every stop row and in both
+# windows; 2.5 is roughly zero; 3.0 recovers to +3.5; no trail is +3.9.
+#
+# The stop does NOT replicate: 2.5 tops the small sample and is among the worst
+# on the large one. 1.5 is the value that is positive on both.
+#
+# All three are pointers: 0 is a real setting for each, and with a plain float a
+# non-zero default would silently win. That trap has bitten this repo twice.
+sl_atr_mult = 1.5
+tp_atr_mult = 6.0
+trail_atr_mult = 3.0
+
+entry_start_min = 570
+entry_cutoff_min = 871
+squareoff_min = 897
+
+# The engine's cap is stock-sized; an index priced above it floors quantity to
+# zero and produces no trades at all rather than smaller ones.
+max_capital_per_trade = 150000
+risk_pct = 0.5
+max_daily_loss_pct = 2.0
+max_concurrent = 5
+# ONE entry per session. This knob was INERT until 2026-08-31 - the strategy's
+# position flag never cleared intraday, so it took one trade a day whatever the
+# value, which also made the backtest look like a 120-trade strategy when the
+# rules describe a 168-trade one. With the flag fixed, the second entry of a day
+# measures -6.76 bps on 44 trades at t = -2.28 (18% win, PF 0.43), negative in
+# both windows. A second entry only happens after the first was stopped out,
+# i.e. after the session has already shown its levels are not holding.
+max_entries_per_symbol = 1
+max_entries_per_level = 2
+
+allow_short = true
+
+# Option leg, mirrored by cmd/optbt flags in backtest.
+target_delta = 0.80
+target_delta_near_expiry = 0.90
+# 0, not Donchian's 2. Donchian's -1571 bps expiry-day figure was measured at
+# 0.75 delta, where the expiry-morning strike is nearly worthless. On this trade
+# list at 0.80 delta, DTE 0 is the BEST bucket (+711 net premium bps on 12
+# trades) while DTE 1-3 are negative, so skipping expiry week would cut the good
+# bucket and keep the bad ones. Twelve trades a bucket is noise - the reading is
+# that the skip is not justified here, not that expiry day is good.
+min_days_to_expiry = 0

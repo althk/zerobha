@@ -7,7 +7,9 @@ Intraday algorithmic trading system for NSE equities via Zerodha Kite. Go core
 daily short-term reversal added to test the lower-frequency thesis, and
 `gapfade`, an intraday gap-down recovery trade gated on Upstox news and
 earnings, and `donchian`, an intraday channel breakout specified on NSE stock
-futures (long and short), and Other
+futures (long and short), and `srlevels`, an intraday support/resistance
+strategy on daily pivots confirmed against higher-timeframe swing zones, on the
+index charts for weekly-option execution. Other
 strategies existed and were removed in `6f8ef50` after backtests showed no edge
 — see [Findings](#findings-do-not-re-derive) before proposing to add them back.
 `dailyrev` also has no edge once benchmarked; it is kept as the worked example
@@ -38,6 +40,20 @@ go run ./cmd/optbt -trades idx.csv -underlying nifty -itm 150   -cost-bps 30 -sp
 # Same, choosing the strike by delta and skipping expiry day and the day before
 # (-lots matters: brokerage is flat per order, so the edge improves to ~10 lots)
 go run ./cmd/optbt -trades idx.csv -underlying nifty -delta 0.8   -lots 10 -min-dte 2 -spread-pct 0.25 -split 2025-09-01
+
+# Support/resistance on the NIFTY index chart. The shipped [srlevels] config
+# reproduces the recorded trade list, so the -sr-* flags are only for sweeping;
+# -sr-tp sets the target in ATR (0 turns it off) and -sr-trail the chandelier.
+go run ./cmd/backtest -strategy srlevels -timeframe 5minute -cost-bps 0   -trades-csv sr_nifty.csv
+
+# Same, overriding the exit knobs for a sweep cell
+go run ./cmd/backtest -strategy srlevels -timeframe 5minute -cost-bps 0   -sr-pivot traditional -sr-htf on -sr-room 0 -sr-sl 1.5 -sr-tp 6 -sr-trail 3   -trades-csv sr_nifty.csv
+
+# Price that trade list on real expired NIFTY weekly premium candles
+go run ./cmd/optbt -trades sr_nifty.csv -underlying nifty -delta 0.80   -lots 10 -min-dte 0 -spread-ticks 20 -split 2025-09-01
+
+# Read any -trades-csv dump in per-trade bps, with IS/OOS and per-symbol splits
+python scripts/analyze_trades.py sr_nifty.csv --split 2025-09-01
 
 # Daily short-term reversal (CNC, multi-day holds - note the higher cost-bps)
 go run ./cmd/backtest -strategy dailyrev -csv ind_nifty200list.csv   -timeframe day -limit 200 -cost-bps 11
@@ -71,6 +87,8 @@ with `pkg/broker/sim.go`; the engine and strategy code are identical.
 | `pkg/strategy/dailyrev.go` | Daily short-term reversal (CNC, multi-day holds) |
 | `pkg/strategy/gapfade.go` | Intraday gap-down recovery, gated on news/earnings |
 | `pkg/strategy/donchian.go` | Intraday channel breakout, long+short, futures |
+| `pkg/strategy/srlevels.go` | Intraday support/resistance on daily pivots + HTF zones |
+| `pkg/indicators/pivots.go` | Traditional and Fibonacci daily pivot levels |
 | `pkg/broker/futures.go` | NFO stock-futures universe: rollover + liquidity gate |
 | `pkg/indicators/donchian.go` | Donchian channel, excluding the current bar |
 | `pkg/upstox/` | Read-only Upstox client + the news/earnings `core.NewsGate` |
@@ -101,7 +119,9 @@ exists. Closing goes through `core.PositionCloser` when the broker implements it
 `core.NewsGate` is the second injection point: `Assess(symbol, asOf)` returns a
 `GateVerdict{Allow, Reason}`. `gapfade` consults it before entering; the trader
 injects `pkg/upstox.Gate`, the backtester injects nil. Live trading supports `orb`, `gapfade` and `donchian`; `dailyrev` is
-backtest-only (CNC positions would be squared off the same day).
+backtest-only (CNC positions would be squared off the same day), and `srlevels`
+is backtest-only too — `cmd/trader` has no case for it, deliberately, because
+nothing measured about it yet justifies wiring option execution to it.
 
 `donchian` is the one strategy whose **signal instrument and traded instrument
 differ**: the signal is computed on the NIFTY / SENSEX index chart and the
@@ -1354,6 +1374,241 @@ measured at 0.75 delta, where the expiry-morning strike is nearly worthless. At
 Verdict: keep `min_days_to_expiry = 2`. No config knob was added, the live
 selector was not changed, and the measurement flag was removed after the run.
 
+### Support/resistance levels (`srlevels`) — added 2026-08-31, no edge
+
+Rule set: daily pivots from the PREVIOUS session's H/L/C, kept only where they
+coincide with a swing zone on the last 20 daily bars; enter on a 5-minute
+confirmation candle that closes clear of a level by `break_buffer_atr`, in the
+direction of the interaction. Four interactions, which is the whole strategy:
+support break -> PE (short), support bounce -> CE (long), resistance break -> CE,
+resistance rejection -> PE. Support and resistance are not fixed labels — a
+level is support while price is above it and resistance while below, so the
+approach side is what separates a break from a bounce. Stop and target at fixed
+ATR(9) multiples, MIS, flat at 14:57. NIFTY only as shipped; the daily bars are
+folded from the intraday stream so nothing outside the replay is read.
+
+The structural sweeps below were run on NIFTY and SENSEX together (233 trades);
+everything from the trail sweep onward is NIFTY alone (120 trades).
+
+Two choices were left open by the specification and both were swept on the same
+733 sessions (2023-09 -> 2026-08), gross index bps, `-cost-bps 0`.
+
+**Traditional pivots beat Fibonacci everywhere, and it is not close.** Every
+Fibonacci cell is negative; the direction holds on both the gated 250-trade
+sample and the ungated 1,350-trade one, and on both indices:
+
+| pivot | HTF gate | Trades | All | t | IS | OOS |
+|---|---|---|---|---|---|---|
+| traditional | on | 233 | **+0.51** | 0.32 | +0.63 | +0.29 |
+| traditional | off | 1,360 | −1.34 | −1.91 | −1.74 | −0.53 |
+| fibonacci | on | 254 | −0.86 | −0.56 | +0.33 | −2.99 |
+| fibonacci | off | 1,351 | −1.12 | −1.56 | −0.32 | −2.80 |
+
+**The higher-timeframe confirmation is the only thing holding this above zero,
+and it is doing so by refusing to trade.** Switching it off multiplies entries
+~6x and takes the result decisively negative on a sample large enough to resolve
+it (t = −1.9). So the gate genuinely selects — and it selects down to 233 trades
+in three years, 0.16 a session across two indices, which is the problem below.
+The `min_room_atr` gate is inert: 0, 1 and 2 ATR differ by less than a quarter
+of a standard error.
+
+**The SL/TP sweep is a sixth independent confirmation of the target result.**
+30 cells, SL {1.0 .. 3.0} x TP {1.5, 2, 3, 4, 6, none}. SL/TP touch only exits,
+so all cells in a sweep share an identical entry list — a clean matched
+comparison. Within **every** SL row, on **both** samples, return rises
+monotonically as the target widens and is highest with no target at all:
+
+| SL | TP 1.5 | TP 2 | TP 3 | TP 4 | TP 6 | none |
+|---|---|---|---|---|---|---|
+| 1.5, gated (n=233) | −0.20 | −0.16 | +0.51 | +1.81 | +3.36 | **+4.42** |
+| 1.5, ungated (n=1360) | −0.85 | −0.99 | −1.34 | −0.48 | −0.12 | **+0.78** |
+
+**The 1.5 : 3 of the specification is near the bottom of its own row.** This is
+the same mechanism CLAUDE.md already records for ORB's target, Donchian's
+BREAKEVEN+, Donchian's `tp_rr` twice and the chandelier trail: every cap on the
+winning side costs more than it saves.
+
+**The stop does NOT replicate, and the small sample is what lies about it.**
+On the gated 233 trades SL 2.5 looks best (+5.42 bps, t = 2.04, the top cell of
+the whole grid). On the ungated 1,350 it is one of the worst (−1.30), and SL 3.0
+reaches −3.41 at t = −3.69 while tight stops of 1.0-1.5 are the only positive
+ones. A 233-trade sample cannot rank stops, and 360 cells were looked at.
+
+**A trailing stop replaces the target, and 2 ATR is the wrong number.** Swept
+1.5 -> 4.0 against SL 1.0 -> 3.0 with the target off, NIFTY only, 120 trades,
+matched entry lists (the trail touches exits only). Gross index bps:
+
+| trail | SL 1.0 | SL 1.5 | SL 2.0 | SL 2.5 | SL 3.0 | OOS at SL 1.5 |
+|---|---|---|---|---|---|---|
+| 1.5 | −2.44 | **−2.62** | −2.83 | −2.77 | −2.77 | −0.92 |
+| 2.0 | −1.86 | **−2.05** | −2.48 | −2.48 | −2.48 | −1.24 |
+| 2.5 | −1.31 | +0.59 | +0.68 | +1.15 | +1.15 | +0.88 |
+| 3.0 | +1.17 | **+3.53** | +2.89 | +3.05 | +2.63 | +3.79 |
+| 4.0 | +1.62 | +5.03 | +4.78 | +5.65 | +4.13 | +7.19 |
+| none | +0.82 | +3.94 | +3.40 | +3.58 | +1.60 | +6.99 |
+
+**A 1.5 or 2.0 ATR trail is decisively negative on every stop row and in both
+windows** (t reaches −2.03), 2.5 is roughly zero, and 3.0 recovers to within
+noise of no trail at all. This is the seventh independent confirmation of one
+mechanism in this repo: every cap on the winning side costs more than it saves.
+Read the shape, not the peak — 2.5 through 4.0 is a flat plateau and the best of
+ten cells is where fitting lives.
+
+**A target is harmless once it stops binding, and this is where the mechanism is
+clearest.** Same 120 matched entries, SL 1.5, target swept with the trail at 0
+and at 3 ATR. Read the SL-HIT column first:
+
+| TP | bind | bps (trail 0) | bps (trail 3) | OOS (trail 3) | win% | SL-HIT | avg win | p95 | max |
+|---|---|---|---|---|---|---|---|---|---|
+| 3 | 35/120 | +1.36 | +1.19 | +1.75 | 39.2 | 69 | 29.4 | 44.6 | **72.4** |
+| 4 | 23/120 | +2.12 | +2.54 | +3.82 | 36.7 | **72** | 34.8 | 47.4 | 96.5 |
+| **6** | 10/120 | +3.61 | **+3.41** | **+4.39** | 36.7 | **72** | 38.9 | 64.7 | 112.0 |
+| 8 | 5/120 | +4.15 | +3.78 | +4.03 | 36.7 | **72** | 40.3 | 69.3 | 112.0 |
+| 10 | 2/120 | +4.45 | +3.68 | +3.79 | 36.7 | **72** | 41.2 | 80.9 | 112.0 |
+| none | — | +3.94 | +3.53 | +3.79 | 36.7 | **72** | 39.8 | 77.5 | 112.0 |
+
+**The target does not change WHICH trades win — it changes only how much the
+winners make.** The win rate is 36.7% and the stop-out count is exactly 72 at
+every setting from 4 ATR outward: the same 72 losers, identically. What moves is
+the right tail (p95 44.6 -> 47.4 -> 64.7 -> 80.9), and a 3 ATR target caps the
+largest winner at 72 bps against 112 everywhere else. That is the same "win rate
+unchanged, expectancy gone" signature already recorded for ORB's TP 5 -> 4.
+
+This **corrects** the "highest with no target at all" line above: on NIFTY alone
+at trail 0, TP 8 and 10 edge past no-target (+4.15, +4.45 vs +3.94). It is four
+to six trades' worth of difference at t = 1.38-1.45 against 1.30, so the
+defensible statement is the weaker one — **anything from 6 ATR outward is
+indistinguishable from having no target, and anything at 4 or tighter costs real
+money.**
+
+**`tp_atr_mult = 6`, chosen over 8 on bind rate rather than the point estimate.**
+8 fires on 5 of 120 trades, which is the no-target case wearing a target; 6
+fires on 10-11 and actually caps the tail risk of running to the 14:57 bell. 6
+is also the better of the two out of sample on the shipped trail (+4.39 vs
++4.03). 8's higher full-sample figure is +0.37 bps off five trades.
+
+Shipped configuration: **NIFTY only, traditional pivots, HTF confirmation on,
+SL 1.5 ATR, TP 6 ATR, 3 ATR chandelier trail, `min_room_atr = 0`.** 120 trades,
+**+3.41 bps gross, t = 1.24** (IS +2.77, OOS +4.39), PF 1.35, exits 82 SL-HIT
+(−12.3 bps) / 28 EOD (+30.9) / 10 TARGET-HIT (+55.1). `config.toml`'s
+`[srlevels]` section reproduces this trade list exactly; the room gate ships at
+0 because it measured inert and every recorded figure was taken with it off.
+
+### The re-entry bug, and why one trade a day is the right cap (2026-08-31)
+
+**`max_entries_per_symbol` was inert, and the strategy took exactly one trade
+per session whatever it was set to.** Symptom: 22 trades over 22 distinct days
+in a six-month window; ungated, 110 trades over 110 days. One per day, always.
+
+Cause: `openValid` was a one-way latch. It is set on entry and cleared only at
+the date change, and **nothing else could clear it** — there is no hook by which
+a broker tells a strategy that a resting stop has fired (`core.Strategy` has
+`Init`/`OnCandle` and nothing else, and `ExitAdvisor` advises exits rather than
+reporting them). Donchian survives this only because its opposite-band
+`ExitAdvice` clears the flag; `srlevels` has no ExitAdvisor at all, so after the
+day's first entry every later bar hit the "no re-entries while a position is
+open" guard. `max_entries_per_level` was dead for the same reason.
+
+The fix (`closeIfProtectiveHit`) mirrors the broker's own exit test in the
+strategy, including `sim.go`'s ordering: exits are evaluated against the stop as
+it stood at the bar's OPEN, and only then does the trail ratchet on that bar's
+extreme. Being wrong is one-directional and cheap — `Engine.Execute` checks
+`HasOpenPosition` before every entry, so an over-eager clear costs a rejected
+signal, never a pyramided position. Regression test:
+`TestSRReentersAfterItsStopIsHit` (verified failing without the fix).
+
+**With the knob working, re-entries are the worst thing this strategy does:**
+
+| entry # in day | n | bps | t | win% | PF | OOS n | OOS bps |
+|---|---|---|---|---|---|---|---|
+| 1 | 120 | **+3.41** | 1.24 | 35.8 | 1.35 | 47 | +4.39 |
+| 2 | 44 | **−6.76** | **−2.28** | 18.2 | 0.43 | 19 | −3.73 |
+| 3 | 4 | +15.91 | 2.99 | 100.0 | — | 1 | +1.27 |
+
+At `max_entries_per_symbol = 4` the full sample is 168 trades at +1.04 bps
+(t = 0.49); at 1 it is 120 at +3.41 (t = 1.24). **The second entry of a day is
+the most significant number this strategy has produced and it is negative**, in
+both windows, with a mechanism: a second entry only happens after the first was
+stopped out — i.e. after the session has already demonstrated that its levels
+are not holding. Ignore the 4-trade third row.
+
+This is the **opposite** of Donchian's result, where a cap of 1 makes an early
+entry displace a better later one. The difference is what triggers the re-entry:
+Donchian re-enters after an opposite-band exit (a thesis *change*), this
+strategy after a stop-out (a thesis *failure*). Do not carry one finding across.
+
+`max_entries_per_symbol` therefore ships at **1**. The recorded 120-trade
+figures are unchanged by the fix — the first entry of each day was never
+affected — but they are now produced by a knob that says what it does.
+
+**With no target and no trail the strategy has exactly two exits** — the fixed
+stop at entry ∓ 1.5 ATR, which never moves, and the 14:57 square-off. A trailed
+stop still reports as `SL-HIT` (`sim.go` ratchets the same order), so the trail
+is not a separate exit reason; turning it on at 3 ATR moves 15 trades out of the
++36 bps EOD bucket and into a much cheaper stop bucket (−17.5 -> −8.7 bps). Note
+an EOD exit is a *time* exit, not a thesis exit: ~30% of trades end because the
+clock ran out. There is no `core.ExitAdvisor` here — the analogue of Donchian's
+opposite-band break has not been built or measured.
+
+**`min_days_to_expiry` is 0 here, not Donchian's 2**, and that is measured
+rather than inherited. `-min-dte 0` lifts the priced sample from 54 to 80 and
+the per-DTE buckets say why the skip is wrong for this trade list:
+
+| DTE | n | index bps | net premium bps |
+|---|---|---|---|
+| 0 | 12 | +5.53 | **+711.3** |
+| 1 | 14 | −1.26 | −263.1 |
+| 2 | 6 | −2.87 | −425.5 |
+| 3 | 9 | −1.25 | −101.8 |
+| 4-6 | 39 | +5.29 to +12.91 | +187 to +723 |
+
+Donchian's −1571 bps expiry-day figure was measured at 0.75 delta, where the
+expiry-morning strike is nearly worthless. At 0.80 delta, DTE 0 is the *best*
+bucket, so `-min-dte 2` cuts the good bucket and keeps the bad ones. Twelve
+trades a bucket is noise — the reading is that the skip is unjustified here, not
+that expiry day is good.
+
+**The option leg, NIFTY, 80 priced trades** (expired-contract history starts
+2024-10, so 38 of 120 have no data), `-delta 0.80 -lots 10 -min-dte 0`, 20-tick
+spread:
+
+| Exit | n | Index bps | Premium gross | NET premium bps | t | IS | OOS |
+|---|---|---|---|---|---|---|---|
+| **TP 6 + trail 3 (shipped)** | 80 | +4.86 | +297.1 | **+233.8** | 0.93 | +245.2 | +225.9 |
+| no target, no trail | 80 | +5.89 | +305.8 | +242.5 | 0.95 | +183.4 | +284.1 |
+| no target, trail 3 | 80 | +4.47 | +271.6 | +208.4 | 0.86 | +242.4 | +184.6 |
+| no target, trail 2 | 80 | −2.18 | −147.1 | **−208.4** | −1.43 | −210.9 | −206.6 |
+
+The shipped row is not the highest full-sample figure, but it is the only one
+whose two windows agree (+245 / +226 against +183 / +284 and +242 / +185). At
+these sample sizes that stability is worth more than the 9 bps it gives up, and
+it is the direct consequence of the target binding on ~9% of trades rather than
+on none.
+
+The index-leg verdict carries straight through: trail 2 loses on the option leg
+too, and by about the same margin it loses on the index. `-delta-near-expiry` is
+not a confound — forcing a flat 0.80 delta moves the no-trail figure from +242.5
+to +220.0 and leaves trail 3 unchanged at +208.
+
+**Every positive figure here is under t = 1.3, and the reason is the trade
+rate.** 120 index trades in three years, 80 priceable — the gate that makes the
+signal non-negative is the same gate that cuts the sample below what the data
+can resolve. Dropping the gate gives 6x the trades at −1.3 bps, so that is not
+the way out either. Further work has to raise entries without reverting to the
+ungated version: more instruments (BANKNIFTY took no part in any of this and is
+the honest control), or a level source firing more often than seven pivots a day
+while still selecting. Sweeping the existing knobs again is multiple testing on
+120 trades and will only produce a better-looking best cell.
+
+SENSEX was measured alongside NIFTY throughout and is not shipped: 29 priceable
+option trades against NIFTY's 80, and its held-out window disagreed in sign
+(NIFTY +479 premium bps, SENSEX −59 at `-min-dte 2`). That is the "one flat
+result sampled twice" pattern already recorded for Donchian, not two markets
+disagreeing.
+
+`scripts/analyze_trades.py` summarises any `-trades-csv` dump in per-trade bps
+with IS/OOS and per-symbol splits, which is the reading the rupee totals hide.
+
 ## Paper trading
 
 `-paper`, or `paper_trading = true`, swaps `broker.PaperAdapter` in for the
@@ -1443,6 +1698,16 @@ observed price, and a stop fills at the tick that crossed it.
   earlier "spread is immaterial" note twice over: immaterial at one lot where
   flat brokerage swamped it, dominant at ten lots under the percentage model,
   and materially different per index once quoted properly.
+- **No broker tells a strategy that its stop fired.** `core.Strategy` is
+  `Init`/`OnCandle` and nothing more, and `ExitAdvisor` advises exits rather
+  than reporting them, so a strategy that tracks "do I hold a position?" has to
+  work it out from the candles. Get it wrong and the flag latches: `srlevels`
+  took exactly one trade a day for its whole first day of existence, with
+  `max_entries_per_symbol = 4` silently doing nothing. Donchian has the same
+  shape and is saved only by its opposite-band `ExitAdvice` clearing the flag.
+  Any new strategy with a resting stop and no ExitAdvisor has this bug by
+  default — mirror the broker's exit test (`srlevels.closeIfProtectiveHit`) and
+  lean on `Engine.Execute`'s `HasOpenPosition` check as the authority.
 - **A paper broker that only records fills is not a paper broker.** Every
   strategy here except Donchian's option mode exits through a stop resting at
   the broker, so simulated positions with no resting stop run to the square-off

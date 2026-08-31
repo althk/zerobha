@@ -4,6 +4,8 @@ package config
 import (
 	"fmt"
 
+	"zerobha/pkg/indicators"
+
 	"github.com/BurntSushi/toml"
 )
 
@@ -428,6 +430,7 @@ type Config struct {
 	DailyRev          DailyRevConfig `toml:"dailyrev"`
 	GapFade           GapFadeConfig  `toml:"gapfade"`
 	Donchian          DonchianConfig `toml:"donchian"`
+	SRLevels          SRLevelsConfig `toml:"srlevels"`
 	Upstox            UpstoxConfig   `toml:"upstox"`
 }
 
@@ -442,6 +445,8 @@ func (c *Config) ActiveStrategySettings() StrategySettings {
 		return StrategySettings{Timeframe: c.GapFade.Timeframe, CSVFile: c.GapFade.CSVFile, Limit: c.GapFade.Limit}
 	case StrategyDonchian:
 		return StrategySettings{Timeframe: c.Donchian.Timeframe, CSVFile: c.Donchian.CSVFile, Limit: c.Donchian.Limit}
+	case StrategySRLevels:
+		return StrategySettings{Timeframe: c.SRLevels.Timeframe, CSVFile: c.SRLevels.CSVFile, Limit: c.SRLevels.Limit}
 	}
 	return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
 }
@@ -453,6 +458,7 @@ const (
 	StrategyDailyRev = "dailyrev"
 	StrategyGapFade  = "gapfade"
 	StrategyDonchian = "donchian"
+	StrategySRLevels = "srlevels"
 )
 
 func DefaultGapFadeConfig() GapFadeConfig {
@@ -515,6 +521,252 @@ func DefaultDonchianConfig() DonchianConfig {
 		ADXPeriod:           14,
 		AllowShort:          boolPtr(true),
 		ExitOnOppositeBreak: boolPtr(true),
+	}
+}
+
+// SRLevelsConfig holds parameters for the intraday support/resistance strategy:
+// daily pivot levels confirmed against higher-timeframe swing zones, traded on
+// the NIFTY / SENSEX 5-minute index chart and intended for execution in weekly
+// index options (a break buys the PE, a bounce buys the CE, and the resistance
+// cases mirror both).
+//
+// The zero-means-absent convention applies (see CLAUDE.md): setting a knob to 0
+// in TOML gets the default back. Knobs whose zero is a meaningful setting are
+// pointers (UseHTFConfirm, AllowShort, TPATRMult, MinRoomATR) so that "absent"
+// and "off" stay distinguishable -- this is the trap tp_rr and trail_atr_mult
+// each walked into, where a run configured to disable something silently
+// measured the default instead and nothing in the output said so.
+//
+// Every distance knob here is in ATR, not points. An absolute-points buffer is
+// not comparable across instruments of different scale: 2 points is 0.11 ATR on
+// NIFTY and 0.03 ATR on SENSEX, so one config would mean two different
+// strategies on the two indices this is specified for.
+type SRLevelsConfig struct {
+	Timeframe string `toml:"timeframe"` // default "5m"
+	CSVFile   string `toml:"csv_file"`  // backtest universe, default "indices.csv"
+	Limit     int    `toml:"limit"`     // default 2
+
+	// PivotMethod is "traditional" (floor-trader) or "fibonacci". Which one the
+	// market respects is an empirical question -- both are implemented so the
+	// choice can be measured on the same bars rather than assumed.
+	PivotMethod string `toml:"pivot_method"`
+	ATRPeriod   int    `toml:"atr_period"` // default 9
+
+	// BreakBufferATR requires the close to clear the level by this many ATR,
+	// not merely touch it, before the interaction counts as confirmed.
+	BreakBufferATR float64 `toml:"break_buffer_atr"`
+	// TouchATR is how close the bar's wick must come to a level for a bounce or
+	// rejection to be about that level rather than a coincidence nearby.
+	TouchATR float64 `toml:"touch_atr"`
+	// ProximityATR is the radius around the close inside which a level is in
+	// play at all. Without it a violent bar clears several levels at once and
+	// the strategy would fire on whichever it happened to iterate first.
+	ProximityATR float64 `toml:"proximity_atr"`
+
+	// UseHTFConfirm requires the pivot to coincide with a higher-timeframe
+	// swing zone before it may be traded. Default true.
+	UseHTFConfirm   *bool   `toml:"use_htf_confirm"`
+	HTFLookbackDays int     `toml:"htf_lookback_days"` // daily bars scanned, default 20
+	SwingStrength   int     `toml:"swing_strength"`    // bars either side of a swing, default 2
+	ZoneWidthPct    float64 `toml:"zone_width_pct"`    // cluster width as % of price, default 0.15
+	MinZoneTouches  int     `toml:"min_zone_touches"`  // swings needed to form a zone, default 1
+
+	// MinRoomATR rejects a trade whose nearest opposing higher-timeframe zone
+	// sits closer than this many ATR ahead of entry -- the "thesis does not
+	// break" gate. Nil takes the default; an explicit 0 disables it.
+	MinRoomATR *float64 `toml:"min_room_atr"`
+
+	// MinATRPct is a volatility floor as a percent of price. The
+	// stock-calibrated 0.15 rejects every bar on an index, whose 5-minute ATR
+	// runs 0.076% (NIFTY) to 0.083% (SENSEX) of price.
+	MinATRPct float64 `toml:"min_atr_pct"`
+
+	// SLATRMult and TPATRMult place the stop and the target this many ATR from
+	// entry, the 1.5 : 3 of the specification. TPATRMult is a pointer because
+	// an explicit 0 means "no target, exit on the trail or the square-off",
+	// which is a setting rather than an absence.
+	SLATRMult float64  `toml:"sl_atr_mult"`
+	TPATRMult *float64 `toml:"tp_atr_mult"`
+	// TrailATRMult arms a chandelier trail at this distance, measured from the
+	// best price reached since entry. It replaced the fixed target: on a
+	// matched entry list a 1.5 or 2.0 ATR trail is decisively negative
+	// (-2.0 to -2.8 bps, t = -2.0), 3.0 recovers most of the way back, and no
+	// trail at all is marginally better still. 3.0 is the shipped value.
+	//
+	// A pointer for the same reason TPATRMult is: an explicit 0 means "no
+	// trail, keep the initial stop", which is a setting rather than an absence,
+	// and with a plain float64 the non-zero default would always win.
+	TrailATRMult *float64 `toml:"trail_atr_mult"`
+
+	// EntryStartMin skips the opening auction noise; EntryCutoffMin is the last
+	// minute a new entry may trigger; SquareOffMin is the hard flatten. Minutes
+	// from midnight IST: 570 = 09:30, 871 = 14:31, 897 = 14:57.
+	EntryStartMin  int `toml:"entry_start_min"`
+	EntryCutoffMin int `toml:"entry_cutoff_min"`
+	SquareOffMin   int `toml:"squareoff_min"`
+
+	// MaxCapitalPerTrade overrides [engine].max_capital_per_trade for this
+	// strategy only, for the reason Donchian has the same knob: the engine's
+	// cap is calibrated for cash equities, and an index priced above it floors
+	// quantity to zero and produces no trades at all rather than smaller ones.
+	MaxCapitalPerTrade  int64   `toml:"max_capital_per_trade"`
+	RiskPct             float64 `toml:"risk_pct"`
+	MaxDailyLossPct     float64 `toml:"max_daily_loss_pct"`
+	MaxConcurrent       int     `toml:"max_concurrent"`
+	MaxEntriesPerSymbol int     `toml:"max_entries_per_symbol"`
+	// MaxEntriesPerLevel caps how often one level may be traded in a session,
+	// so a price oscillating around its own pivot cannot spend the whole day's
+	// budget by itself. A pointer because an explicit 0 means "uncapped",
+	// which is a setting rather than an absence.
+	MaxEntriesPerLevel *int `toml:"max_entries_per_level"`
+
+	AllowShort *bool `toml:"allow_short"`
+
+	// Option-execution knobs, mirrored by cmd/optbt flags in backtest.
+	TargetDelta           float64 `toml:"target_delta"`
+	TargetDeltaNearExpiry float64 `toml:"target_delta_near_expiry"`
+	MinDaysToExpiry       *int    `toml:"min_days_to_expiry"`
+}
+
+// DefaultSRTPATRMult is the target distance used when tp_atr_mult is absent.
+//
+// 6 ATR, which is far enough to be nearly harmless and close enough to still do
+// something. On a matched 120-trade entry list the target does not change WHICH
+// trades win -- the win rate is 36.7% and the stop-out count is exactly 72 at
+// every setting from 4 ATR out -- it only truncates how much the winners make:
+// the largest winner is capped at 72 bps by a 3 ATR target against 112 bps
+// everywhere else. So a tight target is pure amputation (3 ATR costs 2.6 of the
+// 3.9 bps available) and the curve flattens once the target stops binding.
+//
+// 6 was chosen over 8 on bind rate, not on the point estimate. 8 fires on 5 of
+// 120 trades, which is decoration -- the no-target case wearing a target --
+// while 6 fires on 10-11 and actually caps the tail risk of running to the
+// 14:57 bell. On the shipped 3 ATR trail, 6 is also the better of the two out
+// of sample (+4.39 vs +4.03 bps); 8's higher full-sample figure is +0.37 bps
+// off five trades, which is the kind of edge this repo has repeatedly watched
+// evaporate.
+const DefaultSRTPATRMult = 6.0
+
+// DefaultSRMinRoomATR is the room-to-target gate used when min_room_atr is
+// absent. Zero -- the gate off -- because it measured inert: 0, 1 and 2 ATR
+// agree within a quarter of a standard error, and every recorded srlevels
+// figure was measured with it off.
+const DefaultSRMinRoomATR = 0.0
+
+// DefaultSRMaxEntriesPerLevel is the per-level entry cap used when
+// max_entries_per_level is absent.
+const DefaultSRMaxEntriesPerLevel = 2
+
+// DefaultSRTrailATRMult is the chandelier trail distance used when
+// trail_atr_mult is absent.
+const DefaultSRTrailATRMult = 3.0
+
+// SRTrailMult resolves the trail distance: an explicit value (0 meaning "no
+// trail") wins, and a nil pointer means the key was absent.
+func (c SRLevelsConfig) SRTrailMult() float64 {
+	if c.TrailATRMult == nil {
+		return DefaultSRTrailATRMult
+	}
+	return *c.TrailATRMult
+}
+
+// EntriesPerLevel resolves the per-level cap: an explicit value (0 meaning
+// uncapped) wins, and a nil pointer means the key was absent.
+func (c SRLevelsConfig) EntriesPerLevel() int {
+	if c.MaxEntriesPerLevel == nil {
+		return DefaultSRMaxEntriesPerLevel
+	}
+	return *c.MaxEntriesPerLevel
+}
+
+// TPMult resolves the target distance: an explicit value (0 included) wins, and
+// a nil pointer means the key was absent and takes the default.
+func (c SRLevelsConfig) TPMult() float64 {
+	if c.TPATRMult == nil {
+		return DefaultSRTPATRMult
+	}
+	return *c.TPATRMult
+}
+
+// RoomATR resolves the room-to-target gate on the same rule.
+func (c SRLevelsConfig) RoomATR() float64 {
+	if c.MinRoomATR == nil {
+		return DefaultSRMinRoomATR
+	}
+	return *c.MinRoomATR
+}
+
+func DefaultSRLevelsConfig() SRLevelsConfig {
+	return SRLevelsConfig{
+		Timeframe: "5m",
+		// NIFTY only. SENSEX was measured alongside it and produced 29
+		// priceable option trades against NIFTY's 80 — too few to read, and
+		// its held-out window disagreed in sign, which is the "one flat result
+		// sampled twice" pattern rather than two markets disagreeing.
+		CSVFile:     "nifty.csv",
+		Limit:       1,
+		PivotMethod: string(indicators.PivotTraditional),
+		ATRPeriod:   9,
+
+		BreakBufferATR: 0.10,
+		TouchATR:       0.25,
+		ProximityATR:   1.0,
+
+		UseHTFConfirm:   boolPtr(true),
+		HTFLookbackDays: 20,
+		SwingStrength:   2,
+		ZoneWidthPct:    0.15,
+		MinZoneTouches:  1,
+		MinRoomATR:      floatPtr(DefaultSRMinRoomATR),
+
+		MinATRPct: 0.03,
+
+		SLATRMult: 1.5,
+		// A far target plus a 3 ATR chandelier trail. Both are deliberately
+		// loose: every tight version of either measured decisively worse, and
+		// the trail at 1.5-2.0 ATR is negative outright.
+		TPATRMult:    floatPtr(DefaultSRTPATRMult),
+		TrailATRMult: floatPtr(DefaultSRTrailATRMult),
+
+		EntryStartMin:  9*60 + 30,
+		EntryCutoffMin: 14*60 + 31,
+		SquareOffMin:   14*60 + 57,
+
+		// Sized for the indices this strategy is specified on: enough for one
+		// SENSEX unit at ~78,000 and still far below the 5L the backtester
+		// funds an account with, above which SimBroker silently drops longs.
+		MaxCapitalPerTrade:    150000,
+		RiskPct:               0.5,
+		MaxDailyLossPct:       2.0,
+		MaxConcurrent:         5,
+		// ONE entry per session, measured rather than assumed. Until the
+		// re-entry bug was fixed (2026-08-31) this knob was inert -- openValid
+		// never cleared, so the strategy took one trade a day whatever the
+		// value. With it working, the second entry of a day is the worst
+		// number this strategy produces: -6.76 bps on 44 trades at t = -2.28,
+		// 18% win rate, PF 0.43, and negative in BOTH windows. That is not
+		// noise, and it has a mechanism -- a second entry only happens after
+		// the first was stopped out, i.e. after the day has already shown that
+		// its levels are not holding.
+		//
+		// Note this is the OPPOSITE of Donchian's finding, where a cap of 1
+		// makes an early entry displace a better later one. Donchian re-enters
+		// after an opposite-band exit (a thesis change); this strategy would
+		// re-enter after a stop-out (a thesis failure).
+		MaxEntriesPerSymbol:   1,
+		MaxEntriesPerLevel:    intPtr(DefaultSRMaxEntriesPerLevel),
+		AllowShort:            boolPtr(true),
+		TargetDelta:           0.80,
+		TargetDeltaNearExpiry: 0.90,
+		// 0, not Donchian's 2. Donchian's -1571 bps expiry-day figure was
+		// measured at 0.75 delta, where the expiry-morning strike is nearly
+		// worthless. On this trade list at 0.80 delta, DTE 0 is the BEST
+		// bucket (+523 to +711 net premium bps on 12 trades) while DTE 1-3 are
+		// negative, so skipping expiry week here would cut the good bucket and
+		// keep the bad ones. Twelve trades a bucket is noise; the honest
+		// reading is that the skip is not justified on this strategy, not that
+		// expiry day is good.
+		MinDaysToExpiry: intPtr(0),
 	}
 }
 
@@ -889,6 +1141,104 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Donchian.ExitOnOppositeBreak == nil {
 		config.Donchian.ExitOnOppositeBreak = dcD.ExitOnOppositeBreak
+	}
+
+	// SRLevels defaults. The pointer knobs (use_htf_confirm, min_room_atr,
+	// tp_atr_mult, allow_short, min_days_to_expiry) are filled only when nil,
+	// so an explicit 0/false in the TOML survives.
+	srD := DefaultSRLevelsConfig()
+	if config.SRLevels.Timeframe == "" {
+		config.SRLevels.Timeframe = srD.Timeframe
+	}
+	if config.SRLevels.CSVFile == "" {
+		config.SRLevels.CSVFile = srD.CSVFile
+	}
+	if config.SRLevels.Limit == 0 {
+		config.SRLevels.Limit = srD.Limit
+	}
+	if config.SRLevels.PivotMethod == "" {
+		config.SRLevels.PivotMethod = srD.PivotMethod
+	}
+	if config.SRLevels.ATRPeriod == 0 {
+		config.SRLevels.ATRPeriod = srD.ATRPeriod
+	}
+	if config.SRLevels.BreakBufferATR == 0 {
+		config.SRLevels.BreakBufferATR = srD.BreakBufferATR
+	}
+	if config.SRLevels.TouchATR == 0 {
+		config.SRLevels.TouchATR = srD.TouchATR
+	}
+	if config.SRLevels.ProximityATR == 0 {
+		config.SRLevels.ProximityATR = srD.ProximityATR
+	}
+	if config.SRLevels.UseHTFConfirm == nil {
+		config.SRLevels.UseHTFConfirm = srD.UseHTFConfirm
+	}
+	if config.SRLevels.HTFLookbackDays == 0 {
+		config.SRLevels.HTFLookbackDays = srD.HTFLookbackDays
+	}
+	if config.SRLevels.SwingStrength == 0 {
+		config.SRLevels.SwingStrength = srD.SwingStrength
+	}
+	if config.SRLevels.ZoneWidthPct == 0 {
+		config.SRLevels.ZoneWidthPct = srD.ZoneWidthPct
+	}
+	if config.SRLevels.MinZoneTouches == 0 {
+		config.SRLevels.MinZoneTouches = srD.MinZoneTouches
+	}
+	if config.SRLevels.MinRoomATR == nil {
+		config.SRLevels.MinRoomATR = srD.MinRoomATR
+	}
+	if config.SRLevels.MinATRPct == 0 {
+		config.SRLevels.MinATRPct = srD.MinATRPct
+	}
+	if config.SRLevels.SLATRMult == 0 {
+		config.SRLevels.SLATRMult = srD.SLATRMult
+	}
+	if config.SRLevels.TPATRMult == nil {
+		config.SRLevels.TPATRMult = srD.TPATRMult
+	}
+	if config.SRLevels.TrailATRMult == nil {
+		config.SRLevels.TrailATRMult = srD.TrailATRMult
+	}
+	if config.SRLevels.EntryStartMin == 0 {
+		config.SRLevels.EntryStartMin = srD.EntryStartMin
+	}
+	if config.SRLevels.EntryCutoffMin == 0 {
+		config.SRLevels.EntryCutoffMin = srD.EntryCutoffMin
+	}
+	if config.SRLevels.SquareOffMin == 0 {
+		config.SRLevels.SquareOffMin = srD.SquareOffMin
+	}
+	if config.SRLevels.MaxCapitalPerTrade == 0 {
+		config.SRLevels.MaxCapitalPerTrade = srD.MaxCapitalPerTrade
+	}
+	if config.SRLevels.RiskPct == 0 {
+		config.SRLevels.RiskPct = srD.RiskPct
+	}
+	if config.SRLevels.MaxDailyLossPct == 0 {
+		config.SRLevels.MaxDailyLossPct = srD.MaxDailyLossPct
+	}
+	if config.SRLevels.MaxConcurrent == 0 {
+		config.SRLevels.MaxConcurrent = srD.MaxConcurrent
+	}
+	if config.SRLevels.MaxEntriesPerSymbol == 0 {
+		config.SRLevels.MaxEntriesPerSymbol = srD.MaxEntriesPerSymbol
+	}
+	if config.SRLevels.MaxEntriesPerLevel == nil {
+		config.SRLevels.MaxEntriesPerLevel = srD.MaxEntriesPerLevel
+	}
+	if config.SRLevels.AllowShort == nil {
+		config.SRLevels.AllowShort = srD.AllowShort
+	}
+	if config.SRLevels.TargetDelta == 0 {
+		config.SRLevels.TargetDelta = srD.TargetDelta
+	}
+	if config.SRLevels.TargetDeltaNearExpiry == 0 {
+		config.SRLevels.TargetDeltaNearExpiry = srD.TargetDeltaNearExpiry
+	}
+	if config.SRLevels.MinDaysToExpiry == nil {
+		config.SRLevels.MinDaysToExpiry = srD.MinDaysToExpiry
 	}
 
 	// Upstox gate defaults. AccessToken and BlockKeywords are intentionally
