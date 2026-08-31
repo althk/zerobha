@@ -1304,6 +1304,56 @@ zero is a meaningful setting must be a pointer.** Regression test:
 that never lift ADX over the gate. Same trap CLAUDE.md already records for tests
 inheriting defaults; the fix is to pin, not to soften the default.
 
+### Expiry week only — measured and REVERTED (2026-08-31)
+
+The idea was to flip `min_days_to_expiry` into a MAXIMUM and trade expiry week
+only, at 0.85 delta. Measured with a throwaway `optbt -max-dte N` flag (the
+mirror of `-min-dte`: drop trades whose nearest weekly expiry is MORE than N
+days away). It is worse than what it excludes, so the flag was reverted and the
+code is not in the tree. To re-derive, add the same three lines `-min-dte` uses
+in `cmd/optbt/main.go` with the comparison flipped.
+
+**Watch `-delta-near-expiry`.** It defaults to 0.90 and overrides `-delta` at
+DTE <= 3 — which under `-max-dte 3` is *every* trade, so `-delta 0.85` alone
+silently buys 0.90. Both flags must be set to the same value to test one delta.
+
+1,500 index trades (733 sessions, reference config: lookback 30 / ATR 9 / SL 3 /
+trail 3 / ADX 15-14), `-lots 10`, 20-tick spread, `-delta 0.85` both flags.
+"Complement" is `-min-dte 4`, the exact set `-max-dte 3` throws away:
+
+| Index | Set | n | Index bps | t | NET prem bps | t | OOS NET | PF |
+|---|---|---|---|---|---|---|---|---|
+| NIFTY | expiry week (<=3 DTE) | 293 | +2.53 | 1.41 | **+9.4** | 0.04 | **-198.3** | 0.86 |
+| NIFTY | complement (>=4 DTE) | 192 | +5.12 | 2.22 | +149.5 | 1.22 | +77.4 | 1.34 |
+| SENSEX | expiry week (<=3 DTE) | 324 | +2.83 | 1.57 | **+122.6** | 0.63 | **+1.5** | 1.14 |
+| SENSEX | complement (>=4 DTE) | 147 | +4.18 | 1.63 | +446.6 | 3.23 | +269.9 | 2.20 |
+
+**Expiry week is the worse half on both indices, and the reason is the SIGNAL,
+not the option.** The index edge on expiry-week days is +2.5 / +2.8 bps against
++5.1 / +4.2 on the rest — below the ~3.1-3.5 bps break-even the option leg
+needs, so the premium result is roughly zero on SENSEX and negative out of
+sample on NIFTY. Nothing about the contract choice can recover that.
+
+Strike depth inside expiry week is the same non-lever it is everywhere else
+(NET bps, ALL / OOS): NIFTY -81/-393 at 0.70, -8/-202 at 0.80, +9/-198 at 0.85,
++25/-168 at 0.90, +41/-117 at 0.95; SENSEX +131/-12, +147/-18, +123/+2,
++147/+4, +218/+71. Deeper is mildly better and every OOS cell is within noise of
+zero. **Do not read the 0.95 rows** — the SENSEX 0.95 contract prices at
+*negative* time value on average (1,271.7 premium against 1,275 intrinsic),
+which is a stale print in an illiquid deep strike, and 34 of 329 trades drop out
+for want of a quote.
+
+The per-DTE buckets flatly contradict each other across the two indices
+(NIFTY DTE 0 +292 bps / DTE 1 -279; SENSEX DTE 0 -241 / DTE 1 +460), so there is
+no "best day of expiry week" to find here — and the two indices do not even
+share an expiry weekday, so the buckets are not the same thing. This also
+supersedes the -1571 bps DTE-0 figure recorded under `-min-dte`: that was
+measured at 0.75 delta, where the expiry-morning strike is nearly worthless. At
+0.85 delta DTE 0 is not uniformly catastrophic, merely random.
+
+Verdict: keep `min_days_to_expiry = 2`. No config knob was added, the live
+selector was not changed, and the measurement flag was removed after the run.
+
 ## Paper trading
 
 `-paper`, or `paper_trading = true`, swaps `broker.PaperAdapter` in for the
