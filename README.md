@@ -94,6 +94,19 @@ go run ./cmd/histdl -csv high_beta_stocks.csv -interval 5minute -days 400
 go run ./cmd/backtest -csv high_beta_stocks.csv -timeframe 5minute -cost-bps 3
 ```
 
+### Deployment
+
+`./zerobha.sh` builds the Docker image and drives a remote Debian VM over SSH
+from your own machine — no separate `ssh` session or manual `scp` of the
+script needed. See [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) for the full
+walkthrough (VM setup, Google Drive backups, Kite login via an SSH
+`LocalForward`); the short version:
+
+```bash
+./zerobha.sh setup user@vm    # one-time: Docker, rclone, backup cron
+./zerobha.sh deploy user@vm   # build, ship and start the container
+```
+
 ### Stock Selection Pipeline
 
 Build a sector-aware watchlist before market open:

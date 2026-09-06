@@ -1,19 +1,97 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# Zerobha VM Operations Script
-# All-in-one management: Prerequisites, Docker lifecycle, and Cloud Backups
-# ==============================================================================
+# Build/ship/run zerobha on a remote Debian 12 VM over SSH, from your local
+# machine. Modelled on chartinkbot's deploy.sh — nothing here runs commands
+# directly on the VM by hand any more; every command is invoked locally and
+# does its remote work over ssh.
+#
+# Usage: ./zerobha.sh <command> [user@host]
+#   build         Build the docker image locally
+#   save          Build (if needed) and save+gzip the image to a local tar.gz
+#   copy          scp the saved image to the remote VM
+#   run           Load the image on the remote VM and (re)start the container
+#   deploy        save + copy + run, in order
+#   restart       Restart the container on the remote VM without reloading the image
+#   stop          Stop the container on the remote VM
+#   logs          Tail the container's logs on the remote VM (Ctrl-C to detach)
+#   status        Show system time, container status, data dir and backup cron
+#   setup         One-time VM prep: timezone, packages, Docker, dirs, backup
+#                 script + cron (alias: setup-prereqs)
+#   rclone-setup  Interactive `rclone config` on the remote VM, to link Google Drive
+#   backup        Run the installed backup script on the remote VM immediately
+#
+# Every command except build and save takes the target host as its second
+# argument, e.g. `./zerobha.sh run user@vm`. It falls back to $REMOTE_HOST when
+# the argument is omitted, so exporting it once per shell saves retyping it.
+#
+# Examples:
+#   ./zerobha.sh deploy user@vm
+#   REMOTE_HOST=user@vm ./zerobha.sh logs
+#
+# Configure via environment variables (all have defaults, override as needed):
+#   IMAGE_NAME     Local image name/tag                       (default: zerobha:latest)
+#   TAR_FILE       Local path for the saved image              (default: ./zerobha.tar.gz)
+#   REMOTE_DIR     Base dir on the remote VM (data/logs/backup) (default: /opt/zerobha)
+#   CONTAINER_NAME Name of the running container                (default: zerobha)
+#   SSH_PORT       SSH port                                     (default: 22)
+#   SSH_OPTS       Extra ssh/scp options (space-separated)
+#                  (default: -o ClearAllForwardings=yes)
+#   CONTAINER_TZ   Container timezone (log timestamps)          (default: Asia/Kolkata)
+#   GDRIVE_REMOTE  rclone remote name for backups                (default: gdrive)
+#
+# REMOTE_DIR must be an ABSOLUTE path: every remote command quotes it, so a
+# leading ~ reaches the VM literally instead of expanding to $HOME.
+#
+# Unlike chartinkbot, zerobha's config is BAKED INTO THE IMAGE — the Dockerfile
+# does `COPY config.local.toml`, so there is no config file to ship separately
+# and no bind mount for it (`copy` only ships the image tarball). Changing the
+# config means editing config.local.toml, then `./zerobha.sh deploy` again.
+#
+# The container is NOT run with --network host (unlike chartinkbot): it
+# publishes -p 9880 (Kite auth callback) and -p 9080 (dashboard) explicitly,
+# and bind-mounts $REMOTE_DIR/data and $REMOTE_DIR/logs at /app/data and
+# /app/logs. Both ports bind 0.0.0.0 and the dashboard has no auth — see
+# DEPLOYMENT_GUIDE.md before exposing a cloud VM's ports to the internet.
+#
+# The backup schedule has to keep running on the VM with nothing scp'd there
+# but the image, so `setup` writes a small self-contained backup.sh directly
+# on the VM (piped over ssh, not templated through a second layer of heredoc
+# escaping) and installs its cron entry idempotently. `backup` just runs it.
 
-set -eo pipefail
+set -euo pipefail
 
-BASE_DIR="/opt/zerobha"
-DATA_DIR="${BASE_DIR}/data"
-LOGS_DIR="${BASE_DIR}/logs"
-CONTAINER_NAME="zerobha"
-IMAGE_NAME="zerobha:latest"
-GDRIVE_REMOTE="${GDRIVE_REMOTE:-gdrive}" # change or pass GDRIVE_REMOTE=myremote
+COMMAND="${1:-}"
+IMAGE_NAME="${IMAGE_NAME:-zerobha:latest}"
+TAR_FILE="${TAR_FILE:-./zerobha.tar.gz}"
+# The target host is the second argument; $REMOTE_HOST remains a fallback so
+# an exported value still works when the argument is omitted.
+REMOTE_HOST="${2:-${REMOTE_HOST:-}}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/zerobha}"
+CONTAINER_NAME="${CONTAINER_NAME:-zerobha}"
+SSH_PORT="${SSH_PORT:-22}"
+# Renamed from TZ, which is a standard exported env var — an operator with TZ
+# already set in their shell would otherwise silently ship a different
+# container timezone than the documented Asia/Kolkata, and IST is load-bearing
+# for this bot's market-hours logic.
+CONTAINER_TZ="${CONTAINER_TZ:-Asia/Kolkata}"
+GDRIVE_REMOTE="${GDRIVE_REMOTE:-gdrive}"
+# Defaults to clearing all port forwardings: this script never needs one of
+# its own, and a ~/.ssh/config with permanent LocalForward entries (e.g. for
+# the Kite callback on 9880 and the dashboard on 9080) would otherwise try to
+# rebind those local ports on every ssh/scp this script makes, emitting
+# "Address already in use" / "Could not request local forwarding" once an
+# interactive session already holds them. This only affects the script's own
+# connections — a plain `ssh myvm` still gets its forwards untouched. Only
+# build the array when SSH_OPTS is non-empty; `IFS=' ' read -r -a SSH_OPTS <<<
+# ""` would otherwise yield a 1-element array containing an empty string and
+# pass a stray empty argument to ssh/scp.
+SSH_OPTS_RAW="${SSH_OPTS-"-o ClearAllForwardings=yes"}"
+if [[ -n "$SSH_OPTS_RAW" ]]; then
+  IFS=' ' read -r -a SSH_OPTS <<< "$SSH_OPTS_RAW"
+else
+  SSH_OPTS=()
+fi
 
-# Colors for terminal output
+# Colors for local terminal output only — nothing below runs on the VM.
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -25,306 +103,334 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-ensure_dirs() {
-    sudo mkdir -p "${DATA_DIR}" "${LOGS_DIR}"
-    sudo chown -R "$USER":"$USER" "${BASE_DIR}" 2>/dev/null || true
+require_remote_host() {
+  if [[ -z "$REMOTE_HOST" ]]; then
+    log_error "no target host given (expected './zerobha.sh $COMMAND user@host')"
+    exit 1
+  fi
 }
 
-# ------------------------------------------------------------------------------
-# 1. Setup Prerequisites on Host (Debian 12)
-# ------------------------------------------------------------------------------
-cmd_setup_prereqs() {
-    log_info "Setting up prerequisites on Debian 12..."
-
-    # 1. Set System Timezone to IST (UTC+0530)
-    log_info "Configuring timezone to Asia/Kolkata (IST)..."
-    sudo timedatectl set-timezone Asia/Kolkata
-    log_success "Timezone set to $(timedatectl show --property=Timezone --value)"
-
-    # 2. Update package list & install core utilities
-    log_info "Installing core packages (sqlite3, rclone, curl, gzip, ca-certificates)..."
-    sudo apt-get update -y
-    sudo apt-get install -y sqlite3 rclone curl gzip ca-certificates apt-transport-https gnupg lsb-release
-
-    # 3. Install Docker if not present
-    if ! command -v docker &> /dev/null; then
-        log_info "Docker not found. Installing official Docker..."
-        curl -fsSL https://get.docker.com | sudo sh
-        sudo usermod -aG docker "$USER" || true
-        sudo systemctl enable --now docker
-        log_success "Docker installed successfully."
-        log_warn "Note: You may need to logout and log back in for docker group permissions."
-    else
-        log_info "Docker is already installed."
-    fi
-
-    # 4. Create required directories
-    ensure_dirs
-    log_success "Created directory structure at ${BASE_DIR}"
-
-    # 5. Configure automated cron backup at 15:45 IST (Mon-Fri)
-    local script_path
-    script_path=$(realpath "$0")
-    local cron_job="45 15 * * 1-5 ${script_path} backup >> ${LOGS_DIR}/backup.log 2>&1"
-
-    if crontab -l 2>/dev/null | grep -F "${script_path} backup" > /dev/null; then
-        log_info "Cron backup job already exists."
-    else
-        log_info "Adding 15:45 IST daily post-market backup to crontab..."
-        (crontab -l 2>/dev/null || true; echo "${cron_job}") | crontab -
-        log_success "Automated cron backup scheduled."
-    fi
-
-    echo ""
-    log_success "============================================================"
-    log_success "Prerequisites setup complete!"
-    log_success "Next steps:"
-    log_success "  1. Run '${script_path} rclone-setup' to link Google Drive"
-    log_success "  2. Run '${script_path} docker-load zerobha.tar.gz'"
-    log_success "  3. Run '${script_path} docker-run' to start trading"
-    log_success "============================================================"
+cmd_build() {
+  log_info "Building image $IMAGE_NAME"
+  docker build -t "$IMAGE_NAME" .
 }
 
-# ------------------------------------------------------------------------------
-# 2. Rclone Google Drive Setup
-# ------------------------------------------------------------------------------
-cmd_rclone_setup() {
-    log_info "Starting interactive rclone Google Drive configuration..."
-    log_info "When prompted:"
-    log_info "  - Name: 'gdrive'"
-    log_info "  - Storage type: 'drive' (Google Drive)"
-    log_info "  - Follow on-screen instructions to authorize your Google Account."
-    echo ""
-    rclone config
+cmd_save() {
+  cmd_build
+  log_info "Saving image to $TAR_FILE"
+  docker save "$IMAGE_NAME" | gzip > "$TAR_FILE"
 }
 
-# ------------------------------------------------------------------------------
-# 3. Docker Image Load
-# ------------------------------------------------------------------------------
-cmd_docker_load() {
-    local requested="${1:-zerobha.tar.gz}"
-
-    # An uncompressed sibling is preferred: it loads directly, no gunzip.
-    local uncompressed="${requested}"
-    case "${requested}" in
-        *.tgz) uncompressed="${requested%.tgz}.tar" ;;
-        *.gz)  uncompressed="${requested%.gz}" ;;
-    esac
-
-    local tar_file=""
-    local dir candidate
-    for dir in "" "$HOME/" "${BASE_DIR}/"; do
-        for candidate in "${uncompressed}" "${requested}"; do
-            if [ -f "${dir}${candidate}" ]; then
-                tar_file="${dir}${candidate}"
-                break 2
-            fi
-        done
-    done
-
-    if [ -z "${tar_file}" ]; then
-        log_error "Docker archive '${requested}' not found."
-        log_info "Usage: $0 docker-load [path_to_zerobha.tar.gz]"
-        exit 1
-    fi
-
-    case "${tar_file}" in
-        *.gz|*.tgz)
-            local decompressed="${tar_file%.gz}"
-            case "${tar_file}" in
-                *.tgz) decompressed="${tar_file%.tgz}.tar" ;;
-            esac
-            log_info "Decompressing '${tar_file}' to '${decompressed}'..."
-            gunzip -c "${tar_file}" > "${decompressed}"
-            tar_file="${decompressed}"
-            ;;
-    esac
-
-    log_info "Loading Docker image from '${tar_file}'..."
-    docker load < "${tar_file}"
-    log_success "Docker image '${IMAGE_NAME}' loaded."
+cmd_copy() {
+  require_remote_host
+  if [[ ! -f "$TAR_FILE" ]]; then
+    log_error "$TAR_FILE not found, run './zerobha.sh save' first"
+    exit 1
+  fi
+  log_info "Creating $REMOTE_DIR on $REMOTE_HOST"
+  # /opt requires root, so this needs sudo; chown hands the dir back to the
+  # login user so later steps (copy, run) don't need sudo themselves. -t
+  # allocates a pty so sudo can prompt for a password on a VM without
+  # passwordless sudo — without it there's no tty for sudo to read from and
+  # the command just hangs or fails.
+  ssh -t "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" \
+    "sudo mkdir -p '$REMOTE_DIR' && sudo chown \"\$USER\":\"\$USER\" '$REMOTE_DIR'"
+  log_info "Copying $TAR_FILE to $REMOTE_HOST:$REMOTE_DIR/"
+  scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "$TAR_FILE" "$REMOTE_HOST:$REMOTE_DIR/"
 }
 
-# ------------------------------------------------------------------------------
-# 4. Docker Run / Start / Restart / Stop / Logs
-# ------------------------------------------------------------------------------
-cmd_docker_run() {
-    ensure_dirs
-
-    # Stop and remove existing container if running
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log_info "Stopping and removing existing '${CONTAINER_NAME}' container..."
-        docker stop "${CONTAINER_NAME}" &>/dev/null || true
-        docker rm "${CONTAINER_NAME}" &>/dev/null || true
-    fi
-
-    log_info "Starting '${CONTAINER_NAME}' container on ports 9880 (Kite Auth) and 9080 (Web Dashboard)..."
-    docker run -d \
-        --name "${CONTAINER_NAME}" \
-        --restart unless-stopped \
-        -p 9880:9880 \
-        -p 9080:9080 \
-        -v "${LOGS_DIR}:/app/logs" \
-        -v "${DATA_DIR}:/app/data" \
-        "${IMAGE_NAME}"
-
-    log_success "Container '${CONTAINER_NAME}' started successfully."
-    log_info "  - Web Dashboard: http://localhost:9080 (or http://VM_IP:9080)"
-    log_info "  - Kite Auth Callback: http://localhost:9880/auth/kite/callback"
-    log_info "Run '$0 logs' to view live trading output."
+cmd_run() {
+  require_remote_host
+  local tar_basename
+  tar_basename="$(basename "$TAR_FILE")"
+  log_info "Loading image and (re)starting container on $REMOTE_HOST"
+  # shellcheck disable=SC2087
+  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" bash -s <<EOF
+set -euo pipefail
+REMOTE_DIR="$REMOTE_DIR"
+cd "\$REMOTE_DIR"
+mkdir -p data logs
+case "$tar_basename" in
+  *.gz|*.tgz) gunzip -c "$tar_basename" | docker load ;;
+  *)          docker load -i "$tar_basename" ;;
+esac
+docker stop "$CONTAINER_NAME" 2>/dev/null || true
+docker rm "$CONTAINER_NAME" 2>/dev/null || true
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  -e TZ="$CONTAINER_TZ" \
+  -p 9880:9880 \
+  -p 9080:9080 \
+  -v "\$REMOTE_DIR/data:/app/data" \
+  -v "\$REMOTE_DIR/logs:/app/logs" \
+  "$IMAGE_NAME"
+EOF
+  # Strip any "user@" prefix for display — $REMOTE_HOST is the ssh target
+  # (user@host), and interpolating it as-is into a URL produces
+  # http://user@vm:9080, which is not a usable link.
+  local display_host="${REMOTE_HOST##*@}"
+  log_success "Container started."
+  log_info "  Dashboard:          http://$display_host:9080 (reach it through an SSH LocalForward in your ~/.ssh/config)"
+  # This is the URL registered with Kite and reached via the ssh forward from
+  # localhost, not the VM's own address — printing the VM host here would be
+  # actively misleading.
+  log_info "  Kite auth callback: http://localhost:9880/auth/kite/callback"
+  log_info "Use './zerobha.sh logs $REMOTE_HOST' to follow output."
 }
 
-cmd_docker_stop() {
-    log_info "Stopping '${CONTAINER_NAME}' container..."
-    docker stop "${CONTAINER_NAME}"
-    log_success "Container stopped."
+cmd_deploy() {
+  # Check the host before the (slow) build — cmd_copy would catch a missing
+  # host too, but only after cmd_save has already built and gzipped the image.
+  require_remote_host
+  cmd_save
+  cmd_copy
+  cmd_run
 }
 
-cmd_docker_restart() {
-    log_info "Restarting '${CONTAINER_NAME}' container..."
-    docker restart "${CONTAINER_NAME}"
-    log_success "Container restarted."
+cmd_restart() {
+  require_remote_host
+  log_info "Restarting container on $REMOTE_HOST (no image reload)"
+  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" "docker restart $CONTAINER_NAME"
 }
 
-cmd_docker_logs() {
-    docker logs -f "${CONTAINER_NAME}"
+cmd_stop() {
+  require_remote_host
+  log_info "Stopping container on $REMOTE_HOST"
+  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" "docker stop $CONTAINER_NAME"
+}
+
+cmd_logs() {
+  require_remote_host
+  # -t so Ctrl-C detaches the local terminal cleanly instead of hanging the
+  # remote `docker logs -f` in the background.
+  ssh -t "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" "docker logs -f $CONTAINER_NAME"
 }
 
 cmd_status() {
-    echo -e "${BLUE}=== System Time & Timezone ===${NC}"
-    timedatectl | grep -E "Local time|Time zone" || date
-    echo ""
-    echo -e "${BLUE}=== Docker Container Status ===${NC}"
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}\t{{.Image}}"
-    else
-        log_warn "Container '${CONTAINER_NAME}' is not created or running."
-    fi
-    echo ""
-    echo -e "${BLUE}=== Data & Storage ===${NC}"
-    ls -lh "${DATA_DIR}" 2>/dev/null || true
-    echo ""
-    echo -e "${BLUE}=== Crontab Backup Jobs ===${NC}"
-    crontab -l 2>/dev/null | grep "backup" || log_warn "No backup cron job configured."
-}
-
-# ------------------------------------------------------------------------------
-# 5. Cloud Backup to Google Drive
-# ------------------------------------------------------------------------------
-cmd_backup() {
-    local date_str
-    date_str=$(date +'%Y-%m-%d_%H%M%S')
-    local date_day
-    date_day=$(date +'%Y-%m-%d')
-    local backup_tmp="/tmp/zerobha_backup_${date_str}"
-
-    mkdir -p "${backup_tmp}"
-    log_info "[$(date)] Starting backup process..."
-
-    # 1. Safe SQLite snapshot (zero transaction corruption risk)
-    local db_path="${DATA_DIR}/zerobha.db"
-    if [ -f "${db_path}" ]; then
-        log_info "Creating online SQLite database snapshot..."
-        sqlite3 "${db_path}" ".backup '${backup_tmp}/zerobha_${date_day}.db'"
-    elif [ -f "${BASE_DIR}/zerobha.db" ]; then
-        sqlite3 "${BASE_DIR}/zerobha.db" ".backup '${backup_tmp}/zerobha_${date_day}.db'"
-    else
-        log_warn "No SQLite database found at ${db_path} yet (skipping DB snapshot)."
-    fi
-
-    # 2. Capture Docker & system logs
-    log_info "Gathering logs..."
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        docker logs "${CONTAINER_NAME}" > "${backup_tmp}/docker_${CONTAINER_NAME}_${date_day}.log" 2>&1 || true
-    fi
-    if [ -d "${LOGS_DIR}" ]; then
-        cp -r "${LOGS_DIR}/"* "${backup_tmp}/" 2>/dev/null || true
-    fi
-
-    # 3. Compress text logs
-    for log_file in "${backup_tmp}"/*.log; do
-        [ -f "$log_file" ] && gzip -f "$log_file"
-    done
-
-    # 4. Upload to Google Drive via rclone
-    if command -v rclone &>/dev/null; then
-        local destination="${GDRIVE_REMOTE}:zerobha_backups/${date_day}"
-        log_info "Syncing backup to '${destination}'..."
-        if rclone copy "${backup_tmp}" "${destination}"; then
-            log_success "Backup uploaded to Google Drive: ${destination}"
-        else
-            log_error "rclone failed to upload to ${destination}. Check 'rclone config'."
-        fi
-    else
-        log_error "rclone not installed. Run '$0 setup-prereqs' first."
-    fi
-
-    # 5. Clean up temporary directory
-    rm -rf "${backup_tmp}"
-    log_success "[$(date)] Backup process complete."
-}
-
-# ------------------------------------------------------------------------------
-# Usage & Command Router
-# ------------------------------------------------------------------------------
-cmd_help() {
-    cat <<EOF
-Usage: $(basename "$0") <command> [arguments]
-
-Core Commands:
-  setup-prereqs        Install Docker, rclone, sqlite3, set IST timezone & schedule cron
-  rclone-setup         Configure Google Drive access interactively
-  docker-load [file]   Load Docker image from tar.gz (default: zerobha.tar.gz)
-  docker-run           Start the trading container in the background (with data/logs mounts)
-  stop                 Stop the trading container
-  restart              Restart the trading container
-  logs                 Stream live trading logs
-  status               Check container status, system time, disk usage & backups
-  backup               Execute an immediate safe snapshot & upload to Google Drive
-
-Examples:
-  ./$(basename "$0") setup-prereqs
-  ./$(basename "$0") docker-load zerobha.tar.gz
-  ./$(basename "$0") docker-run
-  ./$(basename "$0") backup
+  require_remote_host
+  # shellcheck disable=SC2087
+  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" bash -s <<EOF
+set -euo pipefail
+CONTAINER_NAME="$CONTAINER_NAME"
+DATA_DIR="$REMOTE_DIR/data"
+echo "=== System Time & Timezone ==="
+timedatectl | grep -E "Local time|Time zone" || date
+echo ""
+echo "=== Docker Container Status ==="
+if docker ps -a --format '{{.Names}}' | grep -q "^\${CONTAINER_NAME}\$"; then
+  docker ps --filter "name=\${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}\t{{.Image}}"
+else
+  echo "Container '\${CONTAINER_NAME}' is not created or running."
+fi
+echo ""
+echo "=== Data & Storage ==="
+ls -lh "\$DATA_DIR" 2>/dev/null || true
+echo ""
+echo "=== Crontab Backup Jobs ==="
+crontab -l 2>/dev/null | grep backup || echo "No backup cron job configured."
 EOF
 }
 
-case "${1:-help}" in
-    setup-prereqs|setup)
-        cmd_setup_prereqs
-        ;;
-    rclone-setup|rclone)
-        cmd_rclone_setup
-        ;;
-    docker-load|load)
-        shift
-        cmd_docker_load "$@"
-        ;;
-    docker-run|run|start)
-        cmd_docker_run
-        ;;
-    stop)
-        cmd_docker_stop
-        ;;
-    restart)
-        cmd_docker_restart
-        ;;
-    logs)
-        cmd_docker_logs
-        ;;
-    status)
-        cmd_status
-        ;;
-    backup)
-        cmd_backup
-        ;;
-    help|--help|-h)
-        cmd_help
-        ;;
-    *)
-        log_error "Unknown command: $1"
-        cmd_help
-        exit 1
-        ;;
+# Generates the self-contained backup script that gets installed on the VM.
+# Written locally and piped over ssh (never scp'd as a second file) so the
+# only thing that ever needs to reach the VM by hand is the image tarball.
+#
+# The heredoc delimiter is deliberately UNQUOTED so REMOTE_DIR, CONTAINER_NAME
+# and GDRIVE_REMOTE (this shell's values, known now) get baked in as literal
+# assignments at generation time; every other "$" is escaped with a backslash
+# so it survives into the file untouched, to be evaluated on the VM each time
+# cron runs it.
+generate_backup_script() {
+  cat <<BACKUP_EOF
+#!/usr/bin/env bash
+# Installed by 'zerobha.sh setup'. Snapshots the database and logs and
+# uploads them to Google Drive via rclone. Regenerate by re-running
+# './zerobha.sh setup $REMOTE_HOST' rather than hand-editing this file.
+set -euo pipefail
+
+BASE_DIR="$REMOTE_DIR"
+DATA_DIR="\${BASE_DIR}/data"
+LOGS_DIR="\${BASE_DIR}/logs"
+CONTAINER_NAME="$CONTAINER_NAME"
+GDRIVE_REMOTE="$GDRIVE_REMOTE"
+
+date_day=\$(date +'%Y-%m-%d')
+backup_tmp="/tmp/zerobha_backup_\$(date +'%Y-%m-%d_%H%M%S')"
+mkdir -p "\$backup_tmp"
+echo "[\$(date)] Starting backup..."
+
+# Online SQLite snapshot — safe to run against a database being written to.
+db_path="\${DATA_DIR}/zerobha.db"
+if [ -f "\$db_path" ]; then
+  sqlite3 "\$db_path" ".backup '\${backup_tmp}/zerobha_\${date_day}.db'"
+else
+  echo "warning: no database at \$db_path yet, skipping DB snapshot"
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -q "^\${CONTAINER_NAME}\$"; then
+  docker logs "\$CONTAINER_NAME" > "\${backup_tmp}/docker_\${CONTAINER_NAME}_\${date_day}.log" 2>&1 || true
+fi
+if [ -d "\$LOGS_DIR" ]; then
+  cp -r "\${LOGS_DIR}/"* "\$backup_tmp/" 2>/dev/null || true
+fi
+
+for log_file in "\$backup_tmp"/*.log; do
+  [ -f "\$log_file" ] && gzip -f "\$log_file"
+done
+
+if command -v rclone >/dev/null 2>&1; then
+  destination="\${GDRIVE_REMOTE}:zerobha_backups/\${date_day}"
+  if rclone copy "\$backup_tmp" "\$destination"; then
+    echo "Backup uploaded to \$destination"
+  else
+    echo "error: rclone failed to upload to \$destination" >&2
+  fi
+else
+  echo "error: rclone not installed, run './zerobha.sh setup' first" >&2
+fi
+
+rm -rf "\$backup_tmp"
+echo "[\$(date)] Backup complete."
+BACKUP_EOF
+}
+
+cmd_setup() {
+  require_remote_host
+  log_info "Installing prerequisites on $REMOTE_HOST (Debian 12)..."
+  # -t allocates a pty so sudo (run repeatedly below) can prompt for a
+  # password on a VM without passwordless sudo. The heredoc still supplies
+  # the script over this same stdin; -t only affects the tty sudo reads from.
+  # shellcheck disable=SC2087
+  ssh -t "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" bash -s <<EOF
+set -euo pipefail
+echo "==> Setting timezone to Asia/Kolkata"
+sudo timedatectl set-timezone Asia/Kolkata
+echo "==> Installing packages (sqlite3, rclone, curl, gzip, ca-certificates)"
+sudo apt-get update -y
+sudo apt-get install -y sqlite3 rclone curl gzip ca-certificates apt-transport-https gnupg lsb-release
+if ! command -v docker >/dev/null 2>&1; then
+  echo "==> Installing Docker"
+  curl -fsSL https://get.docker.com | sudo sh
+  sudo usermod -aG docker "\$USER" || true
+  sudo systemctl enable --now docker
+  echo "Note: log out and back in for the docker group membership to take effect."
+else
+  echo "==> Docker already installed"
+fi
+echo "==> Creating $REMOTE_DIR/{data,logs}"
+sudo mkdir -p "$REMOTE_DIR/data" "$REMOTE_DIR/logs"
+sudo chown -R "\$USER":"\$USER" "$REMOTE_DIR"
+EOF
+
+  log_info "Installing backup script at $REMOTE_HOST:$REMOTE_DIR/backup.sh"
+  generate_backup_script | ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" \
+    "cat > '$REMOTE_DIR/backup.sh' && chmod +x '$REMOTE_DIR/backup.sh'"
+
+  log_info "Scheduling the 15:45 IST Mon-Fri backup cron job"
+  # shellcheck disable=SC2087
+  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" bash -s <<EOF
+set -euo pipefail
+CRON_JOB="45 15 * * 1-5 $REMOTE_DIR/backup.sh >> $REMOTE_DIR/logs/backup.log 2>&1"
+existing_crontab="\$(crontab -l 2>/dev/null || true)"
+# Also strip any old-style entry from a previous version of this script
+# (invoking "zerobha.sh backup" directly instead of the installed
+# backup.sh) so it doesn't survive alongside the new one and fire twice.
+if echo "\$existing_crontab" | grep -F "zerobha.sh backup" > /dev/null 2>&1; then
+  echo "==> Removing old-style 'zerobha.sh backup' cron entry"
+  # grep -v exits 1 if it filters out every input line; || true keeps this assignment from aborting under set -e
+  existing_crontab="\$(echo "\$existing_crontab" | grep -v -F "zerobha.sh backup" || true)"
+fi
+if echo "\$existing_crontab" | grep -F "$REMOTE_DIR/backup.sh" > /dev/null 2>&1; then
+  echo "==> Cron backup job already present"
+  echo "\$existing_crontab" | crontab -
+else
+  (echo "\$existing_crontab"; echo "\$CRON_JOB") | crontab -
+  echo "==> Backup cron job installed"
+fi
+EOF
+
+  log_success "Setup complete."
+  log_success "Next: './zerobha.sh rclone-setup $REMOTE_HOST', then './zerobha.sh deploy $REMOTE_HOST'."
+}
+
+cmd_rclone_setup() {
+  require_remote_host
+  log_info "Starting interactive rclone Google Drive configuration on $REMOTE_HOST..."
+  log_info "When prompted:"
+  log_info "  - New remote, name: 'gdrive'"
+  log_info "  - Storage type: 'drive' (Google Drive)"
+  log_info "  - Follow the on-screen link to authorize your Google Account."
+  echo ""
+  ssh -t "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" "rclone config"
+}
+
+cmd_backup() {
+  require_remote_host
+  log_info "Running backup script on $REMOTE_HOST"
+  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "$REMOTE_HOST" "$REMOTE_DIR/backup.sh"
+}
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") <command> [user@host]
+
+Commands:
+  build         Build the docker image locally
+  save          Build (if needed) and save+gzip the image to \$TAR_FILE
+  copy          scp the saved image to the remote VM
+  run           Load the image on the remote VM and (re)start the container
+  deploy        save + copy + run, in order
+  restart       Restart the container without reloading the image
+  stop          Stop the container
+  logs          Tail the container's logs (Ctrl-C to detach)
+  status        Show system time, container status, data dir and backup cron
+  setup         One-time VM prep: timezone, packages, Docker, dirs, backup
+                script + cron (alias: setup-prereqs)
+  rclone-setup  Interactive 'rclone config' on the VM, to link Google Drive
+  backup        Run the installed backup script on the VM immediately
+
+Every command except build and save takes the target host as its second
+argument, e.g. './zerobha.sh run user@vm'. Falls back to \$REMOTE_HOST when
+omitted, so exporting it once per shell saves retyping it.
+
+Examples:
+  ./zerobha.sh deploy user@vm
+  REMOTE_HOST=user@vm ./zerobha.sh logs
+
+Environment variables (all optional, defaults shown):
+  IMAGE_NAME=zerobha:latest
+  TAR_FILE=./zerobha.tar.gz
+  REMOTE_DIR=/opt/zerobha
+  CONTAINER_NAME=zerobha
+  SSH_PORT=22
+  SSH_OPTS="-o ClearAllForwardings=yes"
+  CONTAINER_TZ=Asia/Kolkata
+  GDRIVE_REMOTE=gdrive
+EOF
+}
+
+case "$COMMAND" in
+  build)                cmd_build ;;
+  save)                 cmd_save ;;
+  copy)                 cmd_copy ;;
+  run)                  cmd_run ;;
+  deploy)               cmd_deploy ;;
+  restart)              cmd_restart ;;
+  stop)                 cmd_stop ;;
+  logs)                 cmd_logs ;;
+  status)               cmd_status ;;
+  setup|setup-prereqs)  cmd_setup ;;
+  rclone-setup)         cmd_rclone_setup ;;
+  backup)               cmd_backup ;;
+  help|--help|-h)       usage; exit 0 ;;
+  "")
+    usage
+    exit 1
+    ;;
+  *)
+    log_error "Unknown command: $COMMAND"
+    usage
+    exit 1
+    ;;
 esac
