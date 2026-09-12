@@ -152,6 +152,7 @@ type strikeRule struct {
 	// Quoted spreads are absolute. Prefer ticks.
 	SpreadPct   float64
 	SpreadTicks float64
+	BarDuration time.Duration
 	Costs       costModel
 	// FlatCostBps, when positive, replaces the itemised cost sheet with a flat
 	// charge per leg. Kept so earlier runs recorded in CLAUDE.md can be
@@ -179,6 +180,7 @@ func main() {
 	outPath := flag.String("out", "", "optional CSV dump of every priced trade")
 	minDTE := flag.Int("min-dte", 0, "skip trades with fewer than this many days to expiry (2 skips expiry day and the day before)")
 	split := flag.String("split", "", "optional YYYY-MM-DD; reports before/after separately")
+	timeframe := flag.String("timeframe", "1m", "candle timeframe: 1m (or 1minute), 5m (or 5minute)")
 	flag.Parse()
 
 	if *tradesPath == "" {
@@ -198,7 +200,7 @@ func main() {
 	}
 	client := upstox.NewClient(cfg.UpstoxAccessToken, 60*time.Second)
 
-	trades, err := loadTrades(*tradesPath)
+	trades, err := loadTrades(*tradesPath, *under)
 	if err != nil {
 		log.Fatalf("read %s: %v", *tradesPath, err)
 	}
@@ -215,11 +217,20 @@ func main() {
 		log.Fatalf("create %s: %v", *cacheDir, err)
 	}
 
+	barDur := 1 * time.Minute
+	intervalStr := "1minute"
+	if *timeframe == "5m" || *timeframe == "5minute" {
+		barDur = 5 * time.Minute
+		intervalStr = "5minute"
+	}
+
 	store := &contractStore{
-		client:   client,
-		cacheDir: *cacheDir,
-		chains:   map[string][]upstox.ExpiredContract{},
-		bars:     map[string]map[time.Time]models.Candle{},
+		client:      client,
+		cacheDir:    *cacheDir,
+		intervalStr: intervalStr,
+		barDuration: barDur,
+		chains:      map[string][]upstox.ExpiredContract{},
+		bars:        map[string]map[time.Time]models.Candle{},
 	}
 
 	if *lots < 1 {
@@ -232,6 +243,7 @@ func main() {
 		TargetDeltaNearExpiry: *targetDeltaNearExpiry,
 		SpreadPct:             *spreadPct,
 		SpreadTicks:           *spreadTicks,
+		BarDuration:           barDur,
 		FlatCostBps:           *costBps,
 		Costs: costModel{
 			Lots:              *lots,
@@ -328,7 +340,7 @@ func priceTrade(store *contractStore, underlyingKey string, t indexTrade, expiri
 	// The index trade executes at the CLOSE of the bar starting at EntryTime,
 	// so that is the instant the option is bought and the instant its time to
 	// expiry is measured from.
-	execAt := t.EntryTime.Add(5 * time.Minute)
+	execAt := t.EntryTime.Add(rule.BarDuration)
 
 	// The ATM vol is backed out either way. Under -delta it selects the strike
 	// and a failure is fatal to the trade; under -itm it only labels the
@@ -365,7 +377,7 @@ func priceTrade(store *contractStore, underlyingKey string, t indexTrade, expiri
 	// The index trade entered at the close of the bar STARTING at EntryTime,
 	// and exited at the close of the bar ENDING at ExitTime.
 	entryBar, ok1 := bars[t.EntryTime.In(options.IST)]
-	exitBar, ok2 := bars[t.ExitTime.Add(-5*time.Minute).In(options.IST)]
+	exitBar, ok2 := bars[t.ExitTime.Add(-rule.BarDuration).In(options.IST)]
 	if !ok1 || !ok2 {
 		return pricedTrade{}, "option did not trade in one of those bars"
 	}
@@ -447,7 +459,7 @@ func (s *contractStore) atmIV(chain []upstox.ExpiredContract, t indexTrade, exp 
 	if !ok {
 		return 0, "ATM option did not trade in the entry bar"
 	}
-	execAt := t.EntryTime.Add(5 * time.Minute)
+	execAt := t.EntryTime.Add(s.barDuration)
 	iv, ok := options.ImpliedVol(bar.Close.InexactFloat64(), t.EntrySpot, atm.StrikePrice,
 		options.YearsToExpiry(execAt, exp), true)
 	if !ok {
@@ -488,10 +500,12 @@ func pickStrike(chain []upstox.ExpiredContract, optType string, target float64) 
 // ---------------------------------------------------------------- fetching
 
 type contractStore struct {
-	client   *upstox.Client
-	cacheDir string
-	chains   map[string][]upstox.ExpiredContract
-	bars     map[string]map[time.Time]models.Candle
+	client      *upstox.Client
+	cacheDir    string
+	intervalStr string
+	barDuration time.Duration
+	chains      map[string][]upstox.ExpiredContract
+	bars        map[string]map[time.Time]models.Candle
 }
 
 func (s *contractStore) chain(underlyingKey string, exp time.Time) ([]upstox.ExpiredContract, error) {
@@ -509,18 +523,22 @@ func (s *contractStore) chain(underlyingKey string, exp time.Time) ([]upstox.Exp
 	return c, nil
 }
 
-// candles returns the contract's 5-minute bars indexed by start time, reading
+// candles returns the contract's bars indexed by start time, reading
 // the on-disk cache first. One call covers a weekly's whole life, so a week of
 // trades on the same strike costs one request.
 func (s *contractStore) candles(c upstox.ExpiredContract, exp time.Time) (map[time.Time]models.Candle, error) {
 	if b, ok := s.bars[c.InstrumentKey]; ok {
 		return b, nil
 	}
-	path := filepath.Join(s.cacheDir, cacheName(c.InstrumentKey)+".csv")
+	cName := cacheName(c.InstrumentKey)
+	if s.intervalStr != "" && s.intervalStr != "5minute" {
+		cName += "_" + s.intervalStr
+	}
+	path := filepath.Join(s.cacheDir, cName+".csv")
 	list, err := readCache(path)
 	if err != nil {
 		list, err = retry(func() ([]models.Candle, error) {
-			return s.client.ExpiredHistoricalCandles(c.InstrumentKey, "5minute", exp.AddDate(0, 0, -10), exp)
+			return s.client.ExpiredHistoricalCandles(c.InstrumentKey, s.intervalStr, exp.AddDate(0, 0, -10), exp)
 		})
 		if err != nil {
 			return nil, err
@@ -774,7 +792,25 @@ func dump(path string, ts []pricedTrade) error {
 
 // ---------------------------------------------------------------- helpers
 
-func loadTrades(path string) ([]indexTrade, error) {
+func matchUnderlying(sym, under string) bool {
+	if sym == "" || under == "" {
+		return true
+	}
+	s := strings.ToLower(strings.ReplaceAll(sym, " ", ""))
+	u := strings.ToLower(under)
+	switch u {
+	case "nifty":
+		return strings.Contains(s, "nifty") && !strings.Contains(s, "bank")
+	case "banknifty":
+		return strings.Contains(s, "bank")
+	case "sensex":
+		return strings.Contains(s, "sensex")
+	default:
+		return strings.Contains(s, u)
+	}
+}
+
+func loadTrades(path string, under string) ([]indexTrade, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -816,6 +852,9 @@ func loadTrades(path string) ([]indexTrade, error) {
 		}
 		if i, ok := col["symbol"]; ok && i < len(rec) {
 			sym = rec[i]
+		}
+		if sym != "" && !matchUnderlying(sym, under) {
+			continue
 		}
 		out = append(out, indexTrade{sym, rec[col["direction"]], et.In(options.IST), xt.In(options.IST), ep, xp, reason})
 	}

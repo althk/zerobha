@@ -51,7 +51,7 @@ func (a *ATR) Update(candle models.Candle) decimal.Decimal {
 		// Wilder's Smoothing: (PrevATR * (N-1) + TR) / N
 		period := decimal.NewFromInt(int64(a.period))
 		prevSum := a.value.Mul(period.Sub(decimal.NewFromInt(1)))
-		a.value = prevSum.Add(tr).Div(period)
+		a.value = prevSum.Add(tr).Div(period).Round(4)
 	}
 
 	return a.value

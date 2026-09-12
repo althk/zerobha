@@ -406,6 +406,35 @@ func DefaultPathsConfig() PathsConfig {
 	}
 }
 
+// EMACrossConfig holds parameters for the EMA Crossover strategy.
+type EMACrossConfig struct {
+	Timeframe string `toml:"timeframe"` // default "1m"
+	CSVFile   string `toml:"csv_file"`  // default "ind_nifty50list.csv"
+	Limit     int    `toml:"limit"`     // default 50
+
+	FastPeriod int `toml:"fast_period"` // fast EMA, default 9
+	SlowPeriod int `toml:"slow_period"` // slow EMA, default 21
+
+	ProductType string `toml:"product_type"` // "MIS" (intraday) or "CNC" (overnight), default "MIS"
+	AssetType   string `toml:"asset_type"`   // "stocks" or "options", default "stocks"
+
+	ATRPeriod int     `toml:"atr_period"`  // ATR lookback, default 14
+	SLATRMult float64 `toml:"sl_atr_mult"` // SL distance in ATR, default 2.0
+	TPATRMult float64 `toml:"tp_atr_mult"` // TP distance in ATR, default 5.0
+
+	TargetDelta float64 `toml:"target_delta"` // target delta for weekly options, default 0.80
+
+	AllowShort *bool `toml:"allow_short"` // allow short selling; default true for MIS, false for CNC
+
+	EntryStartMin  int `toml:"entry_start_min"`  // default 556 (09:16)
+	EntryCutoffMin int `toml:"entry_cutoff_min"` // default 900 (15:00)
+	SquareOffMin   int `toml:"squareoff_min"`    // default 915 (15:15) for MIS; 0 disables for CNC
+
+	MaxCapitalPerTrade int64   `toml:"max_capital_per_trade"`
+	RiskPct            float64 `toml:"risk_pct"`
+	MaxConcurrent      int     `toml:"max_concurrent"`
+}
+
 type Config struct {
 	Strategy  string `toml:"strategy"`
 	APIKey    string `toml:"api_key"`
@@ -431,6 +460,7 @@ type Config struct {
 	GapFade           GapFadeConfig  `toml:"gapfade"`
 	Donchian          DonchianConfig `toml:"donchian"`
 	SRLevels          SRLevelsConfig `toml:"srlevels"`
+	EMACross          EMACrossConfig `toml:"emacross"`
 	Upstox            UpstoxConfig   `toml:"upstox"`
 }
 
@@ -447,6 +477,8 @@ func (c *Config) ActiveStrategySettings() StrategySettings {
 		return StrategySettings{Timeframe: c.Donchian.Timeframe, CSVFile: c.Donchian.CSVFile, Limit: c.Donchian.Limit}
 	case StrategySRLevels:
 		return StrategySettings{Timeframe: c.SRLevels.Timeframe, CSVFile: c.SRLevels.CSVFile, Limit: c.SRLevels.Limit}
+	case StrategyEMACross:
+		return StrategySettings{Timeframe: c.EMACross.Timeframe, CSVFile: c.EMACross.CSVFile, Limit: c.EMACross.Limit}
 	}
 	return StrategySettings{Timeframe: c.ORB.Timeframe, CSVFile: c.ORB.CSVFile, Limit: c.ORB.Limit}
 }
@@ -459,6 +491,7 @@ const (
 	StrategyGapFade  = "gapfade"
 	StrategyDonchian = "donchian"
 	StrategySRLevels = "srlevels"
+	StrategyEMACross = "emacross"
 )
 
 func DefaultGapFadeConfig() GapFadeConfig {
@@ -735,10 +768,10 @@ func DefaultSRLevelsConfig() SRLevelsConfig {
 		// Sized for the indices this strategy is specified on: enough for one
 		// SENSEX unit at ~78,000 and still far below the 5L the backtester
 		// funds an account with, above which SimBroker silently drops longs.
-		MaxCapitalPerTrade:    150000,
-		RiskPct:               0.5,
-		MaxDailyLossPct:       2.0,
-		MaxConcurrent:         5,
+		MaxCapitalPerTrade: 150000,
+		RiskPct:            0.5,
+		MaxDailyLossPct:    2.0,
+		MaxConcurrent:      5,
 		// ONE entry per session, measured rather than assumed. Until the
 		// re-entry bug was fixed (2026-08-31) this knob was inert -- openValid
 		// never cleared, so the strategy took one trade a day whatever the
@@ -767,6 +800,30 @@ func DefaultSRLevelsConfig() SRLevelsConfig {
 		// reading is that the skip is not justified on this strategy, not that
 		// expiry day is good.
 		MinDaysToExpiry: intPtr(0),
+	}
+}
+
+func DefaultEMACrossConfig() EMACrossConfig {
+	allowShort := true
+	return EMACrossConfig{
+		Timeframe:          "5m",
+		CSVFile:            "indices.csv",
+		Limit:              50,
+		FastPeriod:         9,
+		SlowPeriod:         21,
+		ProductType:        "MIS",
+		AssetType:          "options",
+		ATRPeriod:          5,
+		SLATRMult:          2.0,
+		TPATRMult:          -1.0,
+		TargetDelta:        0.80,
+		AllowShort:         &allowShort,
+		EntryStartMin:      9*60 + 31,
+		EntryCutoffMin:     15 * 60,
+		SquareOffMin:       15*60 + 15,
+		MaxCapitalPerTrade: 150000,
+		RiskPct:            2.0,
+		MaxConcurrent:      5,
 	}
 }
 
@@ -1239,6 +1296,69 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.SRLevels.MinDaysToExpiry == nil {
 		config.SRLevels.MinDaysToExpiry = srD.MinDaysToExpiry
+	}
+
+	// EMACross defaults
+	emaD := DefaultEMACrossConfig()
+	if config.EMACross.Timeframe == "" {
+		config.EMACross.Timeframe = emaD.Timeframe
+	}
+	if config.EMACross.CSVFile == "" {
+		config.EMACross.CSVFile = emaD.CSVFile
+	}
+	if config.EMACross.Limit == 0 {
+		config.EMACross.Limit = emaD.Limit
+	}
+	if config.EMACross.FastPeriod == 0 {
+		config.EMACross.FastPeriod = emaD.FastPeriod
+	}
+	if config.EMACross.SlowPeriod == 0 {
+		config.EMACross.SlowPeriod = emaD.SlowPeriod
+	}
+	if config.EMACross.ProductType == "" {
+		config.EMACross.ProductType = emaD.ProductType
+	}
+	if config.EMACross.AssetType == "" {
+		config.EMACross.AssetType = emaD.AssetType
+	}
+	if config.EMACross.ATRPeriod == 0 {
+		config.EMACross.ATRPeriod = emaD.ATRPeriod
+	}
+	if config.EMACross.SLATRMult == 0 {
+		config.EMACross.SLATRMult = emaD.SLATRMult
+	}
+	if config.EMACross.TPATRMult < 0 {
+		config.EMACross.TPATRMult = 0
+	} else if config.EMACross.TPATRMult == 0 {
+		if emaD.TPATRMult < 0 {
+			config.EMACross.TPATRMult = 0
+		} else {
+			config.EMACross.TPATRMult = emaD.TPATRMult
+		}
+	}
+	if config.EMACross.TargetDelta == 0 {
+		config.EMACross.TargetDelta = emaD.TargetDelta
+	}
+	if config.EMACross.AllowShort == nil {
+		config.EMACross.AllowShort = emaD.AllowShort
+	}
+	if config.EMACross.EntryStartMin == 0 {
+		config.EMACross.EntryStartMin = emaD.EntryStartMin
+	}
+	if config.EMACross.EntryCutoffMin == 0 {
+		config.EMACross.EntryCutoffMin = emaD.EntryCutoffMin
+	}
+	if config.EMACross.SquareOffMin == 0 {
+		config.EMACross.SquareOffMin = emaD.SquareOffMin
+	}
+	if config.EMACross.MaxCapitalPerTrade == 0 {
+		config.EMACross.MaxCapitalPerTrade = emaD.MaxCapitalPerTrade
+	}
+	if config.EMACross.RiskPct == 0 {
+		config.EMACross.RiskPct = emaD.RiskPct
+	}
+	if config.EMACross.MaxConcurrent == 0 {
+		config.EMACross.MaxConcurrent = emaD.MaxConcurrent
 	}
 
 	// Upstox gate defaults. AccessToken and BlockKeywords are intentionally

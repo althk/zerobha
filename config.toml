@@ -361,3 +361,29 @@ target_delta_near_expiry = 0.90
 # bucket and keep the bad ones. Twelve trades a bucket is noise - the reading is
 # that the skip is not justified here, not that expiry day is good.
 min_days_to_expiry = 0
+
+[emacross]
+timeframe = "1m"
+csv_file = "ind_nifty50list.csv"
+limit = 50
+
+fast_period = 9
+slow_period = 21
+
+product_type = "MIS"
+asset_type = "stocks"
+
+atr_period = 14
+sl_atr_mult = 2.0
+tp_atr_mult = 5.0
+
+target_delta = 0.80
+
+entry_start_min = 556
+entry_cutoff_min = 900
+squareoff_min = 915
+
+risk_pct = 1.0
+max_capital_per_trade = 50000
+max_concurrent = 5
+

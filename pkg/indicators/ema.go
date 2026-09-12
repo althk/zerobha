@@ -26,11 +26,11 @@ func (e *EMA) Update(price decimal.Decimal) decimal.Decimal {
 		// Initialization: The first value of an EMA is usually just the price
 		// (or SMA of first N periods, but simple seeding works for streaming)
 		if e.steps == 0 {
-			e.current = price
+			e.current = price.Round(4)
 		} else {
 			// SMA seeding logic could go here, but for simplicity we start evolving immediately
 			// EMA = (Price - Prev) * k + Prev
-			e.current = price.Sub(e.current).Mul(e.k).Add(e.current)
+			e.current = price.Sub(e.current).Mul(e.k).Add(e.current).Round(4)
 		}
 
 		e.steps++
@@ -44,7 +44,7 @@ func (e *EMA) Update(price decimal.Decimal) decimal.Decimal {
 	// Standard Formula: (Price * k) + (Prev * (1-k))
 	// Optimization: Prev + k * (Price - Prev)
 	delta := price.Sub(e.current)
-	e.current = e.current.Add(delta.Mul(e.k))
+	e.current = e.current.Add(delta.Mul(e.k)).Round(4)
 
 	return e.current
 }

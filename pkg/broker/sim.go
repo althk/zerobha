@@ -14,18 +14,30 @@ import (
 
 // SimBroker implements core.Broker for backtesting.
 type SimBroker struct {
-	mu      sync.Mutex // Protects balance in concurrent tests
-	Balance decimal.Decimal
-	Orders  []models.Order
-	Trades  []models.Trade
+	mu          sync.Mutex // Protects balance in concurrent tests
+	Balance     decimal.Decimal
+	Orders      []models.Order
+	Trades      []models.Trade
+	openIndices []int
+}
+
+func (s *SimBroker) pruneClosedIndicesLocked() {
+	n := 0
+	for _, idx := range s.openIndices {
+		if idx < len(s.Orders) && s.Orders[idx].Status == models.OrderFilled && s.Orders[idx].Quantity.IsPositive() {
+			s.openIndices[n] = idx
+			n++
+		}
+	}
+	s.openIndices = s.openIndices[:n]
 }
 
 func (s *SimBroker) HasOpenPosition(symbol string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, o := range s.Orders {
-		if o.Symbol == symbol && o.Status == models.OrderFilled {
+	for _, idx := range s.openIndices {
+		if idx < len(s.Orders) && s.Orders[idx].Symbol == symbol && s.Orders[idx].Status == models.OrderFilled {
 			return true, nil
 		}
 	}
@@ -35,8 +47,9 @@ func (s *SimBroker) HasOpenPosition(symbol string) (bool, error) {
 // NewSimBroker creates a simulator with starting capital.
 func NewSimBroker(capital decimal.Decimal) *SimBroker {
 	return &SimBroker{
-		Balance: capital,
-		Orders:  make([]models.Order, 0),
+		Balance:     capital,
+		Orders:      make([]models.Order, 0),
+		openIndices: make([]int, 0, 8),
 	}
 }
 
@@ -91,6 +104,7 @@ func (s *SimBroker) PlaceOrder(order models.Order) (models.Order, error) {
 	}
 
 	s.Orders = append(s.Orders, order)
+	s.openIndices = append(s.openIndices, len(s.Orders)-1)
 
 	return order, nil
 }
@@ -117,8 +131,15 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Iterate over orders to find OPEN positions
-	for i := range s.Orders {
+	if len(s.openIndices) == 0 {
+		return
+	}
+
+	// Iterate only open positions
+	for _, i := range s.openIndices {
+		if i >= len(s.Orders) {
+			continue
+		}
 		// We use a pointer so we can update the status
 		o := &s.Orders[i]
 
@@ -294,7 +315,7 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 			}
 		}
 	}
-
+	s.pruneClosedIndicesLocked()
 }
 
 // GetEquity calculates Total Account Value (Cash + Unrealized PnL)
@@ -305,7 +326,11 @@ func (s *SimBroker) GetEquity(currentPrice decimal.Decimal) decimal.Decimal {
 
 	equity := s.Balance
 
-	for _, o := range s.Orders {
+	for _, idx := range s.openIndices {
+		if idx >= len(s.Orders) {
+			continue
+		}
+		o := s.Orders[idx]
 		// Only count OPEN positions
 		if o.Status == models.OrderFilled {
 			switch o.Side {
@@ -330,7 +355,11 @@ func (s *SimBroker) GetPositions() ([]models.Position, error) {
 	defer s.mu.Unlock()
 
 	var positions []models.Position
-	for _, o := range s.Orders {
+	for _, idx := range s.openIndices {
+		if idx >= len(s.Orders) {
+			continue
+		}
+		o := s.Orders[idx]
 		if o.Status == models.OrderFilled {
 			qty := o.Quantity.IntPart()
 			positions = append(positions, models.Position{
@@ -462,7 +491,10 @@ func (s *SimBroker) ClosePosition(symbol string, side models.SignalType, price d
 	defer s.mu.Unlock()
 
 	closed := false
-	for i := range s.Orders {
+	for _, i := range s.openIndices {
+		if i >= len(s.Orders) {
+			continue
+		}
 		o := &s.Orders[i]
 		if o.Status != models.OrderFilled || o.Symbol != symbol || o.Side != side {
 			continue
@@ -473,6 +505,7 @@ func (s *SimBroker) ClosePosition(symbol string, side models.SignalType, price d
 		s.closeOrderLocked(o, price, reason, at)
 		closed = true
 	}
+	s.pruneClosedIndicesLocked()
 	return closed, nil
 }
 
@@ -514,11 +547,15 @@ func (s *SimBroker) SquareOffAll(candle models.Candle) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := range s.Orders {
+	for _, i := range s.openIndices {
+		if i >= len(s.Orders) {
+			continue
+		}
 		o := &s.Orders[i]
 		if o.Status != models.OrderFilled || o.Quantity.LessThanOrEqual(decimal.Zero) {
 			continue
 		}
 		s.closeOrderLocked(o, candle.Close, "EOD-SQUAREOFF", candle.EndTime)
 	}
+	s.pruneClosedIndicesLocked()
 }

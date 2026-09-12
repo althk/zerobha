@@ -4,10 +4,12 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"zerobha/pkg/statistics"
 
@@ -17,11 +19,12 @@ import (
 	"zerobha/internal/risk"
 	"zerobha/pkg/broker"
 	"zerobha/pkg/indicators"
-	"zerobha/pkg/journal"
 	"zerobha/pkg/strategy" // Import your strategies package
 
 	"github.com/shopspring/decimal"
 )
+
+var istLoc = time.FixedZone("IST", 5*3600+1800)
 
 func main() {
 	// Parse command line flags
@@ -36,6 +39,7 @@ func main() {
 	costBps := flag.Float64("cost-bps", 0.0, "Round-trip transaction cost in basis points of turnover, deducted per trade (e.g. 6 = 0.06%)")
 	knobs := flag.String("knobs", "", "ORB ablation: start from baseline and enable only these new knobs (comma list of: onetrade,stopfloor,vwapdist,thrust,adxeps)")
 	tradesCSV := flag.String("trades-csv", "", "Write every trade (all symbols, pre-cost PnL) to this CSV for offline analysis")
+	journalFile := flag.String("journal", "", "Write signals to this journal CSV (default empty: disabled)")
 	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
 	configFile := flag.String("config", "config.local.toml", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
 	// srlevels sweep knobs. The strategy is specified with two choices left
@@ -47,7 +51,15 @@ func main() {
 	srHTF := flag.String("sr-htf", "", "srlevels: higher-timeframe confirmation, on or off (overrides config)")
 	srRoom := flag.Float64("sr-room", -1, "srlevels: minimum ATR of room to the next opposing zone; 0 disables the gate")
 	srTrail := flag.Float64("sr-trail", -1, "srlevels: chandelier trail distance in ATR; 0 leaves the initial stop alone")
+	emaFast := flag.Int("ema-fast", 0, "emacross: fast EMA period (overrides config)")
+	emaSlow := flag.Int("ema-slow", 0, "emacross: slow EMA period (overrides config)")
+	emaProduct := flag.String("product", "", "emacross: MIS or CNC (overrides config)")
+	emaAsset := flag.String("asset", "", "emacross: stocks or options (overrides config)")
+	emaSL := flag.Float64("ema-sl", 0, "emacross: stop distance in ATR (overrides config)")
+	emaTP := flag.Float64("ema-tp", -999, "emacross: target distance in ATR; <= 0 disables the target (overrides config)")
+	emaATR := flag.Int("ema-atr", 0, "emacross: ATR period (overrides config)")
 	flag.Parse()
+	_ = journalFile
 
 	// When a TOML config is given, it supplies the strategy, symbol CSV,
 	// timeframe, limit, risk limits, and per-strategy knobs — the same values
@@ -96,11 +108,8 @@ func main() {
 		endDate = endDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 	}
 
-	// log.SetFlags(log.LstdFlags | log.Lshortfile)
-	// Use custom filter to only show errors
-	log.SetFlags(0) // Remove flags to make filtering easier or keep them? Keep them for context.
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.SetOutput(&LogFilter{})
+	log.SetFlags(0)
+	log.SetOutput(io.Discard)
 
 	// Load symbols from CSV
 	symbols, err := loadSymbolsFromCSV(*csvFile, *minBeta)
@@ -174,9 +183,9 @@ func main() {
 			log.Fatalf("--uptrend requires NIFTY data at %s (download ^NSEI 1d first)", nf)
 		}
 		nh, nrows := readCSV(nf)
-		ncol := buildColumnIndex(nh)
+		cm := getColMap(nh)
 		for _, r := range nrows {
-			c := parseCandle(r, ncol, "NIFTY 50", "1d")
+			c := parseCandle(r, cm, "NIFTY 50", "1d", 24*time.Hour)
 			niftyByDate[c.StartTime.Format("2006-01-02")] = c
 		}
 		fmt.Printf("Uptrend filter ENGAGED: loaded %d NIFTY-50 daily candles.\n", len(niftyByDate))
@@ -237,27 +246,65 @@ func main() {
 			srCfg.UseHTFConfirm != nil && *srCfg.UseHTFConfirm, srCfg.RoomATR())
 	}
 
-	for _, sym := range symbols {
-		fmt.Printf("\n--------------------------------------------------\n")
-		fmt.Printf("TESTING SYMBOL: %s\n", sym)
-		fmt.Printf("--------------------------------------------------\n")
+	emaCfg := config.DefaultEMACrossConfig()
+	if appCfg != nil {
+		emaCfg = appCfg.EMACross
+	}
+	if *emaFast > 0 {
+		emaCfg.FastPeriod = *emaFast
+	}
+	if *emaSlow > 0 {
+		emaCfg.SlowPeriod = *emaSlow
+	}
+	if *emaProduct != "" {
+		emaCfg.ProductType = *emaProduct
+	}
+	if *emaAsset != "" {
+		emaCfg.AssetType = *emaAsset
+	}
+	if *emaSL > 0 {
+		emaCfg.SLATRMult = *emaSL
+	}
+	if *emaTP != -999 {
+		if *emaTP <= 0 {
+			emaCfg.TPATRMult = 0
+		} else {
+			emaCfg.TPATRMult = *emaTP
+		}
+	}
+	if *emaATR > 0 {
+		emaCfg.ATRPeriod = *emaATR
+	}
+	if *strategyName == config.StrategyEMACross {
+		fmt.Printf("EMACross: fast=%d slow=%d atr=%d product=%s asset=%s SL=%.1fxATR TP=%.1fxATR\n",
+			emaCfg.FastPeriod, emaCfg.SlowPeriod, emaCfg.ATRPeriod, emaCfg.ProductType, emaCfg.AssetType,
+			emaCfg.SLATRMult, emaCfg.TPATRMult)
+	}
 
-		// 1. Setup Environment
-		initialCapital := decimal.NewFromInt(500000) // ₹5 Lakh
+	type symWorkResult struct {
+		sym        string
+		res        Result
+		tradesRaw  []models.Trade
+		tradesNet  []models.Trade
+		tradeTable string
+		err        error
+	}
+
+	dur := time.Minute
+	if *timeframe != "1m" && *timeframe != "1minute" {
+		dur = parseDuration(*timeframe)
+	}
+
+	testSymbol := func(sym string) symWorkResult {
+		initialCapital := decimal.NewFromInt(500000)
 		simBroker := broker.NewSimBroker(initialCapital)
 
-		// Risk: Max Loss ₹1000/day, Max 20 trades/day Total, Max 2 trades/day per stock
-		// (overridden by the [risk] section when -config is given)
 		maxLoss, maxTrades, maxPerStock := decimal.NewFromInt(1000), 20, 2
 		if appCfg != nil {
 			maxLoss = decimal.NewFromInt(int64(appCfg.Risk.MaxDailyLoss))
 			maxTrades = appCfg.Risk.MaxTradesPerDay
 			maxPerStock = appCfg.Risk.MaxTradesPerStock
 		}
-		// Donchian states its kill switch as a percent of capital rather than a
-		// rupee figure. NOTE: the engine never feeds realised PnL back to the
-		// risk manager (see the TODO in engine.Execute), so this limit is
-		// carried but never actually trips in a backtest.
 		if *strategyName == config.StrategyDonchian {
 			maxLoss = initialCapital.Mul(decimal.NewFromFloat(dcCfg.MaxDailyLossPct / 100))
 		}
@@ -266,7 +313,6 @@ func main() {
 		}
 		riskMgr := risk.NewManager(nil, maxLoss, maxTrades, maxPerStock)
 
-		// Strategy
 		orbCfg := config.DefaultORBConfig()
 		if appCfg != nil {
 			orbCfg = appCfg.ORB
@@ -294,30 +340,14 @@ func main() {
 			if appCfg != nil {
 				gfCfg = appCfg.GapFade
 			}
-			// nil gate: Upstox serves current news and current fundamentals
-			// with no as-of-date history, so a backtest cannot reproduce the
-			// live news/earnings check. This run fades every qualifying gap,
-			// informed or not — see the banner printed above.
 			myStrategy = strategy.NewGapFadeStrategy([]string{sym}, gfCfg, nil)
+		case config.StrategyEMACross:
+			myStrategy = strategy.NewEMACrossStrategy([]string{sym}, emaCfg)
 		}
 
-		// Journal
-		j, _ := journal.NewJournal("backtest_journal.csv")
-		defer j.Close()
-
-		// 4. Create Engine. Only engage the uptrend filter when requested; with
-		// it off we disable it explicitly so the engine doesn't fail-open + warn.
-		engine := core.NewEngine(myStrategy, simBroker, riskMgr, j, nil, nil)
+		engine := core.NewEngine(myStrategy, simBroker, riskMgr, nil, nil, nil)
 		engine.UptrendOnly = *uptrend
 
-		// Apply the [engine] section, as cmd/trader does. Without this the
-		// backtester silently ignored it and ran on the built-in defaults, so
-		// the same config file produced different capital allocation and a
-		// different entry cutoff in backtest than in live. It also made an
-		// instrument priced above max_capital_per_trade untradeable with no
-		// diagnostic: quantity floors to zero and the signal vanishes, which
-		// reads as "the strategy found nothing" (SENSEX at 78,000 against the
-		// 50,000 stock-sized cap).
 		if appCfg != nil {
 			engine.MinBalance = int64(appCfg.Engine.MinBalance)
 			engine.MinCapitalPerTrade = int64(appCfg.Engine.MinCapitalPerTrade)
@@ -325,22 +355,13 @@ func main() {
 			engine.TradeCutoffMin = appCfg.Engine.TradeCutoffMin
 		}
 
-		// The engine's own cutoff (14:05 by default) is earlier than Donchian's
-		// last-entry time, and it gates every signal — left alone it would
-		// silently truncate the strategy's entry window.
 		if *strategyName == config.StrategyDonchian {
 			engine.TradeCutoffMin = dcCfg.EntryCutoffMin + 1
 			engine.MaxConcurrent = dcCfg.MaxConcurrent
-			// The engine's cap is calibrated for cash equities; this strategy
-			// trades indices, where the same number floors quantity to zero and
-			// produces no trades at all rather than smaller ones.
 			if dcCfg.MaxCapitalPerTrade > 0 {
 				engine.MaxCapitalPerTrade = dcCfg.MaxCapitalPerTrade
 			}
 		}
-		// srlevels needs the same three overrides, and for the same reasons:
-		// its entry window runs past the engine's 14:05 default, and it trades
-		// indices priced above the stock-sized capital cap.
 		if *strategyName == config.StrategySRLevels {
 			engine.TradeCutoffMin = srCfg.EntryCutoffMin + 1
 			engine.MaxConcurrent = srCfg.MaxConcurrent
@@ -348,50 +369,58 @@ func main() {
 				engine.MaxCapitalPerTrade = srCfg.MaxCapitalPerTrade
 			}
 		}
+		if *strategyName == config.StrategyEMACross {
+			if emaCfg.EntryCutoffMin > 0 {
+				engine.TradeCutoffMin = emaCfg.EntryCutoffMin + 1
+			}
+			if emaCfg.MaxConcurrent > 0 {
+				engine.MaxConcurrent = emaCfg.MaxConcurrent
+			}
+			if emaCfg.MaxCapitalPerTrade > 0 {
+				engine.MaxCapitalPerTrade = emaCfg.MaxCapitalPerTrade
+			}
+			if strings.ToLower(emaCfg.AssetType) == "options" && engine.MaxCapitalPerTrade < 150000 {
+				engine.MaxCapitalPerTrade = 150000
+			}
+			if strings.ToUpper(emaCfg.ProductType) == "CNC" {
+				engine.TradeCutoffMin = 24 * 60
+			}
+		}
 
-		// 2. Load Data
-		// Try timeframe specific folder first
 		filename := fmt.Sprintf("test/data/%s/%s_real.csv", *timeframe, dataFileStem(sym))
 		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			// Fallback to root test/data
 			filename = fmt.Sprintf("test/data/%s_real.csv", dataFileStem(sym))
 			if _, err := os.Stat(filename); os.IsNotExist(err) {
-				fmt.Printf("Skipping %s: Data file %s not found\n", sym, filename)
-				continue
+				return symWorkResult{sym: sym, err: fmt.Errorf("data file %s not found", filename)}
 			}
 		}
 
 		header, records := readCSV(filename)
-		colIdx := buildColumnIndex(header)
+		cm := getColMap(header)
 
-		// 3. The Backtest Loop
+		fmt.Printf("Starting %s: %d candles\n", sym, len(records))
 		var lastDate string
-		for _, record := range records {
-			candle := parseCandle(record, colIdx, sym, *timeframe)
+		for idx, record := range records {
+			if idx > 0 && idx%5000 == 0 {
+				fmt.Printf("  %s: candle %d/%d\n", sym, idx, len(records))
+			}
+			candle := parseCandle(record, cm, sym, *timeframe, dur)
 
-			// Filter by date
-			// if !startDate.IsZero() && candle.StartTime.Before(startDate) {
-			// 	continue
-			// }
 			if !endDate.IsZero() && candle.StartTime.After(endDate) {
 				continue
 			}
 
-			// Check for new day
 			currentDate := candle.StartTime.Format("2006-01-02")
 			if currentDate != lastDate {
 				riskMgr.ResetDaily()
 				lastDate = currentDate
 			}
 
-			// Warmup Phase: Update strategy but don't execute trades
 			if !startDate.IsZero() && candle.StartTime.Before(startDate) {
 				myStrategy.OnCandle(candle)
 				continue
 			}
 
-			// Feed the matching NIFTY-50 daily candle first so the uptrend
-			// filter reflects this date before the stock signal is evaluated.
 			if *uptrend {
 				if nifty, ok := niftyByDate[currentDate]; ok {
 					engine.Execute(nifty)
@@ -401,17 +430,9 @@ func main() {
 			simBroker.CheckExits(candle)
 			engine.Execute(candle)
 
-			// Force Square-off at 15:15
-			// Convert to IST
-			loc, _ := time.LoadLocation("Asia/Kolkata")
-			if loc == nil {
-				loc = time.FixedZone("IST", 5*3600+1800)
-			}
-			istTime := candle.StartTime.In(loc)
+			istTime := candle.StartTime.In(istLoc)
 			h, m, _ := istTime.Clock()
 			timeInMinutes := h*60 + m
-			// 15:15 for the strategies written against the exchange's MIS
-			// square-off; Donchian flattens earlier, on its own knob.
 			squareOffTime := 15*60 + 15
 			if *strategyName == config.StrategyDonchian {
 				squareOffTime = dcCfg.SquareOffMin
@@ -419,74 +440,120 @@ func main() {
 			if *strategyName == config.StrategySRLevels {
 				squareOffTime = srCfg.SquareOffMin
 			}
+			if *strategyName == config.StrategyEMACross {
+				squareOffTime = emaCfg.SquareOffMin
+			}
 
-			if timeInMinutes >= squareOffTime {
+			isCNC := *strategyName == config.StrategyDailyRev || (*strategyName == config.StrategyEMACross && strings.ToUpper(emaCfg.ProductType) == "CNC")
+			if !isCNC && squareOffTime > 0 && timeInMinutes >= squareOffTime {
 				simBroker.SquareOffAll(candle)
 			}
 		}
+		fmt.Printf("Finished %s candles loop, trades: %d\n", sym, len(simBroker.Trades))
 
-		// 4. Report
-		fmt.Println("\n--- TRADE LOG ---")
-		fmt.Printf("%-20s | %-6s | %-10s | %-10s | %-20s | %-10s | %-10s | %-15s\n", "Entry Time", "Type", "Price", "Qty", "Exit Time", "Exit Price", "PnL", "Reason")
-
-		loc, _ := time.LoadLocation("Asia/Kolkata") // Ignore error, fallback to UTC if needed (or nil causes panic? LoadLocation returns UTC if error? No)
-		if loc == nil {
-			loc = time.FixedZone("IST", 5*3600+1800)
-		}
-
-		for _, t := range simBroker.Trades {
-			exitTime := ""
-			exitPrice := ""
-			pnl := ""
-			if !t.ExitTime.IsZero() {
-				exitTime = t.ExitTime.In(loc).Format("2006-01-02 15:04")
-				exitPrice = t.ExitPrice.StringFixed(2)
-				pnl = t.PnL.StringFixed(2)
+		var tableBuilder strings.Builder
+		if len(symbols) <= 2 {
+			tableBuilder.WriteString(fmt.Sprintf("\n--------------------------------------------------\nTESTING SYMBOL: %s\n--------------------------------------------------\n", sym))
+			tableBuilder.WriteString("--- TRADE LOG ---\n")
+			tableBuilder.WriteString(fmt.Sprintf("%-20s | %-6s | %-10s | %-10s | %-20s | %-10s | %-10s | %-15s\n", "Entry Time", "Type", "Price", "Qty", "Exit Time", "Exit Price", "PnL", "Reason"))
+			for _, t := range simBroker.Trades {
+				exitTime := ""
+				exitPrice := ""
+				pnl := ""
+				if !t.ExitTime.IsZero() {
+					exitTime = t.ExitTime.In(istLoc).Format("2006-01-02 15:04")
+					exitPrice = t.ExitPrice.StringFixed(2)
+					pnl = t.PnL.StringFixed(2)
+				}
+				tableBuilder.WriteString(fmt.Sprintf("%-20s | %-6s | %-10s | %-10s | %-20s | %-10s | %-10s | %-15s\n",
+					t.EntryTime.In(istLoc).Format("2006-01-02 15:04"),
+					t.Direction,
+					t.EntryPrice.StringFixed(2),
+					t.Quantity.StringFixed(0),
+					exitTime,
+					exitPrice,
+					pnl,
+					t.ExitReason,
+				))
 			}
-			fmt.Printf("%-20s | %-6s | %-10s | %-10s | %-20s | %-10s | %-10s | %-15s\n",
-				t.EntryTime.In(loc).Format("2006-01-02 15:04"),
-				t.Direction,
-				t.EntryPrice.StringFixed(2),
-				t.Quantity.StringFixed(0),
-				exitTime,
-				exitPrice,
-				pnl,
-				t.ExitReason,
-			)
 		}
-		fmt.Println("-----------------")
 
-		// Deduct round-trip transaction costs (brokerage + STT + exchange/GST/etc.)
-		// from each trade so baseline and updated runs are compared net of costs.
-		allTradesRaw = append(allTradesRaw, simBroker.Trades...)
 		tradesNet := applyCosts(simBroker.Trades, *costBps)
-
 		stats := statistics.Analyze(tradesNet, initialCapital)
-		// Per-symbol Sharpe is unreliable below ~20 trades (tiny-sample stddev
-		// collapse produces absurd values), so show "n/a" there. The pooled
-		// aggregate Sharpe at the end is the trustworthy figure.
-		sharpeStr := "n/a"
-		if stats.TotalTrades >= 20 {
-			sharpeStr = fmt.Sprintf("%.3f", stats.Sharpe)
-		}
-		fmt.Printf("Symbol: %s | Total Trades: %d | Win Rate: %.2f%% | Sharpe: %s | Net Profit: %s\n",
-			sym, stats.TotalTrades, stats.WinRate, sharpeStr, stats.NetProfit)
-
-		allTrades = append(allTrades, tradesNet...)
-
-		// Collect result
-		// stats.NetProfit, GrossProfit, GrossLoss are decimal.Decimal.
-		// WinningTrades is not in Performance struct, calculate it.
 		winningTrades := int(float64(stats.TotalTrades) * stats.WinRate / 100.0)
 
-		results = append(results, Result{
+		res := Result{
 			Symbol:        sym,
 			NetProfit:     stats.NetProfit,
 			GrossProfit:   stats.GrossProfit,
 			GrossLoss:     stats.GrossLoss,
 			TotalTrades:   stats.TotalTrades,
 			WinningTrades: winningTrades,
-		})
+		}
+
+		return symWorkResult{
+			sym:        sym,
+			res:        res,
+			tradesRaw:  simBroker.Trades,
+			tradesNet:  tradesNet,
+			tradeTable: tableBuilder.String(),
+		}
+	}
+
+	numWorkers := 8
+	if numWorkers > len(symbols) {
+		numWorkers = len(symbols)
+	}
+
+	jobs := make(chan string, len(symbols))
+	resultsChan := make(chan symWorkResult, len(symbols))
+
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range jobs {
+				resultsChan <- testSymbol(s)
+			}
+		}()
+	}
+
+	for _, s := range symbols {
+		jobs <- s
+	}
+	close(jobs)
+
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	doneCount := 0
+	for r := range resultsChan {
+		doneCount++
+		if r.err != nil {
+			fmt.Printf("[%2d/%2d] Skipping %s: %v\n", doneCount, len(symbols), r.sym, r.err)
+			continue
+		}
+		if r.tradeTable != "" {
+			fmt.Println(r.tradeTable)
+		}
+		sharpeStr := "n/a"
+		if r.res.TotalTrades >= 20 {
+			stats := statistics.Analyze(r.tradesNet, decimal.NewFromInt(500000))
+			sharpeStr = fmt.Sprintf("%.3f", stats.Sharpe)
+		}
+		winRate := 0.0
+		if r.res.TotalTrades > 0 {
+			winRate = float64(r.res.WinningTrades) / float64(r.res.TotalTrades) * 100.0
+		}
+		fmt.Printf("[%2d/%2d] Symbol: %-12s | Trades: %-4d | WinRate: %5.1f%% | Sharpe: %-5s | NetProfit: ₹%s\n",
+			doneCount, len(symbols), r.sym, r.res.TotalTrades, winRate, sharpeStr, r.res.NetProfit.StringFixed(2))
+
+		allTradesRaw = append(allTradesRaw, r.tradesRaw...)
+		allTrades = append(allTrades, r.tradesNet...)
+		results = append(results, r.res)
 	}
 
 	// Sort results by Net Profit (Descending)
@@ -752,42 +819,62 @@ func parseDuration(tf string) time.Duration {
 	return d
 }
 
-func parseCandle(record []string, col map[string]int, sym string, timeframe string) models.Candle {
-	field := func(name string) string {
-		i, ok := col[name]
-		if !ok || i >= len(record) {
-			return ""
-		}
-		return record[i]
-	}
+type colMap struct {
+	ts, open, high, low, close, vol int
+}
 
-	// Handle +0000 format which is not strict RFC3339
-	tsStr := field("timestamp")
-	layout := "2006-01-02T15:04:05+0000"
-	t, err := time.Parse(layout, tsStr)
-	if err != nil {
-		// Fallback to RFC3339
+func getColMap(header []string) colMap {
+	col := buildColumnIndex(header)
+	lookup := func(k string) int {
+		if idx, ok := col[k]; ok {
+			return idx
+		}
+		return -1
+	}
+	return colMap{
+		ts:    lookup("timestamp"),
+		open:  lookup("open"),
+		high:  lookup("high"),
+		low:   lookup("low"),
+		close: lookup("close"),
+		vol:   lookup("volume"),
+	}
+}
+
+func parseCandle(record []string, cm colMap, sym string, timeframe string, dur time.Duration) models.Candle {
+	var t time.Time
+	if cm.ts >= 0 && cm.ts < len(record) {
+		tsStr := record[cm.ts]
+		var err error
 		t, err = time.Parse(time.RFC3339, tsStr)
 		if err != nil {
-			// Fallback to format without timezone (assume UTC or local, here assuming UTC for simplicity)
-			t, err = time.Parse("2006-01-02T15:04:05", tsStr)
+			layout := "2006-01-02T15:04:05+0000"
+			t, err = time.Parse(layout, tsStr)
 			if err != nil {
-				fmt.Printf("ERROR parsing date '%s': %v\n", tsStr, err)
+				t, _ = time.Parse("2006-01-02T15:04:05", tsStr)
 			}
 		}
 	}
-	o, _ := decimal.NewFromString(field("open"))
-	h, _ := decimal.NewFromString(field("high"))
-	l, _ := decimal.NewFromString(field("low"))
-	c, _ := decimal.NewFromString(field("close"))
-	v, _ := decimal.NewFromString(field("volume"))
-
+	getField := func(idx int) decimal.Decimal {
+		if idx < 0 || idx >= len(record) {
+			return decimal.Zero
+		}
+		f, err := strconv.ParseFloat(record[idx], 64)
+		if err != nil {
+			return decimal.Zero
+		}
+		return decimal.NewFromFloat(f)
+	}
 	return models.Candle{
-		Symbol:    sym,
-		Timeframe: timeframe,
-		Open:      o, High: h, Low: l, Close: c, Volume: v,
+		Symbol:     sym,
+		Timeframe:  timeframe,
+		Open:       getField(cm.open),
+		High:       getField(cm.high),
+		Low:        getField(cm.low),
+		Close:      getField(cm.close),
+		Volume:     getField(cm.vol),
 		StartTime:  t,
-		EndTime:    t.Add(parseDuration(timeframe)),
+		EndTime:    t.Add(dur),
 		IsComplete: true,
 	}
 }
