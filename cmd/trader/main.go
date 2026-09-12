@@ -234,9 +234,12 @@ func main() {
 		dc.SetOptionExecution(buildOptionExecutor(cfg, im, kc))
 		strat = dc
 		maxConcurrent = cfg.Donchian.MaxConcurrent
+	case config.StrategyEMACross:
+		strat = strategy.NewEMACrossStrategy(watchlist, cfg.EMACross)
+		maxConcurrent = cfg.EMACross.MaxConcurrent
 	default:
-		log.Fatalf("live trading supports strategy=%q, %q or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
-			config.StrategyORB, config.StrategyGapFade, config.StrategyDonchian,
+		log.Fatalf("live trading supports strategy=%q, %q, %q, or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
+			config.StrategyORB, config.StrategyGapFade, config.StrategyDonchian, config.StrategyEMACross,
 			cfg.Strategy, cfg.Strategy, cfg.Strategy)
 	}
 
@@ -332,6 +335,20 @@ func main() {
 		} else {
 			log.Printf("WARNING: could not read balance to size the daily-loss limit (%v); keeping [risk] max_daily_loss = %d",
 				err, cfg.Risk.MaxDailyLoss)
+		}
+	}
+	if cfg.Strategy == config.StrategyEMACross {
+		if cfg.EMACross.EntryCutoffMin > 0 {
+			engine.TradeCutoffMin = cfg.EMACross.EntryCutoffMin
+		}
+		if cfg.EMACross.MaxCapitalPerTrade > 0 {
+			engine.MaxCapitalPerTrade = cfg.EMACross.MaxCapitalPerTrade
+			log.Printf("EMACross: max capital per trade Rs%d (overrides [engine] Rs%d)",
+				cfg.EMACross.MaxCapitalPerTrade, int64(cfg.Engine.MaxCapitalPerTrade))
+		}
+		if engine.UptrendOnly && (cfg.EMACross.AllowShort == nil || *cfg.EMACross.AllowShort) {
+			log.Println("EMACross: disabling the NIFTY uptrend filter for symmetric long/short trading")
+			engine.UptrendOnly = false
 		}
 	}
 	engine.InitNiftyEMAs()
@@ -463,6 +480,8 @@ func main() {
 		squareOffMin := 15*60 + 13
 		if cfg.Strategy == config.StrategyDonchian {
 			squareOffMin = cfg.Donchian.SquareOffMin
+		} else if cfg.Strategy == config.StrategyEMACross && cfg.EMACross.SquareOffMin > 0 {
+			squareOffMin = cfg.EMACross.SquareOffMin
 		}
 		targetSquareOff := time.Date(now.Year(), now.Month(), now.Day(), squareOffMin/60, squareOffMin%60, 0, 0, loc)
 		// Target Flush: 15:23 Today
@@ -572,6 +591,21 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 		log.Printf("  Sides            : long + short: %v  Exit On Opposite Break: %v", *c.AllowShort, *c.ExitOnOppositeBreak)
 		log.Printf("  Option Exec      : target delta %.2f (DTE<=3: %.2f), min DTE %d, fallback IV %.1f%%",
 			c.TargetDelta, c.TargetDeltaNearExpiry, minDTE, c.FallbackIV*100)
+	case config.StrategyEMACross:
+		c := cfg.EMACross
+		allowShort := true
+		if c.AllowShort != nil {
+			allowShort = *c.AllowShort
+		}
+		log.Printf("--- EMA CROSS CONFIG ---")
+		log.Printf("  Fast / Slow EMA  : %d / %d   ATR(%d)", c.FastPeriod, c.SlowPeriod, c.ATRPeriod)
+		log.Printf("  Product / Asset  : %s / %s", c.ProductType, c.AssetType)
+		log.Printf("  Stop / Target    : %.2f ATR / %.2f ATR (0 = pure EMA exit)", c.SLATRMult, c.TPATRMult)
+		log.Printf("  Entry Window     : %02d:%02d – %02d:%02d   Square Off: %02d:%02d",
+			c.EntryStartMin/60, c.EntryStartMin%60, c.EntryCutoffMin/60, c.EntryCutoffMin%60,
+			c.SquareOffMin/60, c.SquareOffMin%60)
+		log.Printf("  Risk / Capital   : %.2f%% per trade / Max Rs%d", c.RiskPct, c.MaxCapitalPerTrade)
+		log.Printf("  Max Concurrent   : %d   Allow Short: %v", c.MaxConcurrent, allowShort)
 
 	default:
 		c := cfg.ORB
