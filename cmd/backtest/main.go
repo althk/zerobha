@@ -56,6 +56,14 @@ func main() {
 	emaSL := flag.Float64("ema-sl", 0, "emacross: stop distance in ATR (overrides config)")
 	emaTP := flag.Float64("ema-tp", -999, "emacross: target distance in ATR; <= 0 disables the target (overrides config)")
 	emaATR := flag.Int("ema-atr", 0, "emacross: ATR period (overrides config)")
+	emaTrail := flag.Float64("ema-trail", -1, "emacross: chandelier trail in ATR; 0 = none (overrides config)")
+	emaCrossExit := flag.String("ema-cross-exit", "", "emacross: exit on the opposite cross, on or off (overrides config)")
+	emaSep := flag.Float64("ema-sep", -1, "emacross: minimum |fast-slow| at the cross in ATR; 0 = off (overrides config)")
+	emaADX := flag.Float64("ema-adx", -1, "emacross: ADX threshold; 0 = off (overrides config)")
+	emaADXPeriod := flag.Int("ema-adx-period", 0, "emacross: ADX period (overrides config)")
+	emaMaxEntries := flag.Int("ema-max-entries", -1, "emacross: entries per symbol per session; 0 = unlimited (overrides config)")
+	emaStart := flag.Int("ema-start", 0, "emacross: first entry minute of day, e.g. 571 = 09:31 (overrides config)")
+	emaCutoff := flag.Int("ema-cutoff", 0, "emacross: last entry minute of day, e.g. 900 = 15:00 (overrides config)")
 	flag.Parse()
 
 	// When a TOML config is given, it supplies the strategy, symbol CSV,
@@ -275,10 +283,39 @@ func main() {
 	if *emaATR > 0 {
 		emaCfg.ATRPeriod = *emaATR
 	}
+	if *emaTrail >= 0 {
+		trail := *emaTrail
+		emaCfg.TrailATRMult = &trail
+	}
+	if *emaCrossExit != "" {
+		on := strings.EqualFold(*emaCrossExit, "on")
+		emaCfg.ExitOnOppositeCross = &on
+	}
+	if *emaSep >= 0 {
+		emaCfg.MinSepATR = *emaSep
+	}
+	if *emaADX >= 0 {
+		emaCfg.ADXThreshold = *emaADX
+	}
+	if *emaADXPeriod > 0 {
+		emaCfg.ADXPeriod = *emaADXPeriod
+	}
+	if *emaMaxEntries >= 0 {
+		emaCfg.MaxEntriesPerSymbol = *emaMaxEntries
+	}
+	if *emaStart > 0 {
+		emaCfg.EntryStartMin = *emaStart
+	}
+	if *emaCutoff > 0 {
+		emaCfg.EntryCutoffMin = *emaCutoff
+	}
 	if *strategyName == config.StrategyEMACross {
-		fmt.Printf("EMACross: fast=%d slow=%d atr=%d product=%s asset=%s SL=%.1fxATR TP=%.1fxATR\n",
+		crossExit := emaCfg.ExitOnOppositeCross == nil || *emaCfg.ExitOnOppositeCross
+		fmt.Printf("EMACross: fast=%d slow=%d atr=%d product=%s asset=%s SL=%.1fxATR TP=%.1fxATR trail=%.1fxATR crossExit=%v sep=%.2fATR adx=%.0f/%d maxEntries=%d window=%02d:%02d-%02d:%02d\n",
 			emaCfg.FastPeriod, emaCfg.SlowPeriod, emaCfg.ATRPeriod, emaCfg.ProductType, emaCfg.AssetType,
-			emaCfg.SLATRMult, emaCfg.TPATRMult)
+			emaCfg.SLATRMult, emaCfg.TPATRMult, emaCfg.TrailMult(), crossExit, emaCfg.MinSepATR,
+			emaCfg.ADXThreshold, emaCfg.ADXPeriod, emaCfg.MaxEntriesPerSymbol,
+			emaCfg.EntryStartMin/60, emaCfg.EntryStartMin%60, emaCfg.EntryCutoffMin/60, emaCfg.EntryCutoffMin%60)
 	}
 
 	type symWorkResult struct {

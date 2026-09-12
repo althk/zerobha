@@ -22,14 +22,15 @@ const (
 // EMACross is a trend-following crossover system between a fast EMA and a
 // slow EMA.
 //
-// Defaults (see config.DefaultEMACrossConfig):
-//   - Fast EMA 9, slow EMA 21, ATR(5)
-//   - Timeframe 5m
+// Defaults (see config.DefaultEMACrossConfig, measured values):
+//   - Fast EMA 9, slow EMA 21, ATR(5), 5-minute bars, entries 10:00-15:00
 //   - ProductType MIS (intraday) or CNC (overnight)
 //   - AssetType "stocks" (trade the signal instrument) or "options" (index
 //     signal expressed through a weekly option, live only — see option_leg.go)
-//   - SL 2 ATR, no target (tp_atr_mult <= 0 disables it)
-//   - Exit: opposite EMA cross, or SL/TP, whichever happens first
+//   - SL 3 ATR, 3 ATR chandelier trail, no target, no opposite-cross exit:
+//     the position runs on the trail and the next cross enters once flat
+//   - Optional: exit_on_opposite_cross, min_sep_atr, adx_threshold,
+//     max_entries_per_symbol — all measured, all off by default
 //   - CNC stocks are long-only: the cash segment cannot carry a short overnight
 type EMACross struct {
 	cfg   config.EMACrossConfig
@@ -44,6 +45,7 @@ type emaCrossState struct {
 	fastEMA *indicators.EMA
 	slowEMA *indicators.EMA
 	atr     *indicators.ATR
+	adx     *indicators.ADX // nil unless an ADX threshold is configured
 
 	prevFastEMA decimal.Decimal
 	prevSlowEMA decimal.Decimal
@@ -51,6 +53,7 @@ type emaCrossState struct {
 
 	lastCandleTime time.Time
 	lastDate       string
+	entriesToday   int
 
 	openSide  models.SignalType
 	openValid bool
@@ -92,11 +95,19 @@ func (s *EMACross) newState() *emaCrossState {
 		atrPeriod = 5
 	}
 
-	return &emaCrossState{
+	st := &emaCrossState{
 		fastEMA: indicators.NewEMA(fastPeriod),
 		slowEMA: indicators.NewEMA(slowPeriod),
 		atr:     indicators.NewATR(atrPeriod),
 	}
+	if s.cfg.ADXThreshold > 0 {
+		adxPeriod := s.cfg.ADXPeriod
+		if adxPeriod <= 0 {
+			adxPeriod = 14
+		}
+		st.adx = indicators.NewADX(adxPeriod)
+	}
+	return st
 }
 
 func (s *EMACross) stateFor(symbol string) *emaCrossState {
@@ -141,11 +152,15 @@ func (s *EMACross) updateCandle(st *emaCrossState, candle models.Candle) {
 	st.fastEMA.Update(candle.Close)
 	st.slowEMA.Update(candle.Close)
 	st.atr.Update(candle)
+	if st.adx != nil {
+		st.adx.Update(candle)
+	}
 	st.lastCandleTime = candle.StartTime
 
 	dateStr := candle.StartTime.In(istLocation).Format("2006-01-02")
 	if dateStr != st.lastDate {
 		st.lastDate = dateStr
+		st.entriesToday = 0
 		// An MIS position cannot survive the session: the square-off flattens
 		// it, and an option leg with it. Believing otherwise would suppress
 		// the next day's first entry on the same side and, worse, "close" a
@@ -178,6 +193,9 @@ func (s *EMACross) ExitAdvice(candle models.Candle) *core.ExitAdvice {
 		}
 	}
 
+	if s.cfg.ExitOnOppositeCross != nil && !*s.cfg.ExitOnOppositeCross {
+		return nil
+	}
 	if !st.openValid || !st.hasPrev || !st.fastEMA.IsReady() || !st.slowEMA.IsReady() {
 		return nil
 	}
@@ -247,6 +265,24 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 		return nil
 	}
 
+	// Entry filters. A cross with the EMAs still on top of each other is the
+	// signature of chop; a separation floor demands the cross came with
+	// momentum. ADX rejects low-energy sideways sessions outright.
+	if s.cfg.MinSepATR > 0 {
+		sep := currFast.Sub(currSlow).Abs()
+		if sep.LessThan(atrVal.Mul(decimal.NewFromFloat(s.cfg.MinSepATR))) {
+			return nil
+		}
+	}
+	if s.cfg.ADXThreshold > 0 && st.adx != nil {
+		if st.adx.Value().LessThan(decimal.NewFromFloat(s.cfg.ADXThreshold)) {
+			return nil
+		}
+	}
+	if s.cfg.MaxEntriesPerSymbol > 0 && st.entriesToday >= s.cfg.MaxEntriesPerSymbol {
+		return nil
+	}
+
 	productType := s.productType()
 
 	// Determine if shorting is allowed
@@ -273,6 +309,13 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 	if st.openValid && st.openSide == side {
 		return nil
 	}
+	// No entry while an option leg is open. Trading the index directly, the
+	// engine refuses a second position in the same symbol; a call and a put
+	// are different symbols, so nothing downstream would stop the strategy
+	// buying a put on top of an open call and losing the call's index stop.
+	if st.leg != nil {
+		return nil
+	}
 
 	signal := s.buildSignal(candle, side, atrVal, productType, currFast, currSlow)
 
@@ -289,11 +332,13 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 		st.leg = leg
 		st.openSide = side
 		st.openValid = true
+		st.entriesToday++
 		return optionSignal
 	}
 
 	st.openSide = side
 	st.openValid = true
+	st.entriesToday++
 	return signal
 }
 
@@ -336,6 +381,9 @@ func (s *EMACross) buildSignal(candle models.Candle, side models.SignalType, atr
 	}
 	if hasTP {
 		sig.Target = target
+	}
+	if trail := s.cfg.TrailMult(); trail > 0 {
+		sig.TrailDistance = atrVal.Mul(decimal.NewFromFloat(trail))
 	}
 	if s.cfg.RiskPct > 0 {
 		sig.RiskPct = decimal.NewFromFloat(s.cfg.RiskPct / 100.0)

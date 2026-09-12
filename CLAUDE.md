@@ -9,7 +9,8 @@ daily short-term reversal added to test the lower-frequency thesis, and
 earnings, and `donchian`, an intraday channel breakout specified on NSE stock
 futures (long and short), and `srlevels`, an intraday support/resistance
 strategy on daily pivots confirmed against higher-timeframe swing zones, on the
-index charts for weekly-option execution. Other
+index charts for weekly-option execution, and `emacross`, a 9/21 EMA crossover
+on the index charts, also for weekly-option execution. Other
 strategies existed and were removed in `6f8ef50` after backtests showed no edge
 — see [Findings](#findings-do-not-re-derive) before proposing to add them back.
 `dailyrev` also has no edge once benchmarked; it is kept as the worked example
@@ -40,6 +41,16 @@ go run ./cmd/optbt -trades idx.csv -underlying nifty -itm 150   -cost-bps 30 -sp
 # Same, choosing the strike by delta and skipping expiry day and the day before
 # (-lots matters: brokerage is flat per order, so the edge improves to ~10 lots)
 go run ./cmd/optbt -trades idx.csv -underlying nifty -delta 0.8   -lots 10 -min-dte 2 -spread-pct 0.25 -split 2025-09-01
+
+# EMA crossover on both index charts. The shipped [emacross] config reproduces
+# the recorded 1,960-trade list; the -ema-* flags are for sweeping.
+go run ./cmd/backtest -strategy emacross -csv indices.csv -timeframe 5minute \
+  -limit 2 -cost-bps 0 -trades-csv ema.csv
+
+# Price it on real expired weekly premium candles (skip expiry day, 10 lots)
+go run ./cmd/optbt -trades ema.csv -underlying nifty -delta 0.80 \
+  -delta-near-expiry 0.80 -lots 10 -min-dte 1 -spread-ticks 20 -timeframe 5m \
+  -split 2025-09-01
 
 # Support/resistance on the NIFTY index chart. The shipped [srlevels] config
 # reproduces the recorded trade list, so the -sr-* flags are only for sweeping;
@@ -88,6 +99,8 @@ with `pkg/broker/sim.go`; the engine and strategy code are identical.
 | `pkg/strategy/gapfade.go` | Intraday gap-down recovery, gated on news/earnings |
 | `pkg/strategy/donchian.go` | Intraday channel breakout, long+short, futures |
 | `pkg/strategy/srlevels.go` | Intraday support/resistance on daily pivots + HTF zones |
+| `pkg/strategy/emacross.go` | 9/21 EMA crossover on the index charts, trail-only exit |
+| `pkg/strategy/option_leg.go` | Index signal -> option order, index-driven exits (shared by donchian and emacross) |
 | `pkg/indicators/pivots.go` | Traditional and Fibonacci daily pivot levels |
 | `pkg/broker/futures.go` | NFO stock-futures universe: rollover + liquidity gate |
 | `pkg/indicators/donchian.go` | Donchian channel, excluding the current bar |
@@ -100,7 +113,6 @@ with `pkg/broker/sim.go`; the engine and strategy code are identical.
 | `cmd/optbt/` | Prices an index trade list on real expired weekly-option candles |
 | `pkg/options/` | Black-Scholes, strike selection by delta, expiry calendar |
 | `pkg/broker/optionchain.go` | The Kite instrument dump as an `options.Chain` |
-| `pkg/strategy/donchian_options.go` | Index signal -> option order, index-driven exits |
 | `scripts/*.py` | Watchlist building, beta/sector screening, Yahoo data download |
 
 A strategy implements `Name() / Init(DataProvider) / OnCandle(Candle) *Signal`.
@@ -118,18 +130,20 @@ exists. Closing goes through `core.PositionCloser` when the broker implements it
 
 `core.NewsGate` is the second injection point: `Assess(symbol, asOf)` returns a
 `GateVerdict{Allow, Reason}`. `gapfade` consults it before entering; the trader
-injects `pkg/upstox.Gate`, the backtester injects nil. Live trading supports `orb`, `gapfade` and `donchian`; `dailyrev` is
+injects `pkg/upstox.Gate`, the backtester injects nil. Live trading supports `orb`, `gapfade`, `donchian` and `emacross`; `dailyrev` is
 backtest-only (CNC positions would be squared off the same day), and `srlevels`
 is backtest-only too — `cmd/trader` has no case for it, deliberately, because
 nothing measured about it yet justifies wiring option execution to it.
 
-`donchian` is the one strategy whose **signal instrument and traded instrument
-differ**: the signal is computed on the NIFTY / SENSEX index chart and the
-position is taken in a weekly option. `strategy.OptionExecutor` is the seam.
+`donchian` and `emacross` are the strategies whose **signal instrument and
+traded instrument differ**: the signal is computed on the NIFTY / SENSEX index
+chart and the position is taken in a weekly option. `strategy.OptionExecutor`
+is the seam and `pkg/strategy/option_leg.go` the shared mechanics.
 `cmd/backtest` injects nothing and trades the index directly — which is what
-every recorded donchian result measures — while `cmd/trader` injects
+every recorded index result measures — while `cmd/trader` injects
 `broker.OptionExecutor`, so the same code path either trades the index or
-translates each signal into a contract.
+translates each signal into a contract. For `emacross` the trader wires it only
+when `asset_type = "options"`; `"stocks"` trades the watchlist directly.
 
 That split has one consequence that shapes the design: **no resting order on an
 option can express a level on the index.** A stop at "NIFTY below 24,200" is not
@@ -1171,7 +1185,7 @@ strategy silently never trades. The chain maps the feed symbol onto the
 derivative `Name` (`NIFTY 50` -> `NIFTY`, `SENSEX` -> `SENSEX`) and fails loudly
 on an unknown underlying rather than returning an empty list.
 
-**Exits.** `donchian_options.go` keeps the index-side stop and chandelier trail
+**Exits.** `option_leg.go` (then `donchian_options.go`) keeps the index-side stop and chandelier trail
 per open leg and closes the **contract** when the index closes through them.
 Exits are evaluated on bar closes, not ticks: a live index stop would need
 tick-by-tick evaluation of one instrument to fire a market order in another, and
@@ -1608,6 +1622,113 @@ disagreeing.
 
 `scripts/analyze_trades.py` summarises any `-trades-csv` dump in per-trade bps
 with IS/OOS and per-symbol splits, which is the reading the rupee totals hide.
+
+### EMA crossover (`emacross`) — added and measured 2026-09-12, trail-only
+
+Rule set as shipped: 9/21 EMA on the NIFTY 50 and SENSEX 5-minute charts, long
+on a golden cross, short on a death cross, entries 10:00–15:00, stop 3 ATR(5),
+3 ATR chandelier trail, no target, **no opposite-cross exit**, flat 15:15. The
+position runs on its trail and the next cross enters only once flat (the engine
+refuses a second position in the symbol; in option mode the strategy refuses
+while a leg is open, because a put on top of an open call is a *different
+symbol* and nothing downstream would stop it). Long and short, MIS, ~2.7
+entries a day across the two indices. All figures gross index bps, 733 sessions
+2023-09 → 2026-09, `-cost-bps 0`, IS/OOS split 2025-09-01.
+
+**As committed the strategy was a 9/21 cross with the opposite cross as its
+exit, entries from 09:31.** That is a ~1 ATR trail wearing a different name,
+and it measured the way every other cap on the winning side here has:
+
+| Config | n | All | t | IS | OOS | N.OOS | S.OOS | Σ bps |
+|---|---|---|---|---|---|---|---|---|
+| as committed (cross exit, SL 2, 09:31) | 3,658 | +1.33 | 2.92 | +0.69 | +2.71 | +2.82 | +2.59 | +4,859 |
+| cross exit off, SL 3, trail 3 | 2,029 | +2.24 | 3.24 | +1.80 | +3.08 | +3.20 | +2.95 | +4,548 |
+| **+ entries from 10:00 (shipped)** | **1,960** | **+2.53** | **3.71** | **+1.62** | **+4.20** | **+4.43** | **+3.97** | **+4,963** |
+
+Exit mix of the shipped row: 1,290 SL-HIT at −6.7 bps (the trail reports as
+SL-HIT), 670 EOD at +20.4. LONG +2.87 (n 958), SHORT +2.21 (n 1,002) — both
+sides pay, unlike the two-month sample, where longs were negative on 94 trades.
+
+Everything else was measured and rejected. Two-month numbers (2026-07-13 →
+09-11, 184 trades, t = 1.06) said nothing on their own; the decisions below
+came from the full sample.
+
+- **The exit shape is the whole improvement, and it replicates the repo's
+  finding for the eighth time.** Trail 2.5 costs half the edge (+1.28), 2.0
+  takes it to zero (+0.17); 3.0–4.0 is a plateau (+2.53 / +2.99 / +3.11) and
+  no trail at all is +3.41 on 1,480 trades. SL 3 = SL 4 to the decimal (the
+  trail binds first). A 6 ATR target fires on ~0.3% of trades and moves
+  nothing. Cross exit ON with the same trail: +1.55 on 3,426 trades. Trail 3 is
+  kept over 3.5/4 for the reason recorded in the chandelier sweep above — the
+  peak of a plateau is where fitting lives.
+- **The opening half hour is gap artefacts.** By entry half-hour, 09:30–10:00
+  is the only bucket negative on both exit shapes and in both windows (−4.14
+  bps, t −2.14 on the committed config; −1.10 / OOS −9.40 on the trail-only
+  one). At 09:31 the EMAs have seen three bars of the session and still carry
+  yesterday's close through the overnight gap; 10:00 is nine bars in, one
+  fast-EMA period. Skipping it takes 3,658 → 3,426 trades and *raises* total
+  gross (+4,859 → +5,820 Σ bps) — the "removes net-negative trades" signature,
+  not a per-trade ranking.
+- **Every entry filter removes good trades** — the Donchian pattern, not the
+  srlevels one. ADX 15/20/25 on the shipped skeleton: +1.76 / +1.33 / +1.15
+  against +2.53, monotonically worse. `max_entries_per_symbol` 1 / 2: +1.16 /
+  +1.44. A minimum EMA separation of 0.1 ATR at the cross: +1.93 on 686 trades
+  with IS collapsing to +0.62; 0.25 ATR leaves 18 trades. All four knobs ship
+  at 0 and stay in the config because they were measured, not assumed.
+- **9/21 is the right speed, and slower is worse** — the opposite of Donchian's
+  lookback. 5/13 +0.81, 8/21 +2.37, 9/30 +1.92, 13/34 +1.43, 20/50 +1.54. ATR
+  period 5 / 9 / 14: +2.53 / +2.58 / +2.75, within noise; 5 stays.
+
+**The option leg, and the interaction the index numbers hide.** The trail-only
+config holds longer (median 75 min vs 55) so it pays more decay per trade, and
+on expiry day that is decisive. Per-DTE buckets, 0.80 delta, 10 lots, 20-tick
+spread, 2024-10 → 2026-09:
+
+| DTE | NIFTY n | NIFTY index bps | NIFTY net prem | SENSEX n | SENSEX index bps | SENSEX net prem |
+|---|---|---|---|---|---|---|
+| **0** | 128 | −0.04 | **−624.6** | 135 | −0.39 | **−430.9** |
+| 1 | 121 | +3.09 | +79.0 | 117 | +4.03 | +290.2 |
+| 2 | 70 | +5.39 | +256.0 | 83 | +4.66 | +414.8 |
+| 3–6 | 305 | +1.5 to +6.6 | +41 to +318 | 288 | −1.4 to +3.9 | +39 to +251 |
+
+DTE 0 is the one losing bucket on both indices, and the index signal itself is
+~0 there — no edge and maximum decay on the same day. Every other bucket is
+positive on both. So `min_days_to_expiry = 1`: skip expiry day only. (Donchian
+skips two days; its −1571 figure was a 0.75-delta artefact and its own later
+buckets were random. This one is cleaner.)
+
+Priced with that rule, against the committed config on the same terms:
+
+| Config | Index | n | Index bps | Gross prem | **NET prem** | t | IS | OOS | ₹/trade |
+|---|---|---|---|---|---|---|---|---|---|
+| shipped | NIFTY | 499 | +4.26 | +214.8 | **+150.8** | 1.64 | +32.3 | +258.8 | +2,428 |
+| shipped | SENSEX | 492 | +3.03 | +271.3 | **+233.1** | **2.81** | +188.3 | +270.9 | +3,727 |
+| as committed | NIFTY | 878 | +1.97 | +62.1 | −2.0 | −0.03 | −29.4 | +25.2 | −235 |
+| as committed | SENSEX | 855 | +1.63 | +180.8 | +142.6 | 2.37 | +130.6 | +154.0 | +3,059 |
+
+Spread sensitivity: 20 → 50 ticks costs NIFTY 55 bps (+150.8 → +95.6, IS goes
+negative) and SENSEX 17 (+233.1 → +216.5) — the same structural asymmetry
+recorded for Donchian. Last two months alone (n = 38 / 40): NIFTY +46, SENSEX
++632; too few to read.
+
+**This is the first strategy here positive in all four index × window cells
+on the option leg, and it is still not proven.** Every decision above — exit
+shape, start time, the DTE rule — was chosen looking at the whole sample, so
+the "OOS" column is a consistency check, not a hold-out; there is no unseen
+data left. SENSEX t = 2.81 over 492 trades is the strongest option-leg figure
+in this repo and it was selected from ~40 cells. The honest next step is not
+another sweep: it is forward measurement. `cmd/trader -paper` runs this exact
+code path with real quotes, real contract selection and simulated fills, and
+the paper broker holds the index stop the way the live one would. Trade it on
+paper for a quarter before believing the table.
+
+Two config notes, both the repo's recurring trap:
+
+- `trail_atr_mult` is a `*float64` with `TrailMult()`; an explicit 0 turns the
+  trail off, absent takes 3. Regression test in `internal/config/emacross_test.go`.
+- The strategy tests pin `exit_on_opposite_cross = true` and `trail_atr_mult =
+  0` because they assert on the cross exit, which ships off — the
+  `donchianTestConfig` lesson.
 
 ## Paper trading
 

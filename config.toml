@@ -374,17 +374,30 @@ product_type = "MIS"          # Intraday
 asset_type = "options"        # "options" or "stocks"
 
 atr_period = 5
-sl_atr_mult = 2.0
-tp_atr_mult = 0               # <= 0 (or absent) disables TP: pure opposite-EMA exit
+sl_atr_mult = 3.0             # the 3 ATR trail binds first; 2.0 measured worse
+tp_atr_mult = 0               # <= 0 (or absent) disables TP; a 6 ATR target measured inert
+
+# Exit shape (measured 2026-09-12, 733 sessions, see CLAUDE.md). The opposite
+# cross is a ~1 ATR trail in disguise; off, the position runs on the chandelier
+# and the next cross enters once flat. trail_atr_mult = 0 disables the trail.
+exit_on_opposite_cross = false
+trail_atr_mult = 3.0
+
+# Entry filters. All measured and all left off: ADX and an entry cap remove
+# good trades (the Donchian pattern), a separation floor cuts the sample 5x.
+min_sep_atr = 0
+adx_threshold = 0
+adx_period = 14
+max_entries_per_symbol = 0
 
 # Option execution, used only by cmd/trader when asset_type = "options". The
 # backtester always trades the index; price its trade list with cmd/optbt.
 target_delta = 0.80
 target_delta_near_expiry = 0.80  # 0 = same as target_delta
-min_days_to_expiry = 0        # explicit 0 trades expiry day (measured on 40 sessions only)
+min_days_to_expiry = 1        # skip expiry day only: the one losing DTE bucket on both indices
 fallback_iv = 0               # 0 = refuse to trade when the ATM premium is unreadable
 
-entry_start_min = 571         # 09:31 IST
+entry_start_min = 600         # 10:00 IST; the first half hour is gap artefacts (-4.1 bps, t -2.1)
 entry_cutoff_min = 900        # 15:00 IST
 squareoff_min = 915           # 15:15 IST
 

@@ -33,6 +33,9 @@ func TestEMACross_GoldenCrossAndExit(t *testing.T) {
 	cfg.ProductType = "MIS"
 	cfg.EntryStartMin = 0
 	cfg.EntryCutoffMin = 0
+	// Pinned: this test asserts on the cross exit, which ships off.
+	on := true
+	cfg.ExitOnOppositeCross = &on
 
 	s := NewEMACrossStrategy([]string{"TEST"}, cfg)
 

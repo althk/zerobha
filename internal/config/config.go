@@ -441,7 +441,23 @@ type EMACrossConfig struct {
 
 	AllowShort *bool `toml:"allow_short"` // allow short selling; default true for MIS, false for CNC
 
-	EntryStartMin  int `toml:"entry_start_min"`  // default 571 (09:31)
+	// Exit shape. The opposite-cross exit and the chandelier trail are
+	// independent: either, both or neither can be on. With both off the only
+	// exits are the fixed stop, the target (if any) and the square-off.
+	ExitOnOppositeCross *bool `toml:"exit_on_opposite_cross"` // default false (measured; see CLAUDE.md)
+	// TrailATRMult is the chandelier trail in ATR. A pointer for the reason
+	// Donchian's is: nil means absent and takes DefaultEMATrailATRMult, an
+	// explicit 0 turns the trail off (any knob whose zero is a meaningful
+	// setting must be a pointer). Read it through TrailMult().
+	TrailATRMult *float64 `toml:"trail_atr_mult"`
+
+	// Entry filters, all off by default (0). All measured, none kept.
+	MinSepATR           float64 `toml:"min_sep_atr"`            // |fast - slow| at the cross must be >= this many ATR
+	ADXThreshold        float64 `toml:"adx_threshold"`          // reject entries with ADX below this
+	ADXPeriod           int     `toml:"adx_period"`             // default 14 when the threshold is set
+	MaxEntriesPerSymbol int     `toml:"max_entries_per_symbol"` // per session; 0 = unlimited
+
+	EntryStartMin  int `toml:"entry_start_min"`  // default 600 (10:00)
 	EntryCutoffMin int `toml:"entry_cutoff_min"` // default 900 (15:00)
 	SquareOffMin   int `toml:"squareoff_min"`    // default 915 (15:15) for MIS; 0 disables for CNC
 
@@ -820,22 +836,41 @@ func DefaultSRLevelsConfig() SRLevelsConfig {
 
 func DefaultEMACrossConfig() EMACrossConfig {
 	allowShort := true
-	minDTE := 0
+	// Skip expiry day only. Measured 2026-09-12 on 2024-10..2026-09: DTE 0 is
+	// the one losing bucket on both indices (-625 / -431 premium bps) and the
+	// index signal itself is ~0 there; every other bucket is positive.
+	minDTE := 1
+	// The opposite-cross exit is the damage: it is a ~1 ATR trail in disguise,
+	// and every cap on the winning side in this repo has cost more than it
+	// saved. With it off the position runs on the 3 ATR chandelier, and the
+	// next cross enters only once the position is flat.
+	exitOnCross := false
 	return EMACrossConfig{
-		Timeframe:          "5m",
-		CSVFile:            "indices.csv",
-		Limit:              50,
-		FastPeriod:         9,
-		SlowPeriod:         21,
-		ProductType:        "MIS",
-		AssetType:          "options",
-		ATRPeriod:          5,
-		SLATRMult:          2.0,
-		TPATRMult:          0,
-		TargetDelta:        0.80,
-		MinDaysToExpiry:    &minDTE,
-		AllowShort:         &allowShort,
-		EntryStartMin:      9*60 + 31,
+		Timeframe:   "5m",
+		CSVFile:     "indices.csv",
+		Limit:       50,
+		FastPeriod:  9,
+		SlowPeriod:  21,
+		ProductType: "MIS",
+		AssetType:   "options",
+		ATRPeriod:   5,
+		// SL 3 = SL 4 here: the 3 ATR trail binds first, so the initial stop
+		// is only the first bar's protection. 2 ATR measured worse on both
+		// windows (+1.88 vs +2.53 bps).
+		SLATRMult:           3.0,
+		TPATRMult:           0,
+		TargetDelta:         0.80,
+		MinDaysToExpiry:     &minDTE,
+		AllowShort:          &allowShort,
+		ExitOnOppositeCross: &exitOnCross,
+		TrailATRMult:        floatPtr(DefaultEMATrailATRMult),
+		ADXPeriod:           14,
+		// 10:00, not 09:31. At 09:31 the EMAs have seen three bars of the
+		// session and still carry yesterday's close through the overnight gap,
+		// so the first crosses are gap artefacts: the 09:30-10:00 bucket is the
+		// only one negative on both exit shapes and in both windows (-4.1 bps,
+		// t -2.1). 10:00 is nine bars in, one fast-EMA period.
+		EntryStartMin:      10 * 60,
 		EntryCutoffMin:     15 * 60,
 		SquareOffMin:       15*60 + 15,
 		MaxCapitalPerTrade: 150000,
@@ -924,6 +959,19 @@ const DefaultTrailATRMult = 3.0
 
 // TrailMult resolves the trail distance: an explicit value (0 included) wins,
 // and a nil pointer means the key was absent and takes the default.
+// DefaultEMATrailATRMult is the chandelier trail EMACross uses when the
+// config omits trail_atr_mult. Measured 2026-09-12: 2.5 is the damage, 3-4 a
+// plateau; 3 is kept for consistency with Donchian and srlevels.
+const DefaultEMATrailATRMult = 3.0
+
+// TrailMult returns the chandelier trail distance in ATR, 0 meaning no trail.
+func (c EMACrossConfig) TrailMult() float64 {
+	if c.TrailATRMult == nil {
+		return DefaultEMATrailATRMult
+	}
+	return *c.TrailATRMult
+}
+
 func (c DonchianConfig) TrailMult() float64 {
 	if c.TrailATRMult == nil {
 		return DefaultTrailATRMult
@@ -1355,6 +1403,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.EMACross.AllowShort == nil {
 		config.EMACross.AllowShort = emaD.AllowShort
+	}
+	if config.EMACross.ExitOnOppositeCross == nil {
+		config.EMACross.ExitOnOppositeCross = emaD.ExitOnOppositeCross
+	}
+	if config.EMACross.TrailATRMult == nil {
+		config.EMACross.TrailATRMult = emaD.TrailATRMult
+	}
+	if config.EMACross.ADXPeriod == 0 {
+		config.EMACross.ADXPeriod = emaD.ADXPeriod
 	}
 	if config.EMACross.EntryStartMin == 0 {
 		config.EMACross.EntryStartMin = emaD.EntryStartMin

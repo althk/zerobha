@@ -24,6 +24,11 @@ func emaOptionTestConfig() config.EMACrossConfig {
 	cfg.AssetType = "options"
 	cfg.EntryStartMin = 0
 	cfg.EntryCutoffMin = 0
+	noTrail := 0.0
+	cfg.TrailATRMult = &noTrail
+	// Pinned: several tests here assert on the cross exit, which ships off.
+	on := true
+	cfg.ExitOnOppositeCross = &on
 	return cfg
 }
 
@@ -193,5 +198,40 @@ func TestEMACrossMISResetsLegOnNewSession(t *testing.T) {
 	}
 	if st.leg != nil || st.openValid {
 		t.Error("leg and openValid should reset on the new session")
+	}
+}
+
+// With the cross exit off, the position runs on its trail and the opposite
+// cross must not open a second leg: a put on top of the open call would be a
+// different symbol, so the engine would accept it, and the call's index stop
+// would be lost with the overwritten leg.
+func TestEMACrossOptionModeNoSecondLegWhileOneIsOpen(t *testing.T) {
+	exec := newFakeExecutor()
+	cfg := emaOptionTestConfig()
+	off := false
+	cfg.ExitOnOppositeCross = &off
+	s := NewEMACrossStrategy([]string{"NIFTY 50"}, cfg)
+	s.SetOptionExecution(exec)
+
+	_, at := driveToGoldenCross(t, s)
+	st := s.stateFor("NIFTY 50")
+	leg := st.leg
+	st.leg.indexStop = decimal.NewFromInt(-1000) // out of reach: only a cross could act
+	calls := exec.selectCall
+
+	for i, p := range []float64{110, 95, 80, 65, 50} {
+		c := makeCandle("NIFTY 50", at.Add(time.Duration(i+1)*time.Minute), p+2, p+3, p-2, p)
+		if adv := s.ExitAdvice(c); adv != nil {
+			t.Fatalf("cross exit is off, got advice %+v", adv)
+		}
+		if sig := s.OnCandle(c); sig != nil {
+			t.Fatalf("second leg opened on the death cross: %+v", sig)
+		}
+	}
+	if exec.selectCall != calls {
+		t.Error("executor was asked for a contract while a leg was open")
+	}
+	if st.leg != leg {
+		t.Error("open leg was replaced")
 	}
 }
