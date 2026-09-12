@@ -3,6 +3,7 @@ package risk
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"time"
 	"zerobha/internal/models"
@@ -45,6 +46,17 @@ func NewManager(store *db.Store, maxLoss decimal.Decimal, maxTrades int, maxTrad
 	return rm
 }
 
+// SetDayPnL tells the manager where the day stands. The engine reads it
+// from the broker's position book before every signal, because nothing else
+// can: exits happen at resting stops, in ClosePosition and at the square-off,
+// none of which pass through the engine's order path. UpdateTradeLog used to
+// be the only way PnL reached this switch, and the engine only ever called it
+// with zero — so until 2026-09-12 the daily-loss limit could not trip, live or
+// paper.
+func (rm *Manager) SetDayPnL(pnl decimal.Decimal) {
+	rm.currentPnL = pnl
+}
+
 // Evaluate decides if a signal is allowed to pass.
 func (rm *Manager) Evaluate(signal *models.Signal) error {
 	// 1. Check Max Trades (Total)
@@ -61,18 +73,19 @@ func (rm *Manager) Evaluate(signal *models.Signal) error {
 
 	// 3. Check Daily Loss Limit (Kill Switch)
 	// If current PnL is worse than -MaxDailyLoss (e.g., -5000 < -2000)
-	if rm.currentPnL.LessThan(rm.MaxDailyLoss.Neg()) {
-		return errors.New("risk rejection: daily loss limit hit")
+	if rm.MaxDailyLoss.IsPositive() && rm.currentPnL.LessThan(rm.MaxDailyLoss.Neg()) {
+		return fmt.Errorf("risk rejection: daily loss limit hit (day PnL Rs %s, limit Rs %s)",
+			rm.currentPnL.StringFixed(0), rm.MaxDailyLoss.StringFixed(0))
 	}
 
 	return nil
 }
 
-// UpdateTradeLog is called after an order is filled to update state
-func (rm *Manager) UpdateTradeLog(symbol string, pnl decimal.Decimal) {
+// UpdateTradeLog is called after an entry order is placed. It counts trades;
+// PnL comes from SetDayPnL, not from here.
+func (rm *Manager) UpdateTradeLog(symbol string) {
 	rm.tradesToday++
 	rm.tradesPerStock[symbol]++
-	rm.currentPnL = rm.currentPnL.Add(pnl)
 	rm.SaveState()
 }
 

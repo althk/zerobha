@@ -112,6 +112,15 @@ type LegReporter interface {
 	OpenLegs() []OpenLeg
 }
 
+// DailyPnLReporter is an optional Broker capability: the day's PnL as the
+// broker sees it, realised and mark-to-market, for the risk manager's daily
+// loss limit. Brokers without it are read through GetPositions, whose PnL
+// field carries the same thing for Kite and for the paper broker; the
+// simulator, whose position book holds only open lots, implements this.
+type DailyPnLReporter interface {
+	DailyPnL() (decimal.Decimal, error)
+}
+
 // PositionCloser is an optional Broker capability: closing one symbol's
 // position at a known price, in one call. Brokers that cannot do this (or do
 // not need to) simply omit it, and the engine falls back to placing a counter

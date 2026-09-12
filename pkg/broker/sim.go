@@ -19,6 +19,30 @@ type SimBroker struct {
 	Orders      []models.Order
 	Trades      []models.Trade
 	openIndices []int
+	// sessionDate / sessionPnL: realised PnL of the replay's current date,
+	// so the risk manager's daily-loss limit means the same thing in a
+	// backtest as it does live.
+	sessionDate string
+	sessionPnL  decimal.Decimal
+}
+
+// bookTradeLocked appends a completed trade and rolls the session's realised
+// PnL, resetting on a new date.
+func (s *SimBroker) bookTradeLocked(t models.Trade) {
+	s.Trades = append(s.Trades, t)
+	if day := t.ExitTime.Format("2006-01-02"); day != s.sessionDate {
+		s.sessionDate, s.sessionPnL = day, decimal.Zero
+	}
+	s.sessionPnL = s.sessionPnL.Add(t.PnL)
+}
+
+// DailyPnL implements core.DailyPnLReporter with the current session's
+// realised PnL. Open positions are not marked: the simulator has no quote
+// between exits, and a limit on realised losses is the conservative reading.
+func (s *SimBroker) DailyPnL() (decimal.Decimal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionPnL, nil
 }
 
 func (s *SimBroker) pruneClosedIndicesLocked() {
@@ -162,7 +186,7 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 					o.PartialExitDone = true
 					o.StopLoss = o.Price // move remainder's stop to breakeven
 
-					s.Trades = append(s.Trades, models.Trade{
+					s.bookTradeLocked(models.Trade{
 						Symbol:     o.Symbol,
 						EntryPrice: o.Price,
 						ExitPrice:  o.PartialExitPrice,
@@ -222,7 +246,7 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 					ExitTime:   candle.EndTime,
 					ExitReason: exitReason,
 				}
-				s.Trades = append(s.Trades, trade)
+				s.bookTradeLocked(trade)
 
 				log.Printf(">>> EXIT TRIGGERED (LONG): %s | %s @ %s\n", exitReason, o.Symbol, exitPrice)
 			} else {
@@ -246,7 +270,7 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 					o.PartialExitDone = true
 					o.StopLoss = o.Price // move remainder's stop to breakeven
 
-					s.Trades = append(s.Trades, models.Trade{
+					s.bookTradeLocked(models.Trade{
 						Symbol:     o.Symbol,
 						EntryPrice: o.Price,
 						ExitPrice:  o.PartialExitPrice,
@@ -307,7 +331,7 @@ func (s *SimBroker) CheckExits(candle models.Candle) {
 					ExitTime:   candle.EndTime,
 					ExitReason: exitReason,
 				}
-				s.Trades = append(s.Trades, trade)
+				s.bookTradeLocked(trade)
 
 				log.Printf(">>> EXIT TRIGGERED (SHORT): %s | %s @ %s\n", exitReason, o.Symbol, exitPrice)
 			} else {
@@ -528,7 +552,7 @@ func (s *SimBroker) closeOrderLocked(o *models.Order, exitPrice decimal.Decimal,
 
 	o.Status = models.OrderClosed
 
-	s.Trades = append(s.Trades, models.Trade{
+	s.bookTradeLocked(models.Trade{
 		Symbol:     o.Symbol,
 		EntryPrice: o.Price,
 		ExitPrice:  exitPrice,

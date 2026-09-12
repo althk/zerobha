@@ -480,10 +480,14 @@ three flatter the backtest:
    prior-day volume ≥ `min_daily_volume`). A backtest uses whatever CSV it is
    given, so it does not test the rollover or the liquidity gate — those have
    unit tests in `pkg/broker/futures_test.go` instead.
-3. **The daily-loss kill switch never trips in a backtest.** `Engine.Execute`
-   never feeds realised PnL back to the risk manager (there is a TODO on the
-   line), so `max_daily_loss_pct` is carried but inert. It is real in live
-   trading only to the extent the risk manager's own PnL tracking is.
+3. **The daily-loss kill switch never tripped anywhere until 2026-09-12.**
+   `Engine.Execute` fed the risk manager a PnL of zero on every fill, live
+   and paper included, so `max_daily_loss` and `max_daily_loss_pct` were
+   inert. The engine now reads the day's PnL from the broker before every
+   signal (`core.DailyPnLReporter`, or the position book's PnL), and the
+   simulator books realised PnL per replay date, so the limit is real in all
+   three modes. Recorded backtests are unaffected: the per-symbol Rs5L
+   account never came near the limit.
 
 `cmd/trader` also force-disables the NIFTY uptrend filter for this strategy.
 That filter blocks *every* signal on a down day, not just longs, so on a
@@ -1909,6 +1913,13 @@ observed price, and a stop fills at the tick that crossed it.
 - Kite login is interactive (browser → callback on **:9880**) for both `trader`
   and `histdl`. `histdl` caches the token in `.kite_token.json` (gitignored) for
   the day; the trader does not.
+- **`[risk] max_daily_loss` compares against what the broker reports**, not
+  against anything the engine accumulates. Exits happen at resting stops, in
+  `ClosePosition` and at the square-off — never through the signal path — so
+  the old `UpdateTradeLog(symbol, pnl)` plumbing could only ever see zero and
+  the kill switch was decorative for the life of the project. Size the limit
+  against the position (two full stops is a sensible day), and remember
+  `max_trades_per_day` counts entry orders across all symbols.
 - `MaxConcurrent` gates every signal — if it is left at 0 for a strategy, the
   engine silently drops all trades.
 

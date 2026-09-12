@@ -329,7 +329,14 @@ func (e *Engine) Execute(candle models.Candle) {
 		return
 	}
 
-	// 4. Risk Management Check
+	// 4. Risk Management Check, against where the day actually stands. The
+	// broker is the only party that knows: exits fire at resting stops and
+	// in ClosePosition, never through this path.
+	if pnl, err := e.dayPnL(); err == nil {
+		e.Risk.SetDayPnL(pnl)
+	} else {
+		log.Printf("WARNING: could not read day PnL for the loss limit: %v", err)
+	}
 	if err := e.Risk.Evaluate(signal); err != nil {
 		log.Printf("BLOCKED: %s | Signal: %v", err, signal.Type)
 		if e.Journal != nil {
@@ -443,7 +450,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		outcome, outcomeReason = db.SignalPlaced, order.ID
 		// Update Risk Manager stats
 		// TODO: Handle actual pnl
-		e.Risk.UpdateTradeLog(order.Symbol, decimal.Zero)
+		e.Risk.UpdateTradeLog(order.Symbol)
 
 		// Track the order for the tick-driven breakeven-trail monitor when
 		// the strategy attached a partial-exit level and the broker placed a
@@ -459,6 +466,23 @@ func (e *Engine) Execute(candle models.Candle) {
 			e.openOrdersMu.Unlock()
 		}
 	}
+}
+
+// dayPnL is the day's PnL as the broker reports it: realised on closed
+// positions plus mark-to-market on open ones.
+func (e *Engine) dayPnL() (decimal.Decimal, error) {
+	if r, ok := e.Broker.(DailyPnLReporter); ok {
+		return r.DailyPnL()
+	}
+	positions, err := e.Broker.GetPositions()
+	if err != nil {
+		return decimal.Zero, err
+	}
+	total := decimal.Zero
+	for _, p := range positions {
+		total = total.Add(p.PnL)
+	}
+	return total, nil
 }
 
 // applyExitAdvice asks the strategy whether an open position should be closed

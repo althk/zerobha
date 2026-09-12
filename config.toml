@@ -42,8 +42,12 @@ db_path = "zerobha.db"
 log_dir = "logs"
 
 [risk]
-max_daily_loss       = 5000   # INR; kill switch triggers when daily PnL drops below -max_daily_loss
-max_trades_per_day   = 10     # total signals executed across all symbols
+# INR; no new entries once the day's PnL (realised + open mark-to-market, as the
+# broker reports it) is below -max_daily_loss. Size it against the position:
+# at 10 NIFTY lots one 3-ATR index stop is ~Rs25k of premium, so 60000 is two
+# full stops. 0 = no limit. Inert before 2026-09-12 (see CLAUDE.md).
+max_daily_loss       = 60000
+max_trades_per_day   = 10     # entry orders placed across all symbols
 max_trades_per_stock = 0      # 0 = disabled; ORB's one_trade_per_day already caps per-symbol entries
 
 [engine]
