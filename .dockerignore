@@ -1,0 +1,44 @@
+# Build context for the Dockerfile. The build needs go.mod/go.sum, the Go
+# source, web/ (go:embed), and the two files the runtime stage copies:
+# indices.csv and config.local.toml. Everything below is either large, local
+# output, or a secret, and only slows the build / busts the COPY layer cache.
+# Note: config.local.toml is gitignored (*.local*) but MUST reach the build.
+
+.git
+.gitignore
+.idea
+.claude
+.agent
+.old*
+
+# Market data, logs, DB, backtest output
+test/data
+logs
+*.db
+*.db-*
+backtest_journal.csv
+final_portfolio.csv
+*_trades.csv
+*.log
+
+# Locally built binaries and image exports
+*.exe
+*.exe~
+*.test
+*.out
+bin/
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Secrets not needed by the build
+.kite_token.json
+.env
+
+# Docs, python tooling
+*.md
+scripts/
+Dockerfile
