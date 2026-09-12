@@ -363,27 +363,26 @@ target_delta_near_expiry = 0.90
 min_days_to_expiry = 0
 
 [emacross]
-timeframe = "1m"
-csv_file = "ind_nifty50list.csv"
+timeframe = "5m"
+csv_file = "indices.csv"      # Or "ind_nifty50list.csv" for stocks
 limit = 50
 
 fast_period = 9
 slow_period = 21
 
-product_type = "MIS"
-asset_type = "stocks"
+product_type = "MIS"          # Intraday
+asset_type = "options"        # "options" or "stocks"
 
-atr_period = 14
+atr_period = 5
 sl_atr_mult = 2.0
-tp_atr_mult = 5.0
+tp_atr_mult = -1.0            # <= 0 disables TP (pure opposite EMA exit)
 
 target_delta = 0.80
 
-entry_start_min = 556
-entry_cutoff_min = 900
-squareoff_min = 915
+entry_start_min = 571         # 09:31 IST
+entry_cutoff_min = 900        # 15:00 IST
+squareoff_min = 915           # 15:15 IST
 
-risk_pct = 1.0
-max_capital_per_trade = 50000
+risk_pct = 2.0
+max_capital_per_trade = 150000 # Sized for index contracts (~78k for SENSEX)
 max_concurrent = 5
-
