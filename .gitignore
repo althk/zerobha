@@ -120,6 +120,7 @@ final_portfolio.csv
 test_symbol.csv
 zerobha.iml
 temp_stocks.csv
+CLAUDE.md
 scripts/__pycache__/*
 backtest_orb_watchlist.log
 # -trades-csv dumps from cmd/backtest
