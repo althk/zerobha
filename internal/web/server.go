@@ -46,6 +46,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/performance", s.handlePerformance)
 	mux.HandleFunc("/api/intraday", s.handleIntraday)
+	mux.HandleFunc("/api/strategy", s.handleStrategy)
 
 	addr := ":" + strconv.Itoa(s.port)
 	log.Printf("Starting Web Dashboard at http://localhost%s", addr)
@@ -118,7 +119,37 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(positions)
+	// A derivative position's real exit is an index level the strategy holds,
+	// which no broker can show. Attach it.
+	legs := map[string]core.OpenLeg{}
+	if reporter, ok := s.engine.Strategy.(core.LegReporter); ok {
+		for _, leg := range reporter.OpenLegs() {
+			legs[leg.Symbol] = leg
+		}
+	}
+	type positionView struct {
+		models.Position
+		IndexStop  *decimal.Decimal `json:"index_stop,omitempty"`
+		IndexEntry *decimal.Decimal `json:"index_entry,omitempty"`
+		IndexLast  *decimal.Decimal `json:"index_last,omitempty"`
+		IndexSide  string           `json:"index_side,omitempty"`
+	}
+	views := make([]positionView, 0, len(positions))
+	for _, p := range positions {
+		v := positionView{Position: p}
+		if leg, ok := legs[p.Tradingsymbol]; ok && p.NetQuantity != 0 {
+			stop, entry := leg.IndexStop, leg.IndexEntry
+			v.IndexStop, v.IndexEntry, v.IndexSide = &stop, &entry, leg.Side
+			if v.Underlying == "" {
+				v.Underlying = leg.Underlying
+			}
+			if last, err := s.engine.Broker.GetQuote(leg.Underlying); err == nil && last.IsPositive() {
+				v.IndexLast = &last
+			}
+		}
+		views = append(views, v)
+	}
+	json.NewEncoder(w).Encode(views)
 }
 
 func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {

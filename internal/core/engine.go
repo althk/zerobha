@@ -19,14 +19,17 @@ import (
 )
 
 type Engine struct {
-	Strategy           Strategy
-	Broker             Broker
-	Risk               *risk.Manager
-	Journal            *journal.Journal
-	InstrumentManager  *broker.InstrumentManager
-	DB                 *db.Store
-	LeverageMap        map[string]float64
-	MaxConcurrent      int
+	Strategy          Strategy
+	Broker            Broker
+	Risk              *risk.Manager
+	Journal           *journal.Journal
+	InstrumentManager *broker.InstrumentManager
+	DB                *db.Store
+	LeverageMap       map[string]float64
+	MaxConcurrent     int
+	// PaperMode tags persisted signals so the dashboard's funnel is scoped to
+	// one execution mode, as trades and equity snapshots already are.
+	PaperMode          bool
 	UptrendOnly        bool
 	DataProvider       DataProvider
 	MinBalance         int64
@@ -236,10 +239,22 @@ func (e *Engine) Execute(candle models.Candle) {
 	if e.Journal != nil {
 		e.Journal.LogSignal(signal)
 	}
+	// Every signal gets a verdict: what the engine did with it, or why not.
+	// A funnel of signals against fills is the only way a silently failing
+	// execution layer looks different from a quiet market.
+	var signalID int64
+	outcome, outcomeReason := db.SignalPending, ""
 	if e.DB != nil {
-		if err := e.DB.SaveSignal(signal); err != nil {
+		id, err := e.DB.SaveSignal(signal, e.PaperMode)
+		if err != nil {
 			log.Printf("ERROR: Failed to save signal to DB: %v", err)
 		}
+		signalID = id
+		defer func() {
+			if err := e.DB.RecordSignalOutcome(signalID, outcome, outcomeReason); err != nil {
+				log.Printf("ERROR: Failed to record signal outcome: %v", err)
+			}
+		}()
 	}
 
 	// 2. Option Selection Logic (Intercept NSEI signals)
@@ -283,6 +298,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		opt, err := e.InstrumentManager.FindOptionWithSpot("NIFTY", side, spotPrice, 250.0, quoteFetcher)
 		if err != nil {
 			log.Printf("Failed to select option: %v", err)
+			outcome, outcomeReason = db.SignalDeclined, "no option: "+err.Error()
 			return
 		}
 
@@ -297,6 +313,7 @@ func (e *Engine) Execute(candle models.Candle) {
 			signal.Price = q
 		} else {
 			log.Printf("Failed to get quote for selected option %s", opt.Tradingsymbol)
+			outcome, outcomeReason = db.SignalBrokerError, "no quote for "+opt.Tradingsymbol
 			return
 		}
 
@@ -308,6 +325,7 @@ func (e *Engine) Execute(candle models.Candle) {
 	hasPosition, err := e.Broker.HasOpenPosition(signal.Symbol)
 	if err == nil && hasPosition {
 		log.Printf("Skipping signal for %s: Position already open", signal.Symbol)
+		outcome = db.SignalPositionOpen
 		return
 	}
 
@@ -317,6 +335,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		if e.Journal != nil {
 			e.Journal.LogRiskBlock(signal, err.Error())
 		}
+		outcome, outcomeReason = db.SignalRiskBlocked, err.Error()
 		return
 	}
 
@@ -324,10 +343,12 @@ func (e *Engine) Execute(candle models.Candle) {
 	balance, err := e.Broker.GetBalance()
 	if err != nil {
 		log.Printf("Skipping signal for %s: failed to fetch balance: %v", signal.Symbol, err)
+		outcome, outcomeReason = db.SignalBrokerError, "balance: "+err.Error()
 		return
 	}
 	if balance.LessThan(decimal.NewFromInt(e.MinBalance)) {
 		log.Printf("Skipping signal for %s: Insufficient balance", signal.Symbol)
+		outcome, outcomeReason = db.SignalNoCapital, "balance below floor"
 		return
 	}
 
@@ -337,6 +358,7 @@ func (e *Engine) Execute(candle models.Candle) {
 	openPositions, err := e.Broker.GetPositions()
 	if err != nil {
 		log.Printf("Skipping signal for %s: failed to fetch positions: %v", signal.Symbol, err)
+		outcome, outcomeReason = db.SignalBrokerError, "positions: "+err.Error()
 		return
 	}
 	// Count only positions that are actually open. A broker's position book
@@ -354,6 +376,7 @@ func (e *Engine) Execute(candle models.Candle) {
 	remainingSlots := decimal.NewFromInt(maxConcurrent - openCount)
 	if remainingSlots.LessThanOrEqual(decimal.Zero) {
 		log.Printf("No remaining slots for new positions (open: %d, max: %d)", openCount, maxConcurrent)
+		outcome, outcomeReason = db.SignalNoCapital, "no free concurrency slot"
 		return
 	}
 	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(e.MinCapitalPerTrade))
@@ -369,6 +392,11 @@ func (e *Engine) Execute(candle models.Candle) {
 	qty := CalculateQuantity(capital, signal, leverage)
 
 	if qty.IsZero() {
+		// Silent in the log until now, and the reason SENSEX once produced
+		// exactly zero trades against a stock-sized capital cap.
+		log.Printf("Skipping signal for %s: quantity floored to zero (capital %s, price %s)",
+			signal.Symbol, capital.StringFixed(0), signal.Price.StringFixed(2))
+		outcome, outcomeReason = db.SignalNoCapital, "quantity floored to zero"
 		return
 	}
 
@@ -403,6 +431,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		if e.DB != nil {
 			_ = e.DB.SaveOrder(order, "FAILED")
 		}
+		outcome, outcomeReason = db.SignalOrderFailed, errExec.Error()
 	} else {
 		log.Printf("SUCCESS: Order Placed %s | order: %v", order.Symbol, order)
 		if e.Journal != nil {
@@ -411,6 +440,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		if e.DB != nil {
 			_ = e.DB.SaveOrder(order, "SUBMITTED")
 		}
+		outcome, outcomeReason = db.SignalPlaced, order.ID
 		// Update Risk Manager stats
 		// TODO: Handle actual pnl
 		e.Risk.UpdateTradeLog(order.Symbol, decimal.Zero)

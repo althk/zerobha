@@ -22,7 +22,9 @@ func (s *Server) trackLoop() {
 	s.recordSnapshot()
 	s.reconcileTrades()
 
-	ticker := time.NewTicker(time.Minute)
+	// 15s rather than a minute: every source here is in-memory or a local
+	// SQLite read, and a fill should be on the dashboard before the next bar.
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -115,6 +117,36 @@ type lot struct {
 	price   decimal.Decimal
 	time    time.Time
 	isPaper bool
+	id      string
+	// costs is the entry fill's charges, apportioned to the lot by quantity
+	// as it is consumed; meta is the entry signal's metadata.
+	costs decimal.Decimal
+	meta  map[string]string
+}
+
+// fillMeta returns a fill's metadata, falling back to what SaveOrder kept
+// for brokers whose trade book does not carry it (the live adapter's).
+func (s *Server) fillMeta(f models.Order) map[string]string {
+	if len(f.Metadata) > 0 {
+		return f.Metadata
+	}
+	if s.engine.DB == nil || f.ID == "" {
+		return nil
+	}
+	meta, _ := s.engine.DB.GetOrderMetadata(f.ID)
+	return meta
+}
+
+// fillCosts reads the charges a broker stamped on a fill (Costs plus any
+// modelled spread), zero when it stamped none.
+func fillCosts(meta map[string]string) decimal.Decimal {
+	total := decimal.Zero
+	for _, key := range []string{"Costs", "SpreadCost"} {
+		if v, err := decimal.NewFromString(meta[key]); err == nil {
+			total = total.Add(v)
+		}
+	}
+	return total
 }
 
 // reconcileTrades FIFO-pairs the day's broker fills into completed
@@ -146,10 +178,13 @@ func (s *Server) reconcileTrades() {
 
 		isPaper := f.IsPaper || s.PaperMode || strings.HasPrefix(f.ID, db.PaperOrderPrefix)
 		lots := openLots[f.Symbol]
+		meta := s.fillMeta(f)
+		costs := fillCosts(meta)
 
 		// Same direction as existing lots (or flat): this fill opens/adds.
 		if len(lots) == 0 || lots[0].side == f.Side {
-			openLots[f.Symbol] = append(lots, lot{side: f.Side, qty: f.Quantity, price: f.Price, time: f.Timestamp, isPaper: isPaper})
+			openLots[f.Symbol] = append(lots, lot{side: f.Side, qty: f.Quantity, price: f.Price, time: f.Timestamp,
+				isPaper: isPaper, id: f.ID, costs: costs, meta: meta})
 			continue
 		}
 
@@ -167,23 +202,50 @@ func (s *Server) reconcileTrades() {
 				pnl = entry.price.Sub(f.Price).Mul(matched)
 			}
 
-			strategy, ok := strategyCache[f.Symbol]
-			if !ok {
-				strategy, _ = s.engine.DB.GetOrderStrategy(f.Symbol)
-				strategyCache[f.Symbol] = strategy
+			strategy := entry.meta["Strategy"]
+			if strategy == "" {
+				var ok bool
+				if strategy, ok = strategyCache[f.Symbol]; !ok {
+					strategy, _ = s.engine.DB.GetOrderStrategy(f.Symbol)
+					strategyCache[f.Symbol] = strategy
+				}
 			}
 
+			// Charges follow the quantity: a lot consumed in parts carries
+			// its entry charge in proportion, and the exit's charge is split
+			// across the lots it closes the same way.
+			share := matched.Div(f.Quantity)
+			entryShare := entry.costs.Mul(matched.Div(entry.qty))
+			tradeCosts := entryShare.Add(costs.Mul(share)).Round(2)
+
+			tradeMeta := make(map[string]string, len(entry.meta)+2)
+			for k, v := range entry.meta {
+				tradeMeta[k] = v
+			}
+			if v := meta["UnderlyingLast"]; v != "" {
+				tradeMeta["UnderlyingExit"] = v
+			}
+			delete(tradeMeta, "Costs")
+			delete(tradeMeta, "SpreadCost")
+			delete(tradeMeta, "PaperPnL")
+
 			trade := models.Trade{
-				Symbol:     f.Symbol,
-				Strategy:   strategy,
-				Direction:  direction,
-				Quantity:   matched,
-				EntryPrice: entry.price,
-				ExitPrice:  f.Price,
-				PnL:        pnl,
-				EntryTime:  entry.time,
-				ExitTime:   f.Timestamp,
-				IsPaper:    entry.isPaper || isPaper,
+				Symbol:       f.Symbol,
+				Strategy:     strategy,
+				Direction:    direction,
+				Quantity:     matched,
+				EntryPrice:   entry.price,
+				ExitPrice:    f.Price,
+				GrossPnL:     pnl,
+				Costs:        tradeCosts,
+				PnL:          pnl.Sub(tradeCosts),
+				EntryTime:    entry.time,
+				ExitTime:     f.Timestamp,
+				ExitReason:   meta["Reason"],
+				EntryOrderID: entry.id,
+				ExitOrderID:  f.ID,
+				IsPaper:      entry.isPaper || isPaper,
+				Metadata:     tradeMeta,
 			}
 
 			key := fmt.Sprintf("%s:%d", f.ID, lotIndex)
@@ -197,12 +259,14 @@ func (s *Server) reconcileTrades() {
 				lots = lots[1:]
 			} else {
 				lots[0].qty = entry.qty.Sub(matched)
+				lots[0].costs = entry.costs.Sub(entryShare)
 			}
 		}
 
 		// Any remainder reverses the position into a new lot.
 		if remaining.GreaterThan(decimal.Zero) {
-			lots = append(lots, lot{side: f.Side, qty: remaining, price: f.Price, time: f.Timestamp})
+			lots = append(lots, lot{side: f.Side, qty: remaining, price: f.Price, time: f.Timestamp,
+				isPaper: isPaper, id: f.ID, costs: costs.Mul(remaining.Div(f.Quantity)), meta: meta})
 		}
 		openLots[f.Symbol] = lots
 	}

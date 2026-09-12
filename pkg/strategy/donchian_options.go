@@ -3,6 +3,7 @@ package strategy
 import (
 	"zerobha/internal/core"
 	"zerobha/internal/models"
+	"zerobha/pkg/db"
 
 	"github.com/shopspring/decimal"
 )
@@ -22,11 +23,28 @@ func (s *Donchian) SetOptionExecution(exec OptionExecutor) {
 	s.optionExec = exec
 }
 
+// SetDB lets the strategy record the entries its option layer declined, so
+// the dashboard's signal funnel shows them. paper scopes the rows.
+func (s *Donchian) SetDB(store *db.Store, paper bool) {
+	s.declines = declineRecorder{store: store, paper: paper}
+}
+
+// OpenLegs implements core.LegReporter.
+func (s *Donchian) OpenLegs() []core.OpenLeg {
+	var out []core.OpenLeg
+	for symbol, st := range s.state {
+		if st.leg != nil {
+			out = append(out, st.leg.report(symbol))
+		}
+	}
+	return out
+}
+
 // buildOptionSignal converts an index entry into an order for a contract and
 // records the leg. Returns nil when no tradeable contract could be chosen.
 func (s *Donchian) buildOptionSignal(candle models.Candle, st *donchianState, index *models.Signal,
 	atr decimal.Decimal) *models.Signal {
-	sig, leg := buildOptionLeg(s.optionExec, "Donchian", candle, index, atr)
+	sig, leg := buildOptionLeg(s.optionExec, "Donchian", candle, index, atr, s.declines)
 	if sig == nil {
 		return nil
 	}

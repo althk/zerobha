@@ -8,6 +8,7 @@ import (
 
 	"zerobha/internal/core"
 	"zerobha/internal/models"
+	"zerobha/pkg/db"
 	"zerobha/pkg/options"
 
 	"github.com/shopspring/decimal"
@@ -57,20 +58,41 @@ type optionLeg struct {
 	side       models.SignalType
 }
 
+// declineRecorder persists a view the strategy could not express as an
+// order. The engine never sees a declined signal, so without this the
+// dashboard's funnel would show a quiet market where the option layer was
+// in fact refusing every entry.
+type declineRecorder struct {
+	store *db.Store
+	paper bool
+}
+
+func (r declineRecorder) record(symbol, strategy string, side models.SignalType, reason string) {
+	if r.store == nil {
+		return
+	}
+	if err := r.store.SaveDeclinedSignal(symbol, strategy, side.String(), reason, r.paper); err != nil {
+		log.Printf("[%s] %s: failed to record declined signal: %v", symbol, strategy, err)
+	}
+}
+
 // buildOptionLeg converts an index entry into an order for a contract and the
 // leg that tracks it. Returns nil when no tradeable contract could be chosen —
 // including the routine "too close to expiry" case, which is a no-trade, not a
-// failure. stratName labels the log lines and the signal metadata.
+// failure. stratName labels the log lines and the signal metadata; declines
+// records the refusals.
 func buildOptionLeg(exec OptionExecutor, stratName string, candle models.Candle,
-	index *models.Signal, atr decimal.Decimal) (*models.Signal, *optionLeg) {
+	index *models.Signal, atr decimal.Decimal, declines declineRecorder) (*models.Signal, *optionLeg) {
 
 	isCall := index.Type == models.BuySignal
 	contract, err := exec.Select(candle.Symbol, candle.Close, candle.StartTime, isCall)
 	if err != nil {
 		if errors.Is(err, options.ErrTooCloseToExpiry) {
 			log.Printf("[%s] %s: skipping entry — %v", candle.Symbol, stratName, err)
+			declines.record(candle.Symbol, stratName, index.Type, "too close to expiry")
 		} else {
 			log.Printf("[%s] %s: no option contract for this signal: %v", candle.Symbol, stratName, err)
+			declines.record(candle.Symbol, stratName, index.Type, "no contract: "+err.Error())
 		}
 		return nil, nil
 	}
@@ -79,6 +101,7 @@ func buildOptionLeg(exec OptionExecutor, stratName string, candle models.Candle,
 	if err != nil || !premium.IsPositive() {
 		log.Printf("[%s] %s: no premium for %s (%v) — skipping entry",
 			candle.Symbol, stratName, contract.TradingSymbol, err)
+		declines.record(candle.Symbol, stratName, index.Type, "no premium for "+contract.TradingSymbol)
 		return nil, nil
 	}
 
@@ -168,6 +191,22 @@ func (leg *optionLeg) stopHit(candle models.Candle) (bool, string) {
 	}
 	return true, fmt.Sprintf("index %s %s through stop %s",
 		candle.Symbol, candle.Close.StringFixed(2), leg.indexStop.StringFixed(2))
+}
+
+// report is the leg as the dashboard sees it.
+func (leg *optionLeg) report(underlying string) core.OpenLeg {
+	side := "LONG"
+	if leg.side == models.SellSignal {
+		side = "SHORT"
+	}
+	return core.OpenLeg{
+		Symbol:     leg.contract.TradingSymbol,
+		Underlying: underlying,
+		Side:       side,
+		IndexEntry: leg.indexEntry,
+		IndexStop:  leg.indexStop,
+		IndexBest:  leg.best,
+	}
 }
 
 // closeAdvice is the ExitAdvice that flattens this leg. The option is what

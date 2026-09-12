@@ -476,6 +476,12 @@ type Config struct {
 	// while consuming live market feeds and live option quotes.
 	PaperTrading bool    `toml:"paper_trading"`
 	PaperCapital float64 `toml:"paper_capital"`
+	// PaperOptionSpreadTicks is the full bid-ask the paper broker assumes on
+	// option contracts, in ticks of Rs0.05; half is paid on each fill. Fills
+	// are otherwise at the last traded price, which carries no spread, and
+	// at ten lots the spread is the dominant cost of an index weekly. The
+	// backtest verdicts in CLAUDE.md were taken at 20. 0 = none.
+	PaperOptionSpreadTicks float64 `toml:"paper_option_spread_ticks"`
 	// UpstoxAccessToken authorises the read-only Upstox news and fundamentals
 	// calls behind the GapFade gate. It is a long-lived (~1 year) read-only
 	// token, unrelated to the Kite credentials above.

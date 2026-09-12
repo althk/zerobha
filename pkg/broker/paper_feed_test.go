@@ -49,7 +49,7 @@ func (f *fakeFeed) calls() ([]string, []string) {
 // be evaluated at the quote monitor's polling interval.
 func TestPaperSubscribesTheInstrumentItHoldsAPositionIn(t *testing.T) {
 	feed := &fakeFeed{}
-	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed))
+	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed), WithoutPaperCharges())
 
 	o := entry("NIFTY26AUG24200CE", models.BuySignal, 650, 400)
 	o.StopLoss = rs(380)
@@ -77,7 +77,7 @@ func TestPaperSubscribesTheInstrumentItHoldsAPositionIn(t *testing.T) {
 // subscription — this is the path every Donchian option exit takes.
 func TestPaperUnsubscribesWhenAStopFires(t *testing.T) {
 	feed := &fakeFeed{}
-	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed))
+	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed), WithoutPaperCharges())
 
 	o := entry("NIFTY26AUG24200CE", models.BuySignal, 650, 400)
 	o.StopLoss = rs(380)
@@ -98,7 +98,7 @@ func TestPaperUnsubscribesWhenAStopFires(t *testing.T) {
 // disappearing.
 func TestPaperSurvivesAFeedFailure(t *testing.T) {
 	feed := &fakeFeed{failWith: errors.New("websocket not connected")}
-	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed))
+	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed), WithoutPaperCharges())
 
 	o := entry("NIFTY26AUG24200CE", models.BuySignal, 650, 400)
 	o.StopLoss = rs(380)
@@ -122,7 +122,7 @@ func TestPaperSurvivesAFeedFailure(t *testing.T) {
 // watchlist.
 func TestPaperResyncFeedSubscribesOpenPositions(t *testing.T) {
 	feed := &fakeFeed{}
-	p := NewPaperAdapter(nil, rs(1000000))
+	p := NewPaperAdapter(nil, rs(1000000), WithoutPaperCharges())
 
 	mustPlace(t, p, entry("AAA", models.BuySignal, 10, 100))
 	mustPlace(t, p, entry("BBB", models.BuySignal, 10, 100))
@@ -145,7 +145,7 @@ func TestPaperResyncFeedSubscribesOpenPositions(t *testing.T) {
 // balance and position read on the candle hot path.
 func TestPaperFeedIsCalledWithoutHoldingTheLock(t *testing.T) {
 	feed := &lockProbingFeed{}
-	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed))
+	p := NewPaperAdapter(nil, rs(1000000), WithPaperTickFeed(feed), WithoutPaperCharges())
 	feed.p = p
 
 	mustPlace(t, p, entry("AAA", models.BuySignal, 10, 100))

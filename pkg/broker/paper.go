@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"zerobha/internal/models"
+	"zerobha/pkg/costs"
 	"zerobha/pkg/db"
 	"zerobha/pkg/nseutils"
 
@@ -47,6 +49,16 @@ type paperPosition struct {
 	LastPrice     decimal.Decimal `json:"last_price"`
 	MarginPerUnit decimal.Decimal `json:"margin_per_unit"`
 	RealizedPnL   decimal.Decimal `json:"realized_pnl"`
+	// Costs is the statutory charges and brokerage debited on this
+	// position's fills so far. RealizedPnL is gross; a broker reports the
+	// two separately and so does this one.
+	Costs decimal.Decimal `json:"costs"`
+	// Metadata is the entry signal's metadata (strategy, underlying, index
+	// entry and stop, expiry...), kept so an exit fill can be paired with
+	// the view that opened it, and so the underlying's price at exit can be
+	// stamped for the index-bps accounting the strategy was measured in.
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	EntryOrderID string            `json:"entry_order_id,omitempty"`
 }
 
 // paperSnapshot is the persisted form of the whole broker. The encoding lives
@@ -56,6 +68,7 @@ type paperSnapshot struct {
 	Cash      decimal.Decimal           `json:"cash"`
 	Margin    decimal.Decimal           `json:"margin_blocked"`
 	Realized  decimal.Decimal           `json:"realized_pnl"`
+	Fees      decimal.Decimal           `json:"fees"`
 	Positions map[string]*paperPosition `json:"positions"`
 	Resting   map[string]*models.Order  `json:"resting"`
 	Orders    []models.Order            `json:"orders"`
@@ -84,12 +97,25 @@ type PaperAdapter struct {
 	leverage func(symbol string) float64
 	store    *db.Store
 	feed     TickSubscriber
+	// spreadTicks is the full bid-ask assumed on option contracts, in ticks;
+	// half is paid on each fill. Fills are otherwise at the last traded
+	// price, which is the mid of nothing.
+	spreadTicks float64
+	// noCharges switches the charge sheet off. Tests of the margin and
+	// cost-basis arithmetic use it so their expected figures stay exact; a
+	// paper run never should, since gross PnL is not what the account sees.
+	noCharges bool
 
 	mu        sync.Mutex
 	cash      decimal.Decimal
 	margin    decimal.Decimal
 	realized  decimal.Decimal
+	fees      decimal.Decimal
 	positions map[string]*paperPosition
+	// lastPrice is the last tick seen for EVERY instrument on the feed, held
+	// or not. An option position's exits are decided on the index, so the
+	// index's price at the moment of the fill is part of the record.
+	lastPrice map[string]decimal.Decimal
 	resting   map[string]*models.Order
 	orders    []models.Order
 	trades    []models.Order
@@ -143,6 +169,22 @@ func WithPaperStore(s *db.Store) PaperOption {
 	return func(p *PaperAdapter) { p.store = s }
 }
 
+// WithPaperOptionSpread charges half of a full bid-ask of `ticks` ticks on
+// every option fill: a buy fills above the last trade, a sell below. Premium
+// candles and LTPs carry no spread, and at ten lots the spread is the
+// dominant cost of trading an index weekly (CLAUDE.md), so a paper run that
+// ignores it is comparing against the wrong number. Equities are not
+// touched — the knob was measured on option contracts only.
+func WithPaperOptionSpread(ticks float64) PaperOption {
+	return func(p *PaperAdapter) { p.spreadTicks = ticks }
+}
+
+// WithoutPaperCharges disables brokerage and statutory charges on fills. For
+// tests of the book-keeping arithmetic only.
+func WithoutPaperCharges() PaperOption {
+	return func(p *PaperAdapter) { p.noCharges = true }
+}
+
 // NewPaperAdapter initialises the paper broker with virtual starting capital,
 // restoring today's book from the store when one is configured and a snapshot
 // for the current trading date exists.
@@ -156,6 +198,7 @@ func NewPaperAdapter(live *ZerodhaAdapter, initialCapital decimal.Decimal, opts 
 		trades:    make([]models.Order, 0),
 		lastSeen:  make(map[string]time.Time),
 		lastWarn:  make(map[string]time.Time),
+		lastPrice: make(map[string]decimal.Decimal),
 		tradeDate: nseutils.MarketOpenTime(time.Now()).Format("2006-01-02"),
 		done:      make(chan struct{}),
 	}
@@ -319,19 +362,70 @@ func (p *PaperAdapter) GetPositions() ([]models.Position, error) {
 			LastPrice:     pos.LastPrice,
 			PnL:           positionPnL(pos),
 			Strategy:      pos.Strategy,
+			Underlying:    pos.Metadata["Underlying"],
 		})
 	}
 	return result, nil
 }
 
 // positionPnL is mark-to-market for an open position and realised PnL for a
-// closed one, which is how a broker reports each.
+// closed one, which is how a broker reports each — net of the charges the
+// position's fills have incurred, which is how the account sees it.
 func positionPnL(pos *paperPosition) decimal.Decimal {
 	if pos.Quantity == 0 || !pos.LastPrice.IsPositive() {
-		return pos.RealizedPnL
+		return pos.RealizedPnL.Sub(pos.Costs)
 	}
 	unrealized := pos.LastPrice.Sub(pos.AveragePrice).Mul(decimal.NewFromInt(int64(pos.Quantity)))
-	return unrealized.Add(pos.RealizedPnL)
+	return unrealized.Add(pos.RealizedPnL).Sub(pos.Costs)
+}
+
+// chargeFillLocked debits the charge sheet for one executed order, records it
+// on the position and the fill, and stamps the fill with the context the
+// dashboard needs: the underlying's last price (for index bps) and, on an
+// exit, the entry it closes.
+func (p *PaperAdapter) chargeFillLocked(order *models.Order, pos *paperPosition, price decimal.Decimal, qty int) {
+	charge := decimal.Zero
+	if !p.noCharges {
+		sheet := costs.ForInstrument(order.Exchange, order.ProductType, order.Symbol)
+		turnover, _ := price.Mul(decimal.NewFromInt(int64(qty))).Float64()
+		charge = decimal.NewFromFloat(sheet.Leg(order.Side == models.SellSignal, turnover)).Round(2)
+	}
+
+	p.cash = p.cash.Sub(charge)
+	p.fees = p.fees.Add(charge)
+	pos.Costs = pos.Costs.Add(charge)
+
+	if order.Metadata == nil {
+		order.Metadata = map[string]string{}
+	}
+	order.Metadata["Costs"] = charge.StringFixed(2)
+	if under := pos.Metadata["Underlying"]; under != "" {
+		if last, ok := p.lastPrice[under]; ok && last.IsPositive() {
+			order.Metadata["UnderlyingLast"] = last.StringFixed(2)
+		}
+	}
+}
+
+// spreadAdjust moves an option fill against the trader by half the assumed
+// bid-ask, and reports the rupee cost of doing so.
+func (p *PaperAdapter) spreadAdjust(order models.Order, price decimal.Decimal, qty int) (decimal.Decimal, decimal.Decimal) {
+	if p.spreadTicks <= 0 || !isOptionContract(order) {
+		return price, decimal.Zero
+	}
+	half := decimal.NewFromFloat(p.spreadTicks / 2).Mul(decimal.NewFromFloat(0.05))
+	if order.Side == models.SellSignal {
+		adjusted := price.Sub(half)
+		if !adjusted.IsPositive() {
+			return price, decimal.Zero
+		}
+		return adjusted, half.Mul(decimal.NewFromInt(int64(qty)))
+	}
+	return price.Add(half), half.Mul(decimal.NewFromInt(int64(qty)))
+}
+
+func isOptionContract(order models.Order) bool {
+	ex := strings.ToUpper(order.Exchange)
+	return ex == "NFO" || ex == "BFO" || costs.IsOptionSymbol(order.Symbol)
 }
 
 // --- Order execution ---
@@ -354,6 +448,7 @@ func (p *PaperAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 	if err != nil {
 		return order, err
 	}
+	fillPrice, spreadCost := p.spreadAdjust(order, fillPrice, qty)
 
 	signed := qty
 	if order.Side == models.SellSignal {
@@ -372,6 +467,15 @@ func (p *PaperAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Was this fill closing exposure? Decided before the book moves.
+	prior := p.positions[order.Symbol]
+	closing := prior != nil && prior.Quantity != 0 && !sameSign(prior.Quantity, signed)
+	var entryMeta map[string]string
+	var entryID string
+	if closing {
+		entryMeta, entryID = prior.Metadata, prior.EntryOrderID
+	}
+
 	realized, err := p.applyFillLocked(order, signed, fillPrice)
 	if err != nil {
 		return order, err
@@ -384,14 +488,31 @@ func (p *PaperAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 	if order.Timestamp.IsZero() {
 		order.Timestamp = time.Now()
 	}
+	if order.Metadata == nil {
+		order.Metadata = map[string]string{}
+	}
 	if !realized.IsZero() {
-		if order.Metadata == nil {
-			order.Metadata = map[string]string{}
-		}
 		order.Metadata["PaperPnL"] = realized.StringFixed(2)
+	}
+	if spreadCost.IsPositive() {
+		order.Metadata["SpreadCost"] = spreadCost.StringFixed(2)
 	}
 
 	pos := p.positions[order.Symbol]
+	if closing {
+		order.Metadata["EntryOrderID"] = entryID
+		if under := entryMeta["Underlying"]; under != "" {
+			pos.Metadata = entryMeta // for the stamp below; cleared when flat
+		}
+	} else if pos.Quantity != 0 && (prior == nil || prior.Quantity == 0) {
+		// A fresh open: remember what the signal said about itself.
+		pos.Metadata = copyMeta(order.Metadata)
+		pos.EntryOrderID = order.ID
+	}
+	p.chargeFillLocked(&order, pos, fillPrice, qty)
+	if pos.Quantity == 0 {
+		pos.Metadata, pos.EntryOrderID = nil, ""
+	}
 	// Arm the protective order only on a fill that opened or increased the
 	// position, and only when a stop was supplied — the same condition the live
 	// adapter uses before placing a GTT.
@@ -629,6 +750,7 @@ func (p *PaperAdapter) OnTick(symbol string, price decimal.Decimal, at time.Time
 
 	p.mu.Lock()
 	p.lastSeen[symbol] = time.Now()
+	p.lastPrice[symbol] = price
 	pos, ok := p.positions[symbol]
 	if !ok {
 		p.mu.Unlock()
@@ -796,14 +918,20 @@ func (p *PaperAdapter) ClosePosition(symbol string, forSide models.SignalType, p
 		ProductType: pos.Product,
 		Exchange:    pos.Exchange,
 		Quantity:    qtyDec,
-		Metadata:    map[string]string{"Strategy": pos.Strategy, "Reason": reason},
+		Metadata:    map[string]string{"Strategy": pos.Strategy, "Reason": reason, "EntryOrderID": pos.EntryOrderID},
 	}
 	signed := -pos.Quantity
+	price, spreadCost := p.spreadAdjust(exit, price, qty)
 
 	realized, err := p.applyFillLocked(exit, signed, price)
 	if err != nil {
 		return false, err
 	}
+	if spreadCost.IsPositive() {
+		exit.Metadata["SpreadCost"] = spreadCost.StringFixed(2)
+	}
+	p.chargeFillLocked(&exit, pos, price, qty)
+	pos.Metadata, pos.EntryOrderID = nil, ""
 
 	p.orderSeq++
 	exit.ID = fmt.Sprintf("%sEXIT-%06d", db.PaperOrderPrefix, p.orderSeq)
@@ -942,6 +1070,7 @@ func (p *PaperAdapter) persistLocked() {
 		Cash:      p.cash,
 		Margin:    p.margin,
 		Realized:  p.realized,
+		Fees:      p.fees,
 		Positions: p.positions,
 		Resting:   p.resting,
 		Orders:    p.orders,
@@ -983,6 +1112,7 @@ func (p *PaperAdapter) restore() {
 	p.cash = snap.Cash
 	p.margin = snap.Margin
 	p.realized = snap.Realized
+	p.fees = snap.Fees
 	if snap.Positions != nil {
 		p.positions = snap.Positions
 	}
@@ -1009,6 +1139,17 @@ func (p *PaperAdapter) restore() {
 }
 
 // --- helpers ---
+
+func copyMeta(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
 
 func abs(n int) int {
 	if n < 0 {

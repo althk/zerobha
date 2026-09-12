@@ -7,6 +7,7 @@ import (
 	"zerobha/internal/config"
 	"zerobha/internal/core"
 	"zerobha/internal/models"
+	"zerobha/pkg/db"
 	"zerobha/pkg/indicators"
 
 	"github.com/shopspring/decimal"
@@ -39,6 +40,7 @@ type EMACross struct {
 	// signal instrument instead of the instrument itself. nil is the backtest
 	// path and what every recorded index-leg result measures.
 	optionExec OptionExecutor
+	declines   declineRecorder
 }
 
 type emaCrossState struct {
@@ -79,6 +81,23 @@ func NewEMACrossStrategy(symbols []string, cfg config.EMACrossConfig) *EMACross 
 // cmd/backtest does) leaves it trading the index symbol directly.
 func (s *EMACross) SetOptionExecution(exec OptionExecutor) {
 	s.optionExec = exec
+}
+
+// SetDB lets the strategy record the entries its option layer declined, so
+// the dashboard's signal funnel shows them. paper scopes the rows.
+func (s *EMACross) SetDB(store *db.Store, paper bool) {
+	s.declines = declineRecorder{store: store, paper: paper}
+}
+
+// OpenLegs implements core.LegReporter.
+func (s *EMACross) OpenLegs() []core.OpenLeg {
+	var out []core.OpenLeg
+	for symbol, st := range s.state {
+		if st.leg != nil {
+			out = append(out, st.leg.report(symbol))
+		}
+	}
+	return out
 }
 
 func (s *EMACross) newState() *emaCrossState {
@@ -325,7 +344,7 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 	// too close to expiry, no strike listed, no premium — and a declined
 	// entry must not leave the strategy believing it holds a position.
 	if s.optionExec != nil {
-		optionSignal, leg := buildOptionLeg(s.optionExec, "EMACross", candle, signal, atrVal)
+		optionSignal, leg := buildOptionLeg(s.optionExec, "EMACross", candle, signal, atrVal, s.declines)
 		if optionSignal == nil {
 			return nil
 		}

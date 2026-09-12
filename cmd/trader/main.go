@@ -212,6 +212,8 @@ func main() {
 	// the same day. Fail loudly on anything else rather than logging the
 	// configured name and silently running ORB against another strategy's
 	// watchlist and timeframe.
+	// Decided here because the strategies tag what they persist with it.
+	isPaper := cfg.PaperTrading || *paperFlag
 	var strat core.Strategy
 	var maxConcurrent int
 	switch cfg.Strategy {
@@ -231,6 +233,7 @@ func main() {
 		maxConcurrent = cfg.GapFade.MaxConcurrent
 	case config.StrategyDonchian:
 		dc := strategy.NewDonchianStrategy(watchlist, cfg.Donchian)
+		dc.SetDB(store, isPaper)
 		minDTE := 2
 		if cfg.Donchian.MinDaysToExpiry != nil {
 			minDTE = *cfg.Donchian.MinDaysToExpiry
@@ -245,6 +248,7 @@ func main() {
 		maxConcurrent = cfg.Donchian.MaxConcurrent
 	case config.StrategyEMACross:
 		ec := strategy.NewEMACrossStrategy(watchlist, cfg.EMACross)
+		ec.SetDB(store, isPaper)
 		// asset_type = "options" expresses the INDEX signal through a weekly
 		// contract; without this the strategy would send MIS orders for
 		// "NIFTY 50" itself, which no exchange accepts.
@@ -289,7 +293,6 @@ func main() {
 	var engine *core.Engine
 
 	// Broker Adapter Selection (Live vs Paper)
-	isPaper := cfg.PaperTrading || *paperFlag
 	var brokerAdapter core.Broker = kiteAdapter
 	var paperAdapter *broker.PaperAdapter
 	if isPaper {
@@ -303,6 +306,7 @@ func main() {
 		// closure — it reads whatever the engine ended up with.
 		paperAdapter = broker.NewPaperAdapter(kiteAdapter, paperCap,
 			broker.WithPaperStore(store),
+			broker.WithPaperOptionSpread(cfg.PaperOptionSpreadTicks),
 			broker.WithPaperLeverage(func(symbol string) float64 {
 				if engine == nil {
 					return 1
@@ -322,6 +326,7 @@ func main() {
 
 	// Engine (The Orchestrator)
 	engine = core.NewEngine(strat, brokerAdapter, riskMgr, j, im, store)
+	engine.PaperMode = isPaper
 	if paperAdapter != nil {
 		// Refreshes marks for instruments the ticker does not subscribe to —
 		// an option contract above all — so their stops can still fire.

@@ -12,4 +12,7 @@ type Position struct {
 	LastPrice     decimal.Decimal `json:"last_price"`
 	PnL           decimal.Decimal `json:"pnl"`
 	Strategy      string          `json:"strategy"`
+	// Underlying is the index a derivative position expresses a view on, when
+	// the broker knows it (the paper broker does, from the entry metadata).
+	Underlying string `json:"underlying,omitempty"`
 }

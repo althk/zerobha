@@ -53,8 +53,32 @@ func TestDB(t *testing.T) {
 			Metadata: map[string]string{"Strategy": "TEST_STRAT"},
 		}
 
-		if err := store.SaveSignal(sig); err != nil {
+		id, err := store.SaveSignal(sig, false)
+		if err != nil {
 			t.Fatalf("SaveSignal failed: %v", err)
+		}
+		if id == 0 {
+			t.Fatal("SaveSignal should return the row id")
+		}
+		if err := store.RecordSignalOutcome(id, SignalPlaced, "PAPER-000001"); err != nil {
+			t.Fatalf("RecordSignalOutcome failed: %v", err)
+		}
+		if err := store.SaveDeclinedSignal("NIFTY 50", "emacross", "BUY", "too close to expiry", false); err != nil {
+			t.Fatalf("SaveDeclinedSignal failed: %v", err)
+		}
+		funnel, err := store.GetSignalFunnel(time.Now().Add(-time.Hour), false)
+		if err != nil {
+			t.Fatalf("GetSignalFunnel failed: %v", err)
+		}
+		got := map[string]int{}
+		for _, c := range funnel {
+			got[c.Outcome] += c.Count
+		}
+		if got[SignalPlaced] != 1 || got[SignalDeclined] != 1 {
+			t.Errorf("funnel = %+v, want one placed and one declined", funnel)
+		}
+		if paper, _ := store.GetSignalFunnel(time.Now().Add(-time.Hour), true); len(paper) != 0 {
+			t.Errorf("paper funnel should be empty, got %+v", paper)
 		}
 	})
 
@@ -208,4 +232,49 @@ func TestDB(t *testing.T) {
 			t.Errorf("Unexpected snapshot: %+v", points[0])
 		}
 	})
+}
+
+// Trades and orders carry their metadata and cost breakdown through the
+// store: the fields that let a derivative trade be read in index bps.
+func TestTradeAndOrderMetadataRoundTrip(t *testing.T) {
+	store, err := NewStore(t.TempDir() + "/meta.db")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	order := models.Order{
+		ID: "PAPER-000007", Symbol: "NIFTY26SEP24000CE", Side: models.BuySignal,
+		Quantity: decimal.NewFromInt(650), Price: decimal.NewFromInt(200), IsPaper: true,
+		Metadata: map[string]string{"Strategy": "emacross", "Underlying": "NIFTY 50", "IndexEntry": "24300.00"},
+	}
+	if err := store.SaveOrder(order, "SUBMITTED"); err != nil {
+		t.Fatalf("SaveOrder: %v", err)
+	}
+	meta, err := store.GetOrderMetadata("PAPER-000007")
+	if err != nil || meta["IndexEntry"] != "24300.00" {
+		t.Errorf("order metadata = %v (%v), want IndexEntry 24300.00", meta, err)
+	}
+
+	trade := models.Trade{
+		Symbol: "NIFTY26SEP24000CE", Strategy: "emacross", Direction: "LONG",
+		Quantity: decimal.NewFromInt(650), EntryPrice: decimal.NewFromInt(200), ExitPrice: decimal.NewFromInt(210),
+		GrossPnL: decimal.NewFromInt(6500), Costs: decimal.NewFromFloat(310.5), PnL: decimal.NewFromFloat(6189.5),
+		EntryTime: time.Now().Add(-time.Hour), ExitTime: time.Now(), ExitReason: "EMACross index stop", IsPaper: true,
+		EntryOrderID: "PAPER-000007", ExitOrderID: "PAPER-EXIT-000008",
+		Metadata: map[string]string{"Underlying": "NIFTY 50", "IndexEntry": "24300.00", "UnderlyingExit": "24350.00", "DaysToExpiry": "3"},
+	}
+	if err := store.SaveTrade("PAPER-EXIT-000008:0", trade); err != nil {
+		t.Fatalf("SaveTrade: %v", err)
+	}
+	got, err := store.GetTradeHistory(time.Now().Add(-24*time.Hour), true)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("GetTradeHistory: %v, n=%d", err, len(got))
+	}
+	g := got[0]
+	if g.ExitReason != "EMACross index stop" || !g.Costs.Equal(decimal.NewFromFloat(310.5)) ||
+		!g.GrossPnL.Equal(decimal.NewFromInt(6500)) || g.Metadata["UnderlyingExit"] != "24350.00" ||
+		g.EntryOrderID != "PAPER-000007" {
+		t.Errorf("round trip lost fields: %+v", g)
+	}
 }

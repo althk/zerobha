@@ -10,6 +10,9 @@ uptrend_only = false
 # the default below, not a zero-capital account.
 paper_trading = false
 paper_capital = 1000000.0
+# Full bid-ask assumed on option fills in paper mode, in ticks (Rs0.05); half
+# is paid each way. The emacross/donchian option verdicts were measured at 20.
+paper_option_spread_ticks = 20
 
 # Zerodha API Credentials.
 # These are bare keys: they MUST stay above the first [section] header, or TOML

@@ -93,6 +93,25 @@ type ExitAdvisor interface {
 	ExitAdvice(candle models.Candle) *ExitAdvice
 }
 
+// OpenLeg describes a derivative position whose exit is decided on the
+// underlying rather than by a resting order: the level the strategy is
+// holding, which no broker can show because no broker has it.
+type OpenLeg struct {
+	Symbol     string          `json:"symbol"`     // the contract
+	Underlying string          `json:"underlying"` // the index the stop lives on
+	Side       string          `json:"side"`       // LONG or SHORT, on the underlying
+	IndexEntry decimal.Decimal `json:"index_entry"`
+	IndexStop  decimal.Decimal `json:"index_stop"`
+	IndexBest  decimal.Decimal `json:"index_best"` // best underlying price since entry (the trail anchor)
+}
+
+// LegReporter is an optional Strategy capability: listing the option legs it
+// is tracking, for the dashboard. Strategies trading the signal instrument
+// directly have nothing to report.
+type LegReporter interface {
+	OpenLegs() []OpenLeg
+}
+
 // PositionCloser is an optional Broker capability: closing one symbol's
 // position at a known price, in one call. Brokers that cannot do this (or do
 // not need to) simply omit it, and the engine falls back to placing a counter

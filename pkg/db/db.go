@@ -121,6 +121,23 @@ func (s *Store) initSchema() error {
 		`ALTER TABLE orders ADD COLUMN is_paper INTEGER DEFAULT 0;`,
 		`ALTER TABLE trades ADD COLUMN is_paper INTEGER DEFAULT 0;`,
 		`ALTER TABLE equity_snapshots ADD COLUMN is_paper INTEGER DEFAULT 0;`,
+		// 2026-09-12: the signal metadata (underlying, index entry/stop,
+		// expiry, DTE) used to be dropped at SaveOrder, which made a
+		// derivative trade unreadable in the units it was measured in.
+		`ALTER TABLE orders ADD COLUMN metadata TEXT;`,
+		`ALTER TABLE trades ADD COLUMN gross_pnl REAL;`,
+		`ALTER TABLE trades ADD COLUMN costs REAL DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN entry_order_id TEXT;`,
+		`ALTER TABLE trades ADD COLUMN exit_order_id TEXT;`,
+		`ALTER TABLE trades ADD COLUMN metadata TEXT;`,
+		// Signal outcome: what the engine did with it (placed, or why not),
+		// so a silently failing execution layer shows up as a funnel rather
+		// than as a quiet market. Strategy-side declines (no contract, too
+		// close to expiry) are recorded as signals too, with outcome
+		// "declined".
+		`ALTER TABLE signals ADD COLUMN outcome TEXT;`,
+		`ALTER TABLE signals ADD COLUMN reason TEXT;`,
+		`ALTER TABLE signals ADD COLUMN is_paper INTEGER DEFAULT 0;`,
 	}
 	for _, m := range migrations {
 		_, _ = s.db.Exec(m) // Ignore if column already exists
@@ -132,17 +149,53 @@ func (s *Store) initSchema() error {
 // --- Order Methods ---
 
 func (s *Store) SaveOrder(o models.Order, status string) error {
-	query := `INSERT INTO orders (order_id, symbol, side, quantity, price, status, strategy, is_paper, timestamp)
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			  ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, is_paper=excluded.is_paper;`
+	query := `INSERT INTO orders (order_id, symbol, side, quantity, price, status, strategy, is_paper, timestamp, metadata)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, is_paper=excluded.is_paper, metadata=excluded.metadata;`
 
 	qty, _ := o.Quantity.Float64()
 	price, _ := o.Price.Float64()
 	strategy := o.Metadata["Strategy"]
 	isPaper := boolToInt(o.IsPaper || strings.HasPrefix(o.ID, PaperOrderPrefix))
+	meta := encodeMeta(o.Metadata)
 
-	_, err := s.db.Exec(query, o.ID, o.Symbol, o.Side, qty, price, status, strategy, isPaper, time.Now())
+	_, err := s.db.Exec(query, o.ID, o.Symbol, o.Side, qty, price, status, strategy, isPaper, time.Now(), meta)
 	return err
+}
+
+// GetOrderMetadata returns the metadata saved with an order, or nil.
+func (s *Store) GetOrderMetadata(orderID string) (map[string]string, error) {
+	var raw sql.NullString
+	err := s.db.QueryRow(`SELECT metadata FROM orders WHERE order_id = ?;`, orderID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decodeMeta(raw.String), nil
+}
+
+func encodeMeta(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func decodeMeta(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 func (s *Store) GetOrderStrategy(symbol string) (string, error) {
@@ -157,17 +210,81 @@ func (s *Store) GetOrderStrategy(symbol string) (string, error) {
 
 // --- Signal Methods ---
 
-func (s *Store) SaveSignal(sig *models.Signal) error {
-	query := `INSERT INTO signals (symbol, strategy, type, price, stop_loss, target, timestamp)
-			  VALUES (?, ?, ?, ?, ?, ?, ?);`
+// SaveSignal records a signal the strategy emitted and returns its row id so
+// the engine can attach what became of it (RecordSignalOutcome).
+func (s *Store) SaveSignal(sig *models.Signal, paper bool) (int64, error) {
+	query := `INSERT INTO signals (symbol, strategy, type, price, stop_loss, target, timestamp, outcome, is_paper)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`
 
 	price, _ := sig.Price.Float64()
 	sl, _ := sig.StopLoss.Float64()
 	tgt, _ := sig.Target.Float64()
 	strategy := sig.Metadata["Strategy"]
 
-	_, err := s.db.Exec(query, sig.Symbol, strategy, sig.Type.String(), price, sl, tgt, time.Now())
+	res, err := s.db.Exec(query, sig.Symbol, strategy, sig.Type.String(), price, sl, tgt, time.Now(), SignalPending, boolToInt(paper))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// Signal outcomes. "placed" is the only one that became an order.
+const (
+	SignalPending      = "pending"
+	SignalPlaced       = "placed"
+	SignalDeclined     = "declined"      // the strategy could not express it (no contract, too close to expiry, no premium)
+	SignalPositionOpen = "position-open" // a position in the symbol already exists
+	SignalRiskBlocked  = "risk-blocked"
+	SignalNoCapital    = "no-capital" // balance floor, no free slot, or quantity floored to zero
+	SignalOrderFailed  = "order-failed"
+	SignalBrokerError  = "broker-error" // balance/positions/quote could not be read
+)
+
+// RecordSignalOutcome attaches the engine's verdict to a saved signal.
+func (s *Store) RecordSignalOutcome(id int64, outcome, reason string) error {
+	if id == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE signals SET outcome = ?, reason = ? WHERE id = ?;`, outcome, reason, id)
 	return err
+}
+
+// SaveDeclinedSignal records a view the strategy formed but could not turn
+// into an order — the option layer refusing a contract. The engine never
+// sees these, so without this row the funnel would not show them at all.
+func (s *Store) SaveDeclinedSignal(symbol, strategy, side, reason string, paper bool) error {
+	query := `INSERT INTO signals (symbol, strategy, type, price, stop_loss, target, timestamp, outcome, reason, is_paper)
+			  VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, ?);`
+	_, err := s.db.Exec(query, symbol, strategy, side, time.Now(), SignalDeclined, reason, boolToInt(paper))
+	return err
+}
+
+// SignalCount is one row of the signal funnel.
+type SignalCount struct {
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason"`
+	Count   int    `json:"count"`
+}
+
+// GetSignalFunnel counts signals since `since` by outcome and reason, for one
+// execution mode.
+func (s *Store) GetSignalFunnel(since time.Time, paper bool) ([]SignalCount, error) {
+	rows, err := s.db.Query(`SELECT COALESCE(outcome, ''), COALESCE(reason, ''), COUNT(*)
+		FROM signals WHERE timestamp >= ? AND is_paper = ?
+		GROUP BY outcome, reason ORDER BY COUNT(*) DESC;`, since, boolToInt(paper))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SignalCount
+	for rows.Next() {
+		var c SignalCount
+		if err := rows.Scan(&c.Outcome, &c.Reason, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // --- Trade Methods ---
@@ -177,16 +294,20 @@ func (s *Store) SaveSignal(sig *models.Signal) error {
 // reconciler over the same broker fills is idempotent.
 func (s *Store) SaveTrade(key string, t models.Trade) error {
 	query := `INSERT OR IGNORE INTO trades
-			  (trade_key, symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason, is_paper)
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+			  (trade_key, symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason, is_paper,
+			   gross_pnl, costs, entry_order_id, exit_order_id, metadata)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
 
 	qty, _ := t.Quantity.Float64()
 	entry, _ := t.EntryPrice.Float64()
 	exit, _ := t.ExitPrice.Float64()
 	pnl, _ := t.PnL.Float64()
+	gross, _ := t.GrossPnL.Float64()
+	cost, _ := t.Costs.Float64()
 	isPaper := boolToInt(t.IsPaper || strings.HasPrefix(key, PaperOrderPrefix))
 
-	_, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason, isPaper)
+	_, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason, isPaper,
+		gross, cost, t.EntryOrderID, t.ExitOrderID, encodeMeta(t.Metadata))
 	return err
 }
 
@@ -199,7 +320,8 @@ func (s *Store) SaveTrade(key string, t models.Trade) error {
 // curve — with fills that were never real. Callers pass the mode they are
 // running in.
 func (s *Store) GetTradeHistory(since time.Time, paper bool) ([]models.Trade, error) {
-	query := `SELECT symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason, is_paper
+	query := `SELECT symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, COALESCE(exit_reason, ''), is_paper,
+			  COALESCE(gross_pnl, pnl), COALESCE(costs, 0), COALESCE(entry_order_id, ''), COALESCE(exit_order_id, ''), COALESCE(metadata, '')
 			  FROM trades WHERE exit_time >= ? AND is_paper = ? ORDER BY exit_time ASC;`
 
 	rows, err := s.db.Query(query, since, boolToInt(paper))
@@ -211,15 +333,20 @@ func (s *Store) GetTradeHistory(since time.Time, paper bool) ([]models.Trade, er
 	var trades []models.Trade
 	for rows.Next() {
 		var t models.Trade
-		var qty, entry, exit, pnl float64
+		var qty, entry, exit, pnl, gross, cost float64
 		var isPaper int
-		if err := rows.Scan(&t.Symbol, &t.Strategy, &t.Direction, &qty, &entry, &exit, &pnl, &t.EntryTime, &t.ExitTime, &t.ExitReason, &isPaper); err != nil {
+		var meta string
+		if err := rows.Scan(&t.Symbol, &t.Strategy, &t.Direction, &qty, &entry, &exit, &pnl, &t.EntryTime, &t.ExitTime, &t.ExitReason, &isPaper,
+			&gross, &cost, &t.EntryOrderID, &t.ExitOrderID, &meta); err != nil {
 			return nil, err
 		}
 		t.Quantity = decimal.NewFromFloat(qty)
 		t.EntryPrice = decimal.NewFromFloat(entry)
 		t.ExitPrice = decimal.NewFromFloat(exit)
 		t.PnL = decimal.NewFromFloat(pnl)
+		t.GrossPnL = decimal.NewFromFloat(gross)
+		t.Costs = decimal.NewFromFloat(cost)
+		t.Metadata = decodeMeta(meta)
 		t.IsPaper = (isPaper == 1)
 		trades = append(trades, t)
 	}

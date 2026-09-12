@@ -76,6 +76,45 @@
 
         <!-- Main Content -->
         <main>
+            <!-- Strategy Monitor: the run read in the units the backtest was measured in -->
+            <section class="card table-card" id="monitor-card">
+                <h2>Strategy Monitor <small><span id="monitor-strategy"></span> · per-trade bps, net of charges · <span class="range-label"></span></small></h2>
+                <div class="funnel" id="funnel"></div>
+                <div class="monitor-grid">
+                    <div>
+                        <h3>Breakdown</h3>
+                        <div class="table-scroll">
+                        <table class="compact">
+                            <thead>
+                                <tr>
+                                    <th>Group</th><th>n</th><th>Net bps</th><th>Gross bps</th><th>Index bps</th>
+                                    <th>t</th><th>Win%</th><th>PF</th><th>Sharpe</th><th>Avg win</th><th>Avg loss</th>
+                                    <th>Net ₹</th><th>Costs ₹</th><th>Max DD ₹</th><th>Hold</th>
+                                </tr>
+                            </thead>
+                            <tbody id="monitor-body"></tbody>
+                        </table>
+                        </div>
+                    </div>
+                    <div>
+                        <h3>Backtest reference</h3>
+                        <div class="table-scroll">
+                        <table class="compact">
+                            <thead><tr><th>Figure</th><th>n</th><th>Net bps</th><th>Index bps</th><th>t</th><th>Win%</th><th>PF</th></tr></thead>
+                            <tbody id="reference-body"></tbody>
+                        </table>
+                        </div>
+                        <h3>Open legs <small>index stop held by the strategy</small></h3>
+                        <div class="table-scroll">
+                        <table class="compact">
+                            <thead><tr><th>Contract</th><th>View</th><th>Index entry</th><th>Index stop</th><th>Index LTP</th><th>Move bps</th><th>Room bps</th></tr></thead>
+                            <tbody id="legs-body"></tbody>
+                        </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Strategy Comparison -->
             <section class="card table-card">
                 <h2>Strategy Performance <small class="range-label"></small></h2>
@@ -112,6 +151,8 @@
                             <th>Avg. Price</th>
                             <th>LTP</th>
                             <th>PnL</th>
+                            <th>Index stop</th>
+                            <th>Index LTP</th>
                         </tr>
                     </thead>
                     <tbody id="positions-body">
@@ -148,13 +189,17 @@
                         <tr>
                             <th>Exit Time</th>
                             <th>Symbol</th>
-                            <th>Strategy</th>
-                            <th>Direction</th>
+                            <th>View</th>
                             <th>Qty</th>
                             <th>Entry</th>
                             <th>Exit</th>
                             <th>Hold</th>
-                            <th>PnL</th>
+                            <th>DTE</th>
+                            <th>Exit reason</th>
+                            <th>Index bps</th>
+                            <th>Net bps</th>
+                            <th>Costs</th>
+                            <th>Net PnL</th>
                         </tr>
                     </thead>
                     <tbody id="trade-history-body">

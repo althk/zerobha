@@ -49,6 +49,7 @@ import (
 
 	"zerobha/internal/config"
 	"zerobha/internal/models"
+	"zerobha/pkg/costs"
 	"zerobha/pkg/options"
 	"zerobha/pkg/upstox"
 
@@ -112,19 +113,18 @@ type costModel struct {
 }
 
 // charges returns total rupee costs for a round trip of n lots at the given buy
-// and sell premiums.
+// and sell premiums, through the shared pkg/costs sheet so the paper broker
+// and this backtest cannot disagree on the arithmetic.
 func (c costModel) charges(buy, sell float64, lotSize int) float64 {
-	qty := float64(c.Lots * lotSize)
-	buyTurnover, sellTurnover := buy*qty, sell*qty
-
-	brokerage := 2 * c.BrokeragePerOrder
-	stt := sellTurnover * c.STTPct / 100
-	txn := (buyTurnover + sellTurnover) * c.TxnPct / 100
-	stamp := buyTurnover * c.StampPct / 100
-	sebi := (buyTurnover + sellTurnover) * c.SEBIPct / 100
-	gst := (brokerage + txn + sebi) * c.GSTPct / 100
-
-	return brokerage + stt + txn + stamp + sebi + gst
+	sheet := costs.Sheet{
+		BrokeragePerOrder: c.BrokeragePerOrder,
+		STTSellPct:        c.STTPct,
+		TxnPct:            c.TxnPct,
+		StampPct:          c.StampPct,
+		SEBIPct:           c.SEBIPct,
+		GSTPct:            c.GSTPct,
+	}
+	return sheet.RoundTrip(buy, sell, float64(c.Lots*lotSize))
 }
 
 // strikeRule says how to pick the contract for a trade.

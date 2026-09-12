@@ -60,6 +60,7 @@ type Donchian struct {
 	// donchian_options.go — it changes both what a signal names and who owns
 	// the stop. nil is the backtest path and the recorded index-leg results.
 	optionExec OptionExecutor
+	declines   declineRecorder
 }
 
 // ContractSpec is what a strategy needs to know about a derivative contract to

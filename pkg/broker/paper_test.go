@@ -14,7 +14,7 @@ func rs(v int64) decimal.Decimal { return decimal.NewFromInt(v) }
 // newTestPaper builds an adapter with no live connection and no store, so tests
 // drive prices themselves and no background goroutine runs.
 func newTestPaper(capital int64) *PaperAdapter {
-	return NewPaperAdapter(nil, rs(capital))
+	return NewPaperAdapter(nil, rs(capital), WithoutPaperCharges())
 }
 
 func entry(symbol string, side models.SignalType, qty, price int64) models.Order {
@@ -189,12 +189,12 @@ func TestPaperShortBlocksMarginRatherThanAddingCash(t *testing.T) {
 // The engine sizes MIS positions with leverage, so blocking the full notional
 // would reject positions the real account takes.
 func TestPaperLeverageReducesMarginRequirement(t *testing.T) {
-	unlevered := NewPaperAdapter(nil, rs(100000))
+	unlevered := NewPaperAdapter(nil, rs(100000), WithoutPaperCharges())
 	if _, err := unlevered.PlaceOrder(entry("SBIN", models.BuySignal, 100, 2000)); err == nil {
 		t.Fatal("expected a 200,000 notional to be refused against 100,000 of cash")
 	}
 
-	levered := NewPaperAdapter(nil, rs(100000),
+	levered := NewPaperAdapter(nil, rs(100000), WithoutPaperCharges(),
 		WithPaperLeverage(func(string) float64 { return 5 }))
 	if _, err := levered.PlaceOrder(entry("SBIN", models.BuySignal, 100, 2000)); err != nil {
 		t.Fatalf("5x leverage should make a 40,000 margin affordable: %v", err)

@@ -1774,6 +1774,36 @@ version and would have silently distorted results:
 | `ClosePosition` enforces `forSide` | A long-exit advice must not close a short in the same symbol — this is the path *every* Donchian option exit takes |
 | State persists per trading date | A container restart mid-session otherwise comes back flat with full capital while positions are open |
 
+**The dashboard reads a run in the units the backtest was measured in.**
+`/api/strategy` (the "Strategy Monitor" card) shows per-trade **net premium
+bps, index bps, t-stat, win rate, profit factor, per-trade Sharpe, average
+win/loss, costs and max drawdown**, broken down by underlying, view
+(LONG/SHORT on the index — a bought put is SHORT), exit reason, days to expiry
+and week, with the recorded backtest figures for the shipped config beside
+them (`internal/web/strategy.go`, `references` — a transcription of
+CLAUDE.md, update it when the shipped config changes). It also shows the
+**signal funnel** (signals → placed, and every decline: too close to expiry,
+no premium, position open, risk-blocked, quantity floored to zero, order
+failed), and the **index stop the strategy is holding for each open option
+leg** (`core.LegReporter`), which no broker can show. Rupee totals are still
+there; they are not the measure.
+
+What makes that possible, each of which was missing before 2026-09-12:
+
+- **Paper fills are charged with the shared `pkg/costs` sheet** (the one
+  `cmd/optbt` prices with, pinned to Zerodha's calculator), so paper PnL is
+  net. `paper_option_spread_ticks` (default 20, the backtest's assumption)
+  moves option fills half a spread against you each way; equities are not
+  touched. Tests of the book-keeping arithmetic use `WithoutPaperCharges()`.
+- **The paper broker keeps the entry signal's metadata on the position and
+  stamps every fill** with `Costs`, `SpreadCost`, `EntryOrderID` and
+  `UnderlyingLast` — the index's last tick, which it sees because the engine
+  forwards every tick, held or not. That is what makes index bps per trade
+  computable.
+- **`trades` rows carry `exit_reason`, `gross_pnl`, `costs`, the order ids
+  and the merged metadata**; `orders` rows carry their metadata; `signals`
+  rows carry an `outcome`. The tracker reconciles every 15s.
+
 **Paper and live rows are never mixed.** `is_paper` is written on orders, trades
 and equity snapshots, and `GetTradeHistory`/`GetEquitySnapshots` require the
 mode. Both modes share `zerobha.db`, so an unscoped query would fold simulated
