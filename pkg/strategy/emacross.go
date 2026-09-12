@@ -1,7 +1,6 @@
 package strategy
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -13,22 +12,32 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// EMACross is a trend-following crossover system between a Fast EMA and a
-// Slow EMA.
+// Exit reasons are constant strings so a -trades-csv dump groups by them; the
+// EMA values that used to be embedded belong in the log line, not the reason.
+const (
+	emaExitBearishCross = "EMA bearish cross"
+	emaExitBullishCross = "EMA bullish cross"
+)
+
+// EMACross is a trend-following crossover system between a fast EMA and a
+// slow EMA.
 //
-// Defaults:
-//   - Fast EMA: 9
-//   - Slow EMA: 21
-//   - Timeframe: 1m
-//   - ProductType: MIS (intraday) or CNC (overnight)
-//   - AssetType: stocks or options (NIFTY weekly options via index signals)
-//   - SL: 2x ATR
-//   - TP: 5x ATR
-//   - Exit: Opposite EMA cross OR SL/TP, whichever happens first.
-//   - For CNC stocks: Long-only (short selling is suppressed).
+// Defaults (see config.DefaultEMACrossConfig):
+//   - Fast EMA 9, slow EMA 21, ATR(5)
+//   - Timeframe 5m
+//   - ProductType MIS (intraday) or CNC (overnight)
+//   - AssetType "stocks" (trade the signal instrument) or "options" (index
+//     signal expressed through a weekly option, live only — see option_leg.go)
+//   - SL 2 ATR, no target (tp_atr_mult <= 0 disables it)
+//   - Exit: opposite EMA cross, or SL/TP, whichever happens first
+//   - CNC stocks are long-only: the cash segment cannot carry a short overnight
 type EMACross struct {
 	cfg   config.EMACrossConfig
 	state map[string]*emaCrossState
+	// optionExec, when set, makes the strategy trade a weekly option on the
+	// signal instrument instead of the instrument itself. nil is the backtest
+	// path and what every recorded index-leg result measures.
+	optionExec OptionExecutor
 }
 
 type emaCrossState struct {
@@ -45,6 +54,9 @@ type emaCrossState struct {
 
 	openSide  models.SignalType
 	openValid bool
+	// leg is the option position the current signal is expressed through,
+	// nil when trading the signal instrument directly.
+	leg *optionLeg
 }
 
 // NewEMACrossStrategy constructs the EMA Cross strategy for the given symbols.
@@ -57,6 +69,13 @@ func NewEMACrossStrategy(symbols []string, cfg config.EMACrossConfig) *EMACross 
 		s.state[sym] = s.newState()
 	}
 	return s
+}
+
+// SetOptionExecution switches the strategy from trading the signal instrument
+// to trading a weekly option on it. Passing nil (the default, and what
+// cmd/backtest does) leaves it trading the index symbol directly.
+func (s *EMACross) SetOptionExecution(exec OptionExecutor) {
+	s.optionExec = exec
 }
 
 func (s *EMACross) newState() *emaCrossState {
@@ -97,8 +116,17 @@ func (s *EMACross) Init(provider core.DataProvider) error {
 	return nil
 }
 
-// updateCandle updates indicators at most once per candle timestamp.
-func (st *emaCrossState) updateCandle(candle models.Candle) {
+func (s *EMACross) productType() string {
+	pt := strings.ToUpper(strings.TrimSpace(s.cfg.ProductType))
+	if pt != "CNC" {
+		pt = "MIS"
+	}
+	return pt
+}
+
+// updateCandle updates indicators at most once per candle timestamp. Both
+// ExitAdvice and OnCandle call it for the same bar; the second call is a no-op.
+func (s *EMACross) updateCandle(st *emaCrossState, candle models.Candle) {
 	if !st.lastCandleTime.IsZero() && !candle.StartTime.After(st.lastCandleTime) {
 		return
 	}
@@ -115,18 +143,40 @@ func (st *emaCrossState) updateCandle(candle models.Candle) {
 	st.atr.Update(candle)
 	st.lastCandleTime = candle.StartTime
 
-	dateStr := candle.StartTime.Format("2006-01-02")
+	dateStr := candle.StartTime.In(istLocation).Format("2006-01-02")
 	if dateStr != st.lastDate {
 		st.lastDate = dateStr
+		// An MIS position cannot survive the session: the square-off flattens
+		// it, and an option leg with it. Believing otherwise would suppress
+		// the next day's first entry on the same side and, worse, "close" a
+		// contract that no longer exists.
+		if s.productType() == "MIS" {
+			st.openValid = false
+			st.leg = nil
+		}
 	}
 }
 
-// ExitAdvice implements core.ExitAdvisor:
-// For Long: if Slow EMA crosses above Fast EMA (Bearish cross).
-// For Short: if Fast EMA crosses above Slow EMA (Bullish cross).
+// ExitAdvice implements core.ExitAdvisor.
+//
+// With option execution on, the index-side stop comes first: no resting order
+// on the option can express a level on the index, so the strategy tracks it
+// itself and closes the contract when the index closes through it.
+//
+// Then the crossover exit: a long is closed once the fast EMA is below the slow
+// (bearish cross), a short once it is above (bullish cross). The instrument
+// closed is the contract when a leg is open, the signal instrument otherwise.
 func (s *EMACross) ExitAdvice(candle models.Candle) *core.ExitAdvice {
 	st := s.stateFor(candle.Symbol)
-	st.updateCandle(candle)
+	s.updateCandle(st, candle)
+
+	if leg := st.leg; leg != nil {
+		if hit, reason := leg.stopHit(candle); hit {
+			st.leg = nil
+			st.openValid = false
+			return leg.closeAdvice("EMACross index stop: " + reason)
+		}
+	}
 
 	if !st.openValid || !st.hasPrev || !st.fastEMA.IsReady() || !st.slowEMA.IsReady() {
 		return nil
@@ -138,29 +188,26 @@ func (s *EMACross) ExitAdvice(candle models.Candle) *core.ExitAdvice {
 	var reason string
 	switch st.openSide {
 	case models.BuySignal:
-		// Exit Long if Fast EMA is now below Slow EMA
 		if currFast.LessThan(currSlow) {
-			reason = fmt.Sprintf("EMA bearish cross: fast EMA (%s) below slow EMA (%s)",
-				currFast.StringFixed(2), currSlow.StringFixed(2))
+			reason = emaExitBearishCross
 		}
 	case models.SellSignal:
-		// Exit Short if Fast EMA is now above Slow EMA
 		if currFast.GreaterThan(currSlow) {
-			reason = fmt.Sprintf("EMA bullish cross: fast EMA (%s) above slow EMA (%s)",
-				currFast.StringFixed(2), currSlow.StringFixed(2))
+			reason = emaExitBullishCross
 		}
 	}
-
 	if reason == "" {
 		return nil
 	}
 
-	side := st.openSide
 	st.openValid = false
-
+	if leg := st.leg; leg != nil {
+		st.leg = nil
+		return leg.closeAdvice(reason)
+	}
 	return &core.ExitAdvice{
 		Symbol:  candle.Symbol,
-		ForSide: side,
+		ForSide: st.openSide,
 		Reason:  reason,
 	}
 }
@@ -168,14 +215,14 @@ func (s *EMACross) ExitAdvice(candle models.Candle) *core.ExitAdvice {
 // OnCandle evaluates new entry signals on candle close.
 func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 	st := s.stateFor(candle.Symbol)
-	st.updateCandle(candle)
+	s.updateCandle(st, candle)
 
 	if !st.hasPrev || !st.fastEMA.IsReady() || !st.slowEMA.IsReady() || !st.atr.IsReady() {
 		return nil
 	}
 
 	// Time window check
-	h, m, _ := candle.StartTime.Clock()
+	h, m, _ := candle.StartTime.In(istLocation).Clock()
 	timeMin := h*60 + m
 	if s.cfg.EntryStartMin > 0 && timeMin < s.cfg.EntryStartMin {
 		return nil
@@ -191,11 +238,67 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 
 	isGoldenCross := prevFast.LessThanOrEqual(prevSlow) && currFast.GreaterThan(currSlow)
 	isDeathCross := prevFast.GreaterThanOrEqual(prevSlow) && currFast.LessThan(currSlow)
+	if !isGoldenCross && !isDeathCross {
+		return nil
+	}
 
 	atrVal := st.atr.Value()
 	if !atrVal.IsPositive() {
 		return nil
 	}
+
+	productType := s.productType()
+
+	// Determine if shorting is allowed
+	allowShort := productType == "MIS"
+	if s.cfg.AllowShort != nil {
+		allowShort = *s.cfg.AllowShort
+	}
+	// CNC stocks are strictly long-only: the cash segment does not carry a
+	// short overnight. A CNC option is a bought put, which is fine.
+	if productType == "CNC" && strings.ToLower(s.cfg.AssetType) != "options" {
+		allowShort = false
+	}
+
+	side := models.BuySignal
+	if isDeathCross {
+		if !allowShort {
+			return nil
+		}
+		side = models.SellSignal
+	}
+	// A cross always alternates with the previous one, so this only guards a
+	// same-side re-entry while a position from that side is still believed
+	// open (e.g. a CNC long carried across sessions).
+	if st.openValid && st.openSide == side {
+		return nil
+	}
+
+	signal := s.buildSignal(candle, side, atrVal, productType, currFast, currSlow)
+
+	// With option execution on, the index signal is a view, not an order: it
+	// is translated into the weekly contract that expresses it, and the stop
+	// moves from the broker to this strategy. The translation can decline —
+	// too close to expiry, no strike listed, no premium — and a declined
+	// entry must not leave the strategy believing it holds a position.
+	if s.optionExec != nil {
+		optionSignal, leg := buildOptionLeg(s.optionExec, "EMACross", candle, signal, atrVal)
+		if optionSignal == nil {
+			return nil
+		}
+		st.leg = leg
+		st.openSide = side
+		st.openValid = true
+		return optionSignal
+	}
+
+	st.openSide = side
+	st.openValid = true
+	return signal
+}
+
+func (s *EMACross) buildSignal(candle models.Candle, side models.SignalType, atrVal decimal.Decimal,
+	productType string, currFast, currSlow decimal.Decimal) *models.Signal {
 
 	slMult := s.cfg.SLATRMult
 	if slMult <= 0 {
@@ -209,80 +312,33 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 		tpDist = atrVal.Mul(decimal.NewFromFloat(s.cfg.TPATRMult))
 	}
 
-	productType := strings.ToUpper(strings.TrimSpace(s.cfg.ProductType))
-	if productType != "CNC" {
-		productType = "MIS"
+	reason := "GoldenCross"
+	stop := candle.Close.Sub(slDist)
+	target := candle.Close.Add(tpDist)
+	if side == models.SellSignal {
+		reason = "DeathCross"
+		stop = candle.Close.Add(slDist)
+		target = candle.Close.Sub(tpDist)
 	}
 
-	// Determine if shorting is allowed
-	allowShort := productType == "MIS"
-	if s.cfg.AllowShort != nil {
-		allowShort = *s.cfg.AllowShort
+	sig := &models.Signal{
+		Symbol:      candle.Symbol,
+		Type:        side,
+		Price:       candle.Close,
+		StopLoss:    stop,
+		ProductType: productType,
+		Metadata: map[string]string{
+			"Strategy": config.StrategyEMACross,
+			"Reason":   reason,
+			"FastEMA":  currFast.StringFixed(2),
+			"SlowEMA":  currSlow.StringFixed(2),
+		},
 	}
-	// Per user rule: for stocks in CNC mode, strictly long-only
-	if productType == "CNC" && strings.ToLower(s.cfg.AssetType) != "options" {
-		allowShort = false
+	if hasTP {
+		sig.Target = target
 	}
-
-	if isGoldenCross {
-		if st.openValid && st.openSide == models.BuySignal {
-			return nil // already long
-		}
-
-		st.openSide = models.BuySignal
-		st.openValid = true
-
-		sig := &models.Signal{
-			Symbol:      candle.Symbol,
-			Type:        models.BuySignal,
-			Price:       candle.Close,
-			StopLoss:    candle.Close.Sub(slDist),
-			ProductType: productType,
-			Metadata: map[string]string{
-				"Strategy": config.StrategyEMACross,
-				"Reason":   "GoldenCross",
-				"FastEMA":  currFast.StringFixed(2),
-				"SlowEMA":  currSlow.StringFixed(2),
-			},
-		}
-		if hasTP {
-			sig.Target = candle.Close.Add(tpDist)
-		}
-		if s.cfg.RiskPct > 0 {
-			sig.RiskPct = decimal.NewFromFloat(s.cfg.RiskPct / 100.0)
-		}
-		return sig
+	if s.cfg.RiskPct > 0 {
+		sig.RiskPct = decimal.NewFromFloat(s.cfg.RiskPct / 100.0)
 	}
-
-	if isDeathCross && allowShort {
-		if st.openValid && st.openSide == models.SellSignal {
-			return nil // already short
-		}
-
-		st.openSide = models.SellSignal
-		st.openValid = true
-
-		sig := &models.Signal{
-			Symbol:      candle.Symbol,
-			Type:        models.SellSignal,
-			Price:       candle.Close,
-			StopLoss:    candle.Close.Add(slDist),
-			ProductType: productType,
-			Metadata: map[string]string{
-				"Strategy": config.StrategyEMACross,
-				"Reason":   "DeathCross",
-				"FastEMA":  currFast.StringFixed(2),
-				"SlowEMA":  currSlow.StringFixed(2),
-			},
-		}
-		if hasTP {
-			sig.Target = candle.Close.Sub(tpDist)
-		}
-		if s.cfg.RiskPct > 0 {
-			sig.RiskPct = decimal.NewFromFloat(s.cfg.RiskPct / 100.0)
-		}
-		return sig
-	}
-
-	return nil
+	return sig
 }

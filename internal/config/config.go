@@ -408,25 +408,40 @@ func DefaultPathsConfig() PathsConfig {
 
 // EMACrossConfig holds parameters for the EMA Crossover strategy.
 type EMACrossConfig struct {
-	Timeframe string `toml:"timeframe"` // default "1m"
-	CSVFile   string `toml:"csv_file"`  // default "ind_nifty50list.csv"
+	Timeframe string `toml:"timeframe"` // default "5m"
+	CSVFile   string `toml:"csv_file"`  // default "indices.csv"
 	Limit     int    `toml:"limit"`     // default 50
 
 	FastPeriod int `toml:"fast_period"` // fast EMA, default 9
 	SlowPeriod int `toml:"slow_period"` // slow EMA, default 21
 
 	ProductType string `toml:"product_type"` // "MIS" (intraday) or "CNC" (overnight), default "MIS"
-	AssetType   string `toml:"asset_type"`   // "stocks" or "options", default "stocks"
+	// AssetType is "stocks" to trade the signal instrument itself, or
+	// "options" to express an INDEX signal through a weekly option. The
+	// backtester always trades the signal instrument (that is what every
+	// recorded result measures); only cmd/trader wires option execution.
+	AssetType string `toml:"asset_type"` // default "options"
 
-	ATRPeriod int     `toml:"atr_period"`  // ATR lookback, default 14
+	ATRPeriod int     `toml:"atr_period"`  // ATR lookback, default 5
 	SLATRMult float64 `toml:"sl_atr_mult"` // SL distance in ATR, default 2.0
-	TPATRMult float64 `toml:"tp_atr_mult"` // TP distance in ATR, default 5.0
+	// TPATRMult is the target distance in ATR. <= 0 disables the target, and
+	// the default is disabled: an explicit 0 in the file is indistinguishable
+	// from "absent", so LoadConfig treats both as "no target".
+	TPATRMult float64 `toml:"tp_atr_mult"`
 
-	TargetDelta float64 `toml:"target_delta"` // target delta for weekly options, default 0.80
+	// Option execution (asset_type = "options"), same semantics as [donchian].
+	TargetDelta           float64 `toml:"target_delta"`             // |delta| of the contract bought, default 0.80
+	TargetDeltaNearExpiry float64 `toml:"target_delta_near_expiry"` // |delta| when DTE <= 3; 0 = same as target_delta
+	// MinDaysToExpiry refuses entries when the nearest weekly expiry is closer
+	// than this. A pointer so an explicit 0 (trade expiry day) survives
+	// LoadConfig — the tp_rr trap. Default 0: measured on 40 sessions only,
+	// where DTE 0 was the best NIFTY bucket and the worst SENSEX one.
+	MinDaysToExpiry *int    `toml:"min_days_to_expiry"`
+	FallbackIV      float64 `toml:"fallback_iv"` // 0 = refuse to trade when the ATM premium is unreadable
 
 	AllowShort *bool `toml:"allow_short"` // allow short selling; default true for MIS, false for CNC
 
-	EntryStartMin  int `toml:"entry_start_min"`  // default 556 (09:16)
+	EntryStartMin  int `toml:"entry_start_min"`  // default 571 (09:31)
 	EntryCutoffMin int `toml:"entry_cutoff_min"` // default 900 (15:00)
 	SquareOffMin   int `toml:"squareoff_min"`    // default 915 (15:15) for MIS; 0 disables for CNC
 
@@ -805,6 +820,7 @@ func DefaultSRLevelsConfig() SRLevelsConfig {
 
 func DefaultEMACrossConfig() EMACrossConfig {
 	allowShort := true
+	minDTE := 0
 	return EMACrossConfig{
 		Timeframe:          "5m",
 		CSVFile:            "indices.csv",
@@ -815,8 +831,9 @@ func DefaultEMACrossConfig() EMACrossConfig {
 		AssetType:          "options",
 		ATRPeriod:          5,
 		SLATRMult:          2.0,
-		TPATRMult:          -1.0,
+		TPATRMult:          0,
 		TargetDelta:        0.80,
+		MinDaysToExpiry:    &minDTE,
 		AllowShort:         &allowShort,
 		EntryStartMin:      9*60 + 31,
 		EntryCutoffMin:     15 * 60,
@@ -1329,15 +1346,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.EMACross.TPATRMult < 0 {
 		config.EMACross.TPATRMult = 0
-	} else if config.EMACross.TPATRMult == 0 {
-		if emaD.TPATRMult < 0 {
-			config.EMACross.TPATRMult = 0
-		} else {
-			config.EMACross.TPATRMult = emaD.TPATRMult
-		}
 	}
 	if config.EMACross.TargetDelta == 0 {
 		config.EMACross.TargetDelta = emaD.TargetDelta
+	}
+	if config.EMACross.MinDaysToExpiry == nil {
+		config.EMACross.MinDaysToExpiry = emaD.MinDaysToExpiry
 	}
 	if config.EMACross.AllowShort == nil {
 		config.EMACross.AllowShort = emaD.AllowShort

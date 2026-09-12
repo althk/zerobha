@@ -46,4 +46,21 @@ api_secret = "s"
 			t.Errorf("expected explicit 5.0 TP to be preserved, got %v", cfg.EMACross.TPATRMult)
 		}
 	})
+
+	t.Run("min_days_to_expiry: absent takes the default, explicit 0 survives", func(t *testing.T) {
+		cfg, err := LoadConfig(writeConfig(t, base))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.EMACross.MinDaysToExpiry == nil || *cfg.EMACross.MinDaysToExpiry != 0 {
+			t.Errorf("expected default MinDaysToExpiry 0, got %v", cfg.EMACross.MinDaysToExpiry)
+		}
+		cfg, err = LoadConfig(writeConfig(t, base+"min_days_to_expiry = 2\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.EMACross.MinDaysToExpiry == nil || *cfg.EMACross.MinDaysToExpiry != 2 {
+			t.Errorf("expected explicit MinDaysToExpiry 2, got %v", cfg.EMACross.MinDaysToExpiry)
+		}
+	})
 }

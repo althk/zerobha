@@ -231,11 +231,40 @@ func main() {
 		maxConcurrent = cfg.GapFade.MaxConcurrent
 	case config.StrategyDonchian:
 		dc := strategy.NewDonchianStrategy(watchlist, cfg.Donchian)
-		dc.SetOptionExecution(buildOptionExecutor(cfg, im, kc))
+		minDTE := 2
+		if cfg.Donchian.MinDaysToExpiry != nil {
+			minDTE = *cfg.Donchian.MinDaysToExpiry
+		}
+		dc.SetOptionExecution(buildOptionExecutor("Donchian", optionExecParams{
+			TargetDelta:           cfg.Donchian.TargetDelta,
+			TargetDeltaNearExpiry: cfg.Donchian.TargetDeltaNearExpiry,
+			MinDaysToExpiry:       minDTE,
+			FallbackIV:            cfg.Donchian.FallbackIV,
+		}, im, kc))
 		strat = dc
 		maxConcurrent = cfg.Donchian.MaxConcurrent
 	case config.StrategyEMACross:
-		strat = strategy.NewEMACrossStrategy(watchlist, cfg.EMACross)
+		ec := strategy.NewEMACrossStrategy(watchlist, cfg.EMACross)
+		// asset_type = "options" expresses the INDEX signal through a weekly
+		// contract; without this the strategy would send MIS orders for
+		// "NIFTY 50" itself, which no exchange accepts.
+		if strings.EqualFold(cfg.EMACross.AssetType, "options") {
+			minDTE := 0
+			if cfg.EMACross.MinDaysToExpiry != nil {
+				minDTE = *cfg.EMACross.MinDaysToExpiry
+			}
+			nearExpiry := cfg.EMACross.TargetDeltaNearExpiry
+			if nearExpiry == 0 {
+				nearExpiry = cfg.EMACross.TargetDelta
+			}
+			ec.SetOptionExecution(buildOptionExecutor("EMACross", optionExecParams{
+				TargetDelta:           cfg.EMACross.TargetDelta,
+				TargetDeltaNearExpiry: nearExpiry,
+				MinDaysToExpiry:       minDTE,
+				FallbackIV:            cfg.EMACross.FallbackIV,
+			}, im, kc))
+		}
+		strat = ec
 		maxConcurrent = cfg.EMACross.MaxConcurrent
 	default:
 		log.Fatalf("live trading supports strategy=%q, %q, %q, or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
@@ -338,8 +367,10 @@ func main() {
 		}
 	}
 	if cfg.Strategy == config.StrategyEMACross {
+		// +1 so a bar STARTING at the cutoff minute is still admitted: the
+		// engine gates on EndTime, and the backtester uses the same +1.
 		if cfg.EMACross.EntryCutoffMin > 0 {
-			engine.TradeCutoffMin = cfg.EMACross.EntryCutoffMin
+			engine.TradeCutoffMin = cfg.EMACross.EntryCutoffMin + 1
 		}
 		if cfg.EMACross.MaxCapitalPerTrade > 0 {
 			engine.MaxCapitalPerTrade = cfg.EMACross.MaxCapitalPerTrade
@@ -606,6 +637,14 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 			c.SquareOffMin/60, c.SquareOffMin%60)
 		log.Printf("  Risk / Capital   : %.2f%% per trade / Max Rs%d", c.RiskPct, c.MaxCapitalPerTrade)
 		log.Printf("  Max Concurrent   : %d   Allow Short: %v", c.MaxConcurrent, allowShort)
+		if strings.EqualFold(c.AssetType, "options") {
+			minDTE := 0
+			if c.MinDaysToExpiry != nil {
+				minDTE = *c.MinDaysToExpiry
+			}
+			log.Printf("  Option Exec      : target delta %.2f (DTE<=3: %.2f), min DTE %d, fallback IV %.1f%%",
+				c.TargetDelta, c.TargetDeltaNearExpiry, minDTE, c.FallbackIV*100)
+		}
 
 	default:
 		c := cfg.ORB
@@ -710,7 +749,15 @@ func isTradingTime() bool {
 	return true
 }
 
-// fetchInstruments downloads the master CSV from Zerodha and builds lookup maps
+// optionExecParams is the strategy-independent part of an option-execution
+// config: [donchian] and [emacross] both carry these knobs.
+type optionExecParams struct {
+	TargetDelta           float64
+	TargetDeltaNearExpiry float64
+	MinDaysToExpiry       int
+	FallbackIV            float64
+}
+
 // buildOptionExecutor assembles the live option-execution path: the Kite
 // instrument dump as the chain, Kite quotes as the premium source, and
 // pkg/options for the strike selection.
@@ -718,7 +765,7 @@ func isTradingTime() bool {
 // The selection code is shared with cmd/optbt, which is the point — a strike
 // chosen in a backtest is chosen the same way in production, rather than by two
 // lookalike implementations that drift apart.
-func buildOptionExecutor(cfg *config.Config, im *broker.InstrumentManager, kc *kiteconnect.Client) strategy.OptionExecutor {
+func buildOptionExecutor(stratName string, p optionExecParams, im *broker.InstrumentManager, kc *kiteconnect.Client) strategy.OptionExecutor {
 	quote := func(tokens []uint32) (map[uint32]float64, error) {
 		if len(tokens) == 0 {
 			return map[uint32]float64{}, nil
@@ -743,27 +790,23 @@ func buildOptionExecutor(cfg *config.Config, im *broker.InstrumentManager, kc *k
 		return out, nil
 	}
 
-	minDTE := 2
-	if cfg.Donchian.MinDaysToExpiry != nil {
-		minDTE = *cfg.Donchian.MinDaysToExpiry
-	}
-	nearExpiryDelta := cfg.Donchian.TargetDeltaNearExpiry
+	nearExpiryDelta := p.TargetDeltaNearExpiry
 	if nearExpiryDelta == 0 {
 		nearExpiryDelta = 0.90
 	}
-	log.Printf("Donchian option execution: target delta %.2f (DTE<=3 delta %.2f), min %d day(s) to expiry, fallback IV %.1f%%",
-		cfg.Donchian.TargetDelta, nearExpiryDelta, minDTE, cfg.Donchian.FallbackIV*100)
-	if minDTE == 0 {
-		log.Println("WARNING: min_days_to_expiry = 0 — expiry-day trades measured at -1571 bps each. See CLAUDE.md.")
+	log.Printf("%s option execution: target delta %.2f (DTE<=3 delta %.2f), min %d day(s) to expiry, fallback IV %.1f%%",
+		stratName, p.TargetDelta, nearExpiryDelta, p.MinDaysToExpiry, p.FallbackIV*100)
+	if p.MinDaysToExpiry == 0 {
+		log.Println("WARNING: min_days_to_expiry = 0 — Donchian measured expiry-day trades at -1571 bps each. See CLAUDE.md.")
 	}
 
 	return broker.OptionExecutor{
 		Chain: broker.NewKiteChain(im, quote),
 		Selector: options.Selector{
-			TargetDelta:           cfg.Donchian.TargetDelta,
+			TargetDelta:           p.TargetDelta,
 			TargetDeltaNearExpiry: nearExpiryDelta,
-			MinDaysToExpiry:       minDTE,
-			FallbackIV:            cfg.Donchian.FallbackIV,
+			MinDaysToExpiry:       p.MinDaysToExpiry,
+			FallbackIV:            p.FallbackIV,
 		},
 	}
 }

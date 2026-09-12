@@ -25,3 +25,29 @@ func TestParseDurationUnderstandsBothTimeframeSpellings(t *testing.T) {
 		}
 	}
 }
+
+// Every config file spells the bar size "5m" (cmd/trader parses it as a Go
+// duration) while the Kite/Upstox data lands in test/data/5minute, so the
+// data lookup has to try both spellings.
+func TestTimeframeDirsTriesBothSpellings(t *testing.T) {
+	cases := map[string][]string{
+		"5m":      {"5m", "5minute"},
+		"5minute": {"5minute", "5m"},
+		"1m":      {"1m", "1minute", "minute"},
+		"day":     {"day", "1d"},
+		"weird":   {"weird"},
+	}
+	for tf, want := range cases {
+		got := timeframeDirs(tf)
+		if len(got) != len(want) {
+			t.Errorf("timeframeDirs(%q) = %v, want %v", tf, got, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("timeframeDirs(%q) = %v, want %v", tf, got, want)
+				break
+			}
+		}
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strconv"
@@ -39,7 +38,6 @@ func main() {
 	costBps := flag.Float64("cost-bps", 0.0, "Round-trip transaction cost in basis points of turnover, deducted per trade (e.g. 6 = 0.06%)")
 	knobs := flag.String("knobs", "", "ORB ablation: start from baseline and enable only these new knobs (comma list of: onetrade,stopfloor,vwapdist,thrust,adxeps)")
 	tradesCSV := flag.String("trades-csv", "", "Write every trade (all symbols, pre-cost PnL) to this CSV for offline analysis")
-	journalFile := flag.String("journal", "", "Write signals to this journal CSV (default empty: disabled)")
 	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
 	configFile := flag.String("config", "config.local.toml", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
 	// srlevels sweep knobs. The strategy is specified with two choices left
@@ -59,7 +57,6 @@ func main() {
 	emaTP := flag.Float64("ema-tp", -999, "emacross: target distance in ATR; <= 0 disables the target (overrides config)")
 	emaATR := flag.Int("ema-atr", 0, "emacross: ATR period (overrides config)")
 	flag.Parse()
-	_ = journalFile
 
 	// When a TOML config is given, it supplies the strategy, symbol CSV,
 	// timeframe, limit, risk limits, and per-strategy knobs — the same values
@@ -108,8 +105,11 @@ func main() {
 		endDate = endDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 	}
 
+	// Engine chatter is dropped, but ERRORs still reach stderr: "insufficient
+	// funds", a quantity floored to zero and a failed close are the only
+	// evidence of the traps CLAUDE.md records, and a silent run hides them.
 	log.SetFlags(0)
-	log.SetOutput(io.Discard)
+	log.SetOutput(&LogFilter{})
 
 	// Load symbols from CSV
 	symbols, err := loadSymbolsFromCSV(*csvFile, *minBeta)
@@ -387,12 +387,9 @@ func main() {
 			}
 		}
 
-		filename := fmt.Sprintf("test/data/%s/%s_real.csv", *timeframe, dataFileStem(sym))
-		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			filename = fmt.Sprintf("test/data/%s_real.csv", dataFileStem(sym))
-			if _, err := os.Stat(filename); os.IsNotExist(err) {
-				return symWorkResult{sym: sym, err: fmt.Errorf("data file %s not found", filename)}
-			}
+		filename, err := findDataFile(*timeframe, sym)
+		if err != nil {
+			return symWorkResult{sym: sym, err: err}
 		}
 
 		header, records := readCSV(filename)
@@ -961,4 +958,44 @@ func loadSymbolsFromCSV(filename string, minBeta float64) ([]string, error) {
 // then fails warm-up with "symbol NIFTY50 not found".
 func dataFileStem(symbol string) string {
 	return strings.ReplaceAll(strings.ToLower(symbol), " ", "")
+}
+
+// timeframeDirs lists the data directories that hold the given bar size, in
+// lookup order. The tree names the same bar size two ways — test/data/5m
+// (Yahoo, Go duration syntax) and test/data/5minute (Kite/Upstox naming) —
+// and every config file says "5m" because cmd/trader parses it as a Go
+// duration, so a run that only looked in test/data/5m found no index data and
+// reported zero trades with nothing to say why.
+func timeframeDirs(tf string) []string {
+	aliases := map[string][]string{
+		"1m": {"1minute", "minute"}, "1minute": {"1m"}, "minute": {"1m"},
+		"3m": {"3minute"}, "3minute": {"3m"},
+		"5m": {"5minute"}, "5minute": {"5m"},
+		"10m": {"10minute"}, "10minute": {"10m"},
+		"15m": {"15minute"}, "15minute": {"15m"},
+		"30m": {"30minute"}, "30minute": {"30m"},
+		"1h": {"60minute"}, "60minute": {"1h"},
+		"1d": {"day"}, "day": {"1d"},
+	}
+	return append([]string{tf}, aliases[strings.ToLower(tf)]...)
+}
+
+// findDataFile resolves the candle CSV for a symbol, trying the timeframe
+// directory, its alias, then the tree root.
+func findDataFile(tf, sym string) (string, error) {
+	stem := dataFileStem(sym)
+	var tried []string
+	for _, dir := range timeframeDirs(tf) {
+		f := fmt.Sprintf("test/data/%s/%s_real.csv", dir, stem)
+		if _, err := os.Stat(f); err == nil {
+			return f, nil
+		}
+		tried = append(tried, f)
+	}
+	f := fmt.Sprintf("test/data/%s_real.csv", stem)
+	if _, err := os.Stat(f); err == nil {
+		return f, nil
+	}
+	tried = append(tried, f)
+	return "", fmt.Errorf("no data file found (tried %s)", strings.Join(tried, ", "))
 }
