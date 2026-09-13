@@ -59,9 +59,87 @@ type emaCrossState struct {
 
 	openSide  models.SignalType
 	openValid bool
+	// The resting orders the direct (non-option) position is protected by,
+	// mirrored here because no broker reports a fired stop back to the
+	// strategy. Without this, openValid latched on a CNC long forever: the
+	// cash segment is long-only, so the same-side guard in OnCandle refused
+	// every later golden cross once the first long had been stopped out. MIS
+	// never showed it because the date change resets the flag and, two-sided,
+	// consecutive crosses alternate sides. See closeIfProtectiveHit.
+	openStop   decimal.Decimal
+	openTarget decimal.Decimal
+	openTrail  decimal.Decimal
+	openBest   decimal.Decimal
 	// leg is the option position the current signal is expressed through,
 	// nil when trading the signal instrument directly.
 	leg *optionLeg
+}
+
+// closeIfProtectiveHit reproduces the broker's own exit test on this bar and
+// drops the strategy's belief in the position when one of its resting orders
+// would have filled. It is the same mirror srlevels keeps, for the same
+// reason, and follows pkg/broker/sim.go's ordering: exits are evaluated
+// against the stop as it stood at the bar's OPEN, then the trail ratchets on
+// this bar's extreme, capped at the close (stopNoBetterThanMarket).
+//
+// Being wrong is cheap and one-directional: the engine's HasOpenPosition
+// check still refuses a second position, so an over-eager clear costs a
+// rejected signal, never a pyramided one.
+func (st *emaCrossState) closeIfProtectiveHit(candle models.Candle) {
+	if !st.openValid || st.leg != nil {
+		return
+	}
+
+	stop := st.openStop
+	var hit bool
+	if st.openSide == models.BuySignal {
+		hit = (stop.IsPositive() && candle.Low.LessThanOrEqual(stop)) ||
+			(st.openTarget.IsPositive() && candle.High.GreaterThanOrEqual(st.openTarget))
+	} else {
+		hit = (stop.IsPositive() && candle.High.GreaterThanOrEqual(stop)) ||
+			(st.openTarget.IsPositive() && candle.Low.LessThanOrEqual(st.openTarget))
+	}
+	if hit {
+		st.clearOpen()
+		return
+	}
+
+	// Survived the bar: let the trail follow this bar's extreme.
+	if !st.openTrail.IsPositive() {
+		return
+	}
+	if st.openSide == models.BuySignal {
+		if candle.High.GreaterThan(st.openBest) {
+			st.openBest = candle.High
+		}
+		if trailed := decimal.Min(st.openBest.Sub(st.openTrail), candle.Close); trailed.GreaterThan(st.openStop) {
+			st.openStop = trailed
+		}
+		return
+	}
+	if st.openBest.IsZero() || candle.Low.LessThan(st.openBest) {
+		st.openBest = candle.Low
+	}
+	if trailed := decimal.Max(st.openBest.Add(st.openTrail), candle.Close); st.openStop.IsZero() || trailed.LessThan(st.openStop) {
+		st.openStop = trailed
+	}
+}
+
+// clearOpen forgets the position and its mirrored protective orders.
+func (st *emaCrossState) clearOpen() {
+	st.openValid = false
+	st.openStop, st.openTarget, st.openTrail, st.openBest = decimal.Zero, decimal.Zero, decimal.Zero, decimal.Zero
+}
+
+// rememberOpen records a direct entry and the protective orders that
+// accompany it, so closeIfProtectiveHit can tell when the broker has closed it.
+func (st *emaCrossState) rememberOpen(sig *models.Signal) {
+	st.openSide = sig.Type
+	st.openValid = true
+	st.openStop = sig.StopLoss
+	st.openTarget = sig.Target
+	st.openTrail = sig.TrailDistance
+	st.openBest = sig.Price
 }
 
 // NewEMACrossStrategy constructs the EMA Cross strategy for the given symbols.
@@ -175,6 +253,7 @@ func (s *EMACross) updateCandle(st *emaCrossState, candle models.Candle) {
 		st.adx.Update(candle)
 	}
 	st.lastCandleTime = candle.StartTime
+	st.closeIfProtectiveHit(candle)
 
 	dateStr := candle.StartTime.In(istLocation).Format("2006-01-02")
 	if dateStr != st.lastDate {
@@ -185,7 +264,7 @@ func (s *EMACross) updateCandle(st *emaCrossState, candle models.Candle) {
 		// the next day's first entry on the same side and, worse, "close" a
 		// contract that no longer exists.
 		if s.productType() == "MIS" {
-			st.openValid = false
+			st.clearOpen()
 			st.leg = nil
 		}
 	}
@@ -237,7 +316,7 @@ func (s *EMACross) ExitAdvice(candle models.Candle) *core.ExitAdvice {
 		return nil
 	}
 
-	st.openValid = false
+	st.clearOpen()
 	if leg := st.leg; leg != nil {
 		st.leg = nil
 		return leg.closeAdvice(reason)
@@ -355,8 +434,7 @@ func (s *EMACross) OnCandle(candle models.Candle) *models.Signal {
 		return optionSignal
 	}
 
-	st.openSide = side
-	st.openValid = true
+	st.rememberOpen(signal)
 	st.entriesToday++
 	return signal
 }

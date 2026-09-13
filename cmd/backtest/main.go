@@ -64,6 +64,7 @@ func main() {
 	emaMaxEntries := flag.Int("ema-max-entries", -1, "emacross: entries per symbol per session; 0 = unlimited (overrides config)")
 	emaStart := flag.Int("ema-start", 0, "emacross: first entry minute of day, e.g. 571 = 09:31 (overrides config)")
 	emaCutoff := flag.Int("ema-cutoff", 0, "emacross: last entry minute of day, e.g. 900 = 15:00 (overrides config)")
+	maxCapital := flag.Int64("max-capital", 0, "cap on capital allocated per trade in rupees, before MIS leverage (overrides every config cap); a strategy cap sized for index contracts pushes a leveraged stock long past the Rs5L simulated balance and it is silently refused")
 	flag.Parse()
 
 	// When a TOML config is given, it supplies the strategy, symbol CSV,
@@ -422,6 +423,9 @@ func main() {
 			if strings.ToUpper(emaCfg.ProductType) == "CNC" {
 				engine.TradeCutoffMin = 24 * 60
 			}
+		}
+		if *maxCapital > 0 {
+			engine.MaxCapitalPerTrade = *maxCapital
 		}
 
 		filename, err := findDataFile(*timeframe, sym)
