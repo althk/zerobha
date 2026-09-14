@@ -92,13 +92,13 @@ to inspect a step — `./zerobha.sh save`, then `./zerobha.sh copy user@vm`, the
 `./zerobha.sh run user@vm`.
 
 **The container only stays up during market hours.** The trader exits
-immediately if today is a holiday or the time is outside 08:55–15:30 IST, and
+immediately if today is a holiday or the time is outside 07:00–15:05 IST, and
 the `unless-stopped` restart policy restarts it on a clean exit — so outside the
 window `./zerobha.sh status user@vm` shows it restarting and
 `./zerobha.sh logs user@vm` repeats:
 
 ```text
-Outside trading hours (08:55 - 15:30 IST), not starting trader
+Outside trading hours (07:00 - 15:05 IST), not starting trader
 ```
 
 That is expected, not a failed deployment. It settles once the window opens.

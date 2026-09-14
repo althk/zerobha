@@ -121,7 +121,7 @@ func main() {
 	}
 
 	if !isTradingTime() {
-		log.Println("Outside trading hours (08:55 - 15:30 IST), not starting trader")
+		log.Println("Outside trading hours (07:00 - 15:05 IST), not starting trader")
 		return
 	}
 
@@ -742,8 +742,8 @@ func isTradingTime() bool {
 	}
 	now := time.Now().In(loc)
 
-	// Start: 08:55 AM
-	start := time.Date(now.Year(), now.Month(), now.Day(), 8, 55, 0, 0, loc)
+	// Start: 07:00 AM
+	start := time.Date(now.Year(), now.Month(), now.Day(), 7, 0, 0, 0, loc)
 	// End: 15:05 PM
 	end := time.Date(now.Year(), now.Month(), now.Day(), 15, 05, 0, 0, loc)
 
