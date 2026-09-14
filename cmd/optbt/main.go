@@ -153,7 +153,15 @@ type strikeRule struct {
 	SpreadPct   float64
 	SpreadTicks float64
 	BarDuration time.Duration
-	Costs       costModel
+	// IndexBar is the bar size the index trade list was produced on. The
+	// list's entry_time is the START of the signal bar and the strategy
+	// entered at its CLOSE, so the option is bought at the premium bar ending
+	// IndexBar later. Pricing on 1-minute candles without this bought every
+	// entry at the first minute of a 5-minute signal bar, four minutes before
+	// the confirmation the strategy waited for: the same 80 srlevels trades
+	// went from +234 to +686 net bps with no change to the index moves.
+	IndexBar time.Duration
+	Costs    costModel
 	// FlatCostBps, when positive, replaces the itemised cost sheet with a flat
 	// charge per leg. Kept so earlier runs recorded in CLAUDE.md can be
 	// reproduced; the itemised model is the accurate one.
@@ -180,7 +188,8 @@ func main() {
 	outPath := flag.String("out", "", "optional CSV dump of every priced trade")
 	minDTE := flag.Int("min-dte", 0, "skip trades with fewer than this many days to expiry (2 skips expiry day and the day before)")
 	split := flag.String("split", "", "optional YYYY-MM-DD; reports before/after separately")
-	timeframe := flag.String("timeframe", "1m", "candle timeframe: 1m (or 1minute), 5m (or 5minute)")
+	timeframe := flag.String("timeframe", "1m", "premium candle timeframe: 1m (or 1minute), 5m (or 5minute)")
+	indexBar := flag.String("index-bar", "5m", "bar size the index trade list was backtested on: 1m or 5m; the entry fills at the close of that bar")
 	flag.Parse()
 
 	if *tradesPath == "" {
@@ -224,6 +233,18 @@ func main() {
 		intervalStr = "5minute"
 	}
 
+	indexBarDur := 5 * time.Minute
+	switch *indexBar {
+	case "5m", "5minute":
+	case "1m", "1minute":
+		indexBarDur = 1 * time.Minute
+	default:
+		log.Fatalf("-index-bar %q: want 1m or 5m", *indexBar)
+	}
+	if indexBarDur < barDur {
+		log.Fatalf("-index-bar %s is finer than -timeframe %s: a %s index bar cannot be located in %s premium candles", *indexBar, *timeframe, *indexBar, *timeframe)
+	}
+
 	store := &contractStore{
 		client:      client,
 		cacheDir:    *cacheDir,
@@ -244,6 +265,7 @@ func main() {
 		SpreadPct:             *spreadPct,
 		SpreadTicks:           *spreadTicks,
 		BarDuration:           barDur,
+		IndexBar:              indexBarDur,
 		FlatCostBps:           *costBps,
 		Costs: costModel{
 			Lots:              *lots,
@@ -337,16 +359,16 @@ func priceTrade(store *contractStore, underlyingKey string, t indexTrade, expiri
 		return pricedTrade{}, "chain fetch failed: " + truncErr(err)
 	}
 
-	// The index trade executes at the CLOSE of the bar starting at EntryTime,
-	// so that is the instant the option is bought and the instant its time to
-	// expiry is measured from.
-	execAt := t.EntryTime.Add(rule.BarDuration)
+	// The index trade executes at the CLOSE of the index bar starting at
+	// EntryTime, so that is the instant the option is bought and the instant
+	// its time to expiry is measured from.
+	execAt := t.EntryTime.Add(rule.IndexBar)
 
 	// The ATM vol is backed out either way. Under -delta it selects the strike
 	// and a failure is fatal to the trade; under -itm it only labels the
 	// contract the point offset happened to buy — which is the number that
 	// makes the two modes comparable, so it must not gate the trade there.
-	iv, why := store.atmIV(chain, t, exp)
+	iv, why := store.atmIV(chain, t, exp, execAt)
 	var target float64
 	dte := int(exp.Sub(entryDay).Hours() / 24)
 	effectiveDelta := rule.TargetDelta
@@ -374,9 +396,11 @@ func priceTrade(store *contractStore, underlyingKey string, t indexTrade, expiri
 	if err != nil {
 		return pricedTrade{}, "candle fetch failed: " + truncErr(err)
 	}
-	// The index trade entered at the close of the bar STARTING at EntryTime,
-	// and exited at the close of the bar ENDING at ExitTime.
-	entryBar, ok1 := bars[t.EntryTime.In(options.IST)]
+	// The index trade entered at execAt (the close of the index bar starting
+	// at EntryTime) and exited at the close of the bar ENDING at ExitTime; in
+	// both cases that is the premium bar ending there, which STARTS one
+	// premium bar earlier.
+	entryBar, ok1 := bars[execAt.Add(-rule.BarDuration).In(options.IST)]
 	exitBar, ok2 := bars[t.ExitTime.Add(-rule.BarDuration).In(options.IST)]
 	if !ok1 || !ok2 {
 		return pricedTrade{}, "option did not trade in one of those bars"
@@ -446,7 +470,7 @@ func priceTrade(store *contractStore, underlyingKey string, t indexTrade, expiri
 // market at that moment rather than a constant typed into the config: weekly
 // index vol moves enough across a two-year sample that a fixed guess would put
 // the chosen delta systematically off in calm and stressed periods alike.
-func (s *contractStore) atmIV(chain []upstox.ExpiredContract, t indexTrade, exp time.Time) (float64, string) {
+func (s *contractStore) atmIV(chain []upstox.ExpiredContract, t indexTrade, exp time.Time, execAt time.Time) (float64, string) {
 	atm, ok := pickStrike(chain, "CE", t.EntrySpot)
 	if !ok {
 		return 0, "no ATM strike listed"
@@ -455,11 +479,11 @@ func (s *contractStore) atmIV(chain []upstox.ExpiredContract, t indexTrade, exp 
 	if err != nil {
 		return 0, "ATM candle fetch failed"
 	}
-	bar, ok := bars[t.EntryTime.In(options.IST)]
+	// The premium bar ending at execAt, the instant the index trade filled.
+	bar, ok := bars[execAt.Add(-s.barDuration).In(options.IST)]
 	if !ok {
 		return 0, "ATM option did not trade in the entry bar"
 	}
-	execAt := t.EntryTime.Add(s.barDuration)
 	iv, ok := options.ImpliedVol(bar.Close.InexactFloat64(), t.EntrySpot, atm.StrikePrice,
 		options.YearsToExpiry(execAt, exp), true)
 	if !ok {
