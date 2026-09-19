@@ -347,4 +347,6 @@ tr.reference td { color: var(--text-secondary); font-style: italic; }
 .funnel .chip b { font-weight: 600; }
 .funnel .chip.placed { border-color: var(--success-color); }
 .funnel .chip.warn { border-color: var(--danger-color); }
+.growth-line { font-size: 0.85rem; margin: 0.25rem 0 0.75rem; }
+.growth-line b { font-weight: 600; }
 .t-strong { font-weight: 700; }

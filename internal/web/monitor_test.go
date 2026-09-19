@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,6 +40,7 @@ func TestMonitorReadsAPaperOptionTradeEndToEnd(t *testing.T) {
 	engine := core.NewEngine(legStrategy{}, paper, risk.NewManager(nil, decimal.NewFromInt(100000), 50, 10), nil, nil, store)
 	engine.PaperMode = true
 	srv := NewServer(engine, 0, true)
+	srv.StartingCapital = 1000000
 
 	// Entry: a put expressing a SHORT index view, as option_leg.go builds it.
 	entry := models.Order{
@@ -76,6 +78,7 @@ func TestMonitorReadsAPaperOptionTradeEndToEnd(t *testing.T) {
 			Placed int `json:"placed"`
 		} `json:"funnel"`
 		Overall   groupStats   `json:"overall"`
+		Growth    growthStats  `json:"growth"`
 		ByExit    []groupStats `json:"by_exit"`
 		ByDTE     []groupStats `json:"by_dte"`
 		Trades    []tradeRow   `json:"trades"`
@@ -109,6 +112,10 @@ func TestMonitorReadsAPaperOptionTradeEndToEnd(t *testing.T) {
 	}
 	if out.Overall.N != 1 || out.Overall.IndexN != 1 || out.Overall.CostsRupees != tr.Costs {
 		t.Errorf("overall = %+v", out.Overall)
+	}
+	// A two-hour run is not annualised; the return on the paper capital is.
+	if out.Growth.StartingCapital != 1000000 || out.Growth.HasCAGR || math.Abs(out.Growth.ReturnPct-tr.PnL/1000000*100) > 1e-9 {
+		t.Errorf("growth = %+v", out.Growth)
 	}
 	if len(out.ByExit) != 1 || out.ByExit[0].Group != "EOD square-off" {
 		t.Errorf("by_exit = %+v", out.ByExit)

@@ -145,6 +145,7 @@ func (s *Server) handleStrategy(w http.ResponseWriter, r *http.Request) {
 		"since":      since,
 		"funnel":     funnelSummary(funnel),
 		"overall":    statsFor("ALL", rows),
+		"growth":     growthFor(trades, s.StartingCapital),
 		"by_underlying": groupBy(rows, func(r tradeRow) string {
 			if r.Underlying != "" {
 				return r.Underlying

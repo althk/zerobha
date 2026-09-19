@@ -21,8 +21,12 @@ type Server struct {
 	engine    *core.Engine
 	port      int
 	PaperMode bool
-	srv       *http.Server
-	done      chan struct{}
+	// StartingCapital is what the run began with: the paper balance, or the
+	// live account's balance at start-up. It is the denominator for CAGR and
+	// the percentage drawdown; zero leaves both unset.
+	StartingCapital float64
+	srv             *http.Server
+	done            chan struct{}
 }
 
 func NewServer(engine *core.Engine, port int, paperMode bool) *Server {
@@ -172,8 +176,8 @@ func (s *Server) handleTrades(w http.ResponseWriter, r *http.Request) {
 
 // strategyStats is the per-strategy (and overall) performance row returned
 // by /api/performance. MaxDrawdown is in rupees (peak-to-trough of the
-// cumulative PnL curve), not a percentage, since per-strategy capital
-// allocation is not tracked.
+// cumulative PnL curve); the embedded growthStats carry it as a percentage
+// of the account and the CAGR, both against the run's starting capital.
 type strategyStats struct {
 	Strategy     string  `json:"strategy"`
 	Trades       int     `json:"trades"`
@@ -186,6 +190,7 @@ type strategyStats struct {
 	AvgLoss      float64 `json:"avg_loss"`
 	Sharpe       float64 `json:"sharpe"`
 	MaxDrawdown  float64 `json:"max_drawdown"`
+	growthStats
 }
 
 type curvePoint struct {
@@ -236,7 +241,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 
 	strategies := make([]strategyStats, 0, len(byStrategy))
 	for name, group := range byStrategy {
-		strategies = append(strategies, buildStats(name, group))
+		strategies = append(strategies, buildStats(name, group, s.StartingCapital))
 	}
 
 	// Cumulative realized PnL curve and daily PnL buckets
@@ -271,7 +276,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"overall":    buildStats("OVERALL", trades),
+		"overall":    buildStats("OVERALL", trades, s.StartingCapital),
 		"strategies": strategies,
 		"curve":      curve,
 		"daily":      daily,
@@ -281,7 +286,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 
 // buildStats converts a chronological trade list into a strategyStats row,
 // reusing the statistics analyzer for the core metrics.
-func buildStats(name string, trades []models.Trade) strategyStats {
+func buildStats(name string, trades []models.Trade, startingCapital float64) strategyStats {
 	// Capital only affects Analyze's percentage drawdown, which we discard
 	// in favour of a rupee drawdown computed below.
 	perf := statistics.Analyze(trades, decimal.NewFromInt(100000))
@@ -311,6 +316,7 @@ func buildStats(name string, trades []models.Trade) strategyStats {
 		}
 	}
 	row.MaxDrawdown, _ = maxDD.Float64()
+	row.growthStats = growthFor(trades, startingCapital)
 
 	return row
 }

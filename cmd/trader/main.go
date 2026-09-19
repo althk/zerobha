@@ -391,6 +391,17 @@ func main() {
 
 	// Web Dashboard
 	webServer := web.NewServer(engine, 9080, isPaper)
+	// The dashboard's CAGR and percentage drawdown need the capital the run
+	// started with. Paper knows it exactly; live reads the balance once at
+	// start-up, and a failed read leaves both figures blank rather than
+	// wrong.
+	if isPaper {
+		webServer.StartingCapital = cfg.PaperCapital
+	} else if balance, err := brokerAdapter.GetBalance(); err == nil {
+		webServer.StartingCapital, _ = balance.Float64()
+	} else {
+		log.Printf("WARNING: could not read balance for the dashboard's CAGR (%v); it will be blank", err)
+	}
 	go webServer.Start()
 
 	// 5. Setup Data Pipeline

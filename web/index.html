@@ -60,6 +60,11 @@
                 <div class="value" id="max-drawdown">₹ 0.00</div>
                 <div class="metric-sub" id="sharpe"></div>
             </div>
+            <div class="card metric-card">
+                <h3>CAGR <span class="range-label"></span></h3>
+                <div class="value" id="cagr">--</div>
+                <div class="metric-sub" id="cagr-sub"></div>
+            </div>
         </section>
 
         <!-- Charts -->
@@ -80,6 +85,7 @@
             <section class="card table-card" id="monitor-card">
                 <h2>Strategy Monitor <small><span id="monitor-strategy"></span> · per-trade bps, net of charges · <span class="range-label"></span></small></h2>
                 <div class="funnel" id="funnel"></div>
+                <div class="growth-line text-muted" id="monitor-growth"></div>
                 <div class="monitor-grid">
                     <div>
                         <h3>Breakdown</h3>
@@ -130,6 +136,8 @@
                             <th>Avg Loss</th>
                             <th>Sharpe</th>
                             <th>Max DD</th>
+                            <th title="Peak-to-trough as a percentage of the account's equity at the peak">Max DD %</th>
+                            <th title="Net return annualised from first entry to last exit, on the run's starting capital; plain return until 30 days">CAGR</th>
                         </tr>
                     </thead>
                     <tbody id="strategies-body">

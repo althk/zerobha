@@ -148,13 +148,43 @@ function updatePerformanceMetrics(overall) {
     ddEl.textContent = formatCurrency(-overall.max_drawdown);
     ddEl.className = `value ${overall.max_drawdown > 0 ? 'text-red' : ''}`;
     document.getElementById('sharpe').textContent =
-        overall.trades >= 2 ? `Sharpe (per-trade): ${overall.sharpe.toFixed(2)}` : '';
+        (overall.trades >= 2 ? `Sharpe (per-trade): ${overall.sharpe.toFixed(2)}` : '')
+        + (overall.starting_capital > 0 && overall.trades > 0 ? ` · ${overall.max_dd_pct.toFixed(1)}% of equity` : '');
+
+    const cagrEl = document.getElementById('cagr');
+    const g = growthText(overall);
+    cagrEl.textContent = g.value;
+    cagrEl.className = `value ${g.cls}`;
+    document.getElementById('cagr-sub').textContent = g.sub;
+}
+
+// growthText reads the growth fields of a stats row: the CAGR once the run
+// is old enough to annualise, the plain return on capital before that, and
+// nothing at all when the run's starting capital is unknown.
+function growthText(g) {
+    if (!g || !(g.starting_capital > 0) || !(g.span_days >= 0) || g.trades === 0 || g.n === 0) {
+        return { value: '--', cls: '', sub: g && !(g.starting_capital > 0) ? 'starting capital unknown' : '' };
+    }
+    const days = Math.max(1, Math.round(g.span_days));
+    const cap = formatCurrency(g.starting_capital);
+    if (g.has_cagr) {
+        return { value: `${fmtSigned(g.cagr_pct, 1)}%`, cls: pnlClass(g.cagr_pct),
+                 sub: `${fmtSigned(g.return_pct, 1)}% over ${days}d on ${cap}` };
+    }
+    return { value: `${fmtSigned(g.return_pct, 1)}%`, cls: pnlClass(g.return_pct),
+             sub: `over ${days}d on ${cap} · annualised after 30d` };
+}
+
+function growthCell(g) {
+    const t = growthText(g);
+    const note = t.value !== '--' && !g.has_cagr ? `<br><small class="text-muted">${Math.max(1, Math.round(g.span_days))}d</small>` : '';
+    return `<td class="${t.cls}" title="${t.sub}">${t.value}${note}</td>`;
 }
 
 function updateStrategiesTable(strategies) {
     const tbody = document.getElementById('strategies-body');
     if (!strategies || strategies.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty-row">No closed trades yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="empty-row">No closed trades yet</td></tr>';
         return;
     }
 
@@ -171,6 +201,8 @@ function updateStrategiesTable(strategies) {
             <td class="text-red">${formatCurrency(-s.avg_loss)}</td>
             <td>${s.sharpe.toFixed(2)}</td>
             <td class="text-red">${formatCurrency(-s.max_drawdown)}</td>
+            <td class="text-red">${s.starting_capital > 0 ? s.max_dd_pct.toFixed(1) + '%' : '--'}</td>
+            ${growthCell(s)}
         </tr>
     `).join('');
 }
@@ -247,6 +279,14 @@ function updateMonitor(m) {
         chips.push(`<span class="chip ${warn ? 'warn' : ''}" title="${d.reason || ''}">${d.outcome}${d.reason ? ': ' + d.reason : ''} <b>${d.count}</b></span>`);
     });
     document.getElementById('funnel').innerHTML = chips.join('');
+
+    // Growth of the account over the range: CAGR and drawdown as a fraction
+    // of equity, which the per-trade table cannot show.
+    const gr = m.growth ? { ...m.growth, n: m.overall ? m.overall.n : 0 } : null;
+    const gt = growthText(gr);
+    document.getElementById('monitor-growth').innerHTML = gr && gr.starting_capital > 0 && gr.n > 0
+        ? `${gr.has_cagr ? 'CAGR' : 'Return'} <b class="${gt.cls}">${gt.value}</b> · ${gt.sub} · max drawdown <b class="text-red">${gr.max_dd_pct.toFixed(1)}%</b> of equity`
+        : '';
 
     const body = document.getElementById('monitor-body');
     if (!m.overall || m.overall.n === 0) {
