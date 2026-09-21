@@ -210,7 +210,7 @@ function updateStrategiesTable(strategies) {
 function updateTradeHistory(trades) {
     const tbody = document.getElementById('trade-history-body');
     if (!trades || trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="13" class="empty-row">No closed trades yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="14" class="empty-row">No closed trades yet</td></tr>';
         return;
     }
 
@@ -232,10 +232,73 @@ function updateTradeHistory(trades) {
             <td><span class="pill" title="${t.exit_detail || ''}">${t.exit_reason}</span></td>
             <td class="${t.has_index ? pnlClass(t.index_bps) : 'text-muted'} mono">${t.has_index ? fmtSigned(t.index_bps, 1) : '--'}</td>
             <td class="${pnlClass(t.net_bps)} mono">${fmtSigned(t.net_bps, 0)}</td>
-            <td class="text-muted mono">${fmtNum(t.costs, 0)}</td>
+            <td class="${pnlClass(t.gross_pnl)} mono">${formatCurrency(t.gross_pnl)}</td>
+            <td class="text-muted mono" title="${costTitle(t)}">${fmtNum(t.costs, 0)}<br><small>${fmtNum(t.costs_bps, 0)} bps</small></td>
             <td class="${pnlClass(pnl)}" style="font-weight: 600;">${formatCurrency(pnl)}</td>
         </tr>
     `}).join('');
+}
+
+// Cost line items, in the order a contract note lists them.
+const COST_ITEMS = [
+    ['brokerage', 'Brokerage'], ['stt', 'STT'], ['txn', 'Exchange txn'], ['stamp', 'Stamp duty'],
+    ['sebi', 'SEBI fee'], ['gst', 'GST'], ['dp', 'DP charge'], ['spread', 'Bid-ask (modelled)'],
+];
+
+// costTitle is the hover text on a trade's Costs cell: each line item, or a
+// note that the row predates itemised charges.
+function costTitle(t) {
+    if (!t.has_cost_items) return 'Itemised charges were not recorded for this trade';
+    const c = t.cost_items || {};
+    return COST_ITEMS.filter(([k]) => c[k]).map(([k, label]) => `${label}: ₹${fmtNum(c[k], 2)}`).join('\n')
+        + `\nTotal: ₹${fmtNum(t.costs, 2)}`;
+}
+
+// updateCosts fills the costs & taxes table from the ALL group: rupees,
+// per trade, share of total cost, and bps of entry notional per item (the
+// group's mean cost bps apportioned by each item's share of the rupees).
+function updateCosts(g) {
+    const tbody = document.getElementById('costs-body');
+    if (!g || !g.n) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-row">No closed trades in range</td></tr>';
+        return;
+    }
+    const c = g.cost_items || {};
+    const total = g.costs_rupees;
+    const itemised = COST_ITEMS.reduce((sum, [k]) => sum + (c[k] || 0), 0);
+    const share = v => total > 0 ? v / total : 0;
+    const rows = COST_ITEMS.filter(([k]) => c[k]).map(([k, label]) => `
+        <tr>
+            <td>${label}</td>
+            <td class="num">${fmtNum(c[k], 0)}</td>
+            <td class="num">${fmtNum(c[k] / g.n, 2)}</td>
+            <td class="num text-muted">${total > 0 ? (share(c[k]) * 100).toFixed(1) : '--'}</td>
+            <td class="num text-muted">${fmtNum(share(c[k]) * g.costs_bps, 1)}</td>
+        </tr>`);
+    const rest = total - itemised;
+    if (rest > 0.5) {
+        rows.push(`<tr><td class="text-muted">Not itemised (older rows)</td><td class="num">${fmtNum(rest, 0)}</td>
+            <td class="num">--</td><td class="num text-muted">${(share(rest) * 100).toFixed(1)}</td><td class="num">--</td></tr>`);
+    }
+    rows.push(`
+        <tr class="group-head">
+            <td>Total costs</td>
+            <td class="num">${fmtNum(total, 0)}</td>
+            <td class="num">${fmtNum(g.costs_per_trade, 2)}</td>
+            <td class="num">100</td>
+            <td class="num">${fmtNum(g.costs_bps, 1)}</td>
+        </tr>
+        <tr>
+            <td>Gross PnL</td><td class="num ${pnlClass(g.gross_rupees)}">${fmtNum(g.gross_rupees, 0)}</td>
+            <td class="num ${pnlClass(g.gross_rupees)}">${fmtNum(g.gross_rupees / g.n, 0)}</td><td></td>
+            <td class="num ${pnlClass(g.gross_bps)}">${fmtSigned(g.gross_bps, 1)}</td>
+        </tr>
+        <tr>
+            <td>Net PnL</td><td class="num ${pnlClass(g.net_rupees)}">${fmtNum(g.net_rupees, 0)}</td>
+            <td class="num ${pnlClass(g.net_rupees)}">${fmtNum(g.net_rupees / g.n, 0)}</td><td></td>
+            <td class="num ${pnlClass(g.net_bps)}">${fmtSigned(g.net_bps, 1)}</td>
+        </tr>`);
+    tbody.innerHTML = rows.join('');
 }
 
 // --- Strategy monitor ---
@@ -255,8 +318,10 @@ function statsRow(g, label) {
             <td class="num">${g.n > 1 ? g.sharpe.toFixed(3) : '--'}</td>
             <td class="num text-green">${fmtSigned(g.avg_win_bps, 0)}</td>
             <td class="num text-red">${fmtSigned(g.avg_loss_bps, 0)}</td>
-            <td class="num ${pnlClass(g.net_rupees)}">${fmtNum(g.net_rupees, 0)}</td>
+            <td class="num ${pnlClass(g.gross_rupees)}">${fmtNum(g.gross_rupees, 0)}</td>
             <td class="num text-muted">${fmtNum(g.costs_rupees, 0)}</td>
+            <td class="num text-muted">${fmtNum(g.costs_per_trade, 0)}<small> · ${fmtNum(g.costs_bps, 0)} bps</small></td>
+            <td class="num ${pnlClass(g.net_rupees)}">${fmtNum(g.net_rupees, 0)}</td>
             <td class="num text-red">${fmtNum(g.max_dd_rupees, 0)}</td>
             <td class="num text-muted">${g.n ? Math.round(g.median_hold_min) + 'm' : '--'}</td>
         </tr>`;
@@ -264,7 +329,7 @@ function statsRow(g, label) {
 
 function groupBlock(title, rows) {
     if (!rows || rows.length === 0) return '';
-    return `<tr class="group-head"><td colspan="15">${title}</td></tr>` + rows.map(g => statsRow(g)).join('');
+    return `<tr class="group-head"><td colspan="17">${title}</td></tr>` + rows.map(g => statsRow(g)).join('');
 }
 
 function updateMonitor(m) {
@@ -290,7 +355,7 @@ function updateMonitor(m) {
 
     const body = document.getElementById('monitor-body');
     if (!m.overall || m.overall.n === 0) {
-        body.innerHTML = '<tr><td colspan="15" class="empty-row">No closed trades in range</td></tr>';
+        body.innerHTML = '<tr><td colspan="17" class="empty-row">No closed trades in range</td></tr>';
     } else {
         body.innerHTML = statsRow(m.overall, 'ALL')
             + groupBlock('By underlying', m.by_underlying)
@@ -299,6 +364,7 @@ function updateMonitor(m) {
             + groupBlock('By days to expiry', m.by_dte)
             + groupBlock('By week', m.by_week);
     }
+    updateCosts(m.overall);
 
     const ref = document.getElementById('reference-body');
     if (!m.reference || m.reference.length === 0) {

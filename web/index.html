@@ -95,7 +95,8 @@
                                 <tr>
                                     <th>Group</th><th>n</th><th>Net bps</th><th>Gross bps</th><th>Index bps</th>
                                     <th>t</th><th>Win%</th><th>PF</th><th>Sharpe</th><th>Avg win</th><th>Avg loss</th>
-                                    <th>Net ₹</th><th>Costs ₹</th><th>Max DD ₹</th><th>Hold</th>
+                                    <th>Gross ₹</th><th>Costs ₹</th><th title="Mean charges per trade, and as bps of the entry notional">Cost/trade</th>
+                                    <th>Net ₹</th><th>Max DD ₹</th><th>Hold</th>
                                 </tr>
                             </thead>
                             <tbody id="monitor-body"></tbody>
@@ -103,6 +104,13 @@
                         </div>
                     </div>
                     <div>
+                        <h3>Costs &amp; taxes <small>every trade in range, from the shared charge sheet</small></h3>
+                        <div class="table-scroll">
+                        <table class="compact">
+                            <thead><tr><th>Item</th><th>Total ₹</th><th>Per trade ₹</th><th>% of costs</th><th>bps</th></tr></thead>
+                            <tbody id="costs-body"></tbody>
+                        </table>
+                        </div>
                         <h3>Backtest reference</h3>
                         <div class="table-scroll">
                         <table class="compact">
@@ -206,7 +214,8 @@
                             <th>Exit reason</th>
                             <th>Index bps</th>
                             <th>Net bps</th>
-                            <th>Costs</th>
+                            <th>Gross PnL</th>
+                            <th title="Brokerage, STT, exchange, stamp, SEBI, GST and the modelled spread — hover a value for the breakdown">Costs</th>
                             <th>Net PnL</th>
                         </tr>
                     </thead>

@@ -60,3 +60,26 @@ func TestForInstrumentRecognisesOptionsWithoutExchange(t *testing.T) {
 		t.Error("MIS equity should not pay buy-side STT")
 	}
 }
+
+// The itemised breakdown is what the dashboard shows per trade; it has to
+// reproduce the calculator's own line items, not just their sum.
+func TestOptionsBreakdownMatchesZerodhaLineItems(t *testing.T) {
+	b := Options().LegBreakdown(false, 100*400).Add(Options().LegBreakdown(true, 110*400))
+	want := map[string]float64{"brokerage": 40, "stt": 66, "txn": 29.85, "gst": 12.59, "sebi": 0.08, "stamp": 1}
+	got := map[string]float64{"brokerage": b.Brokerage, "stt": b.STT, "txn": b.Txn, "gst": b.GST, "sebi": b.SEBI, "stamp": b.Stamp}
+	for k, w := range want {
+		if math.Abs(got[k]-w) > 0.5 {
+			t.Errorf("%s = %.2f, calculator says %.2f", k, got[k], w)
+		}
+	}
+	if b.DP != 0 {
+		t.Errorf("options carry no DP charge, got %.2f", b.DP)
+	}
+	if math.Abs(b.Total()-Options().RoundTrip(100, 110, 400)) > 1e-9 {
+		t.Errorf("Total %.4f != Leg sum %.4f", b.Total(), Options().RoundTrip(100, 110, 400))
+	}
+	half := b.Scale(0.5)
+	if math.Abs(half.Total()-b.Total()/2) > 1e-9 {
+		t.Errorf("Scale(0.5) total %.4f, want %.4f", half.Total(), b.Total()/2)
+	}
+}

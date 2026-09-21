@@ -385,10 +385,12 @@ func positionPnL(pos *paperPosition) decimal.Decimal {
 // exit, the entry it closes.
 func (p *PaperAdapter) chargeFillLocked(order *models.Order, pos *paperPosition, price decimal.Decimal, qty int) {
 	charge := decimal.Zero
+	var items costs.Breakdown
 	if !p.noCharges {
 		sheet := costs.ForInstrument(order.Exchange, order.ProductType, order.Symbol)
 		turnover, _ := price.Mul(decimal.NewFromInt(int64(qty))).Float64()
-		charge = decimal.NewFromFloat(sheet.Leg(order.Side == models.SellSignal, turnover)).Round(2)
+		items = sheet.LegBreakdown(order.Side == models.SellSignal, turnover)
+		charge = decimal.NewFromFloat(items.Total()).Round(2)
 	}
 
 	p.cash = p.cash.Sub(charge)
@@ -399,6 +401,13 @@ func (p *PaperAdapter) chargeFillLocked(order *models.Order, pos *paperPosition,
 		order.Metadata = map[string]string{}
 	}
 	order.Metadata["Costs"] = charge.StringFixed(2)
+	// The line items too, so the dashboard can show a contract note rather
+	// than one number. Zero components are left out to keep the row small.
+	for key, v := range costs.Items(items) {
+		if v != 0 {
+			order.Metadata[key] = decimal.NewFromFloat(v).StringFixed(2)
+		}
+	}
 	if under := pos.Metadata["Underlying"]; under != "" {
 		if last, ok := p.lastPrice[under]; ok && last.IsPositive() {
 			order.Metadata["UnderlyingLast"] = last.StringFixed(2)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"zerobha/internal/models"
+	"zerobha/pkg/costs"
 	"zerobha/pkg/db"
 	"zerobha/pkg/nseutils"
 
@@ -149,6 +150,36 @@ func fillCosts(meta map[string]string) decimal.Decimal {
 	return total
 }
 
+// fillSpread reads the modelled bid-ask a fill paid, zero when none.
+func fillSpread(meta map[string]string) decimal.Decimal {
+	v, err := decimal.NewFromString(meta["SpreadCost"])
+	if err != nil {
+		return decimal.Zero
+	}
+	return v
+}
+
+// scaleItems copies a fill's metadata with its charge line items (and any
+// spread) scaled by part, for the slice of a reversing fill that opens a new
+// lot: the lot's items must describe only the quantity it holds.
+func scaleItems(meta map[string]string, part decimal.Decimal) map[string]string {
+	out := make(map[string]string, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	f, _ := part.Float64()
+	for k, v := range costs.Items(costs.FromItems(meta).Scale(f)) {
+		delete(out, k)
+		if v != 0 {
+			out[k] = decimal.NewFromFloat(v).StringFixed(2)
+		}
+	}
+	if sp := fillSpread(meta); sp.IsPositive() {
+		out["SpreadCost"] = sp.Mul(part).StringFixed(2)
+	}
+	return out
+}
+
 // reconcileTrades FIFO-pairs the day's broker fills into completed
 // round-trip trades and persists them. SaveTrade keys rows by
 // exit-order-id + lot index, so re-processing the same fills every
@@ -179,12 +210,12 @@ func (s *Server) reconcileTrades() {
 		isPaper := f.IsPaper || s.PaperMode || strings.HasPrefix(f.ID, db.PaperOrderPrefix)
 		lots := openLots[f.Symbol]
 		meta := s.fillMeta(f)
-		costs := fillCosts(meta)
+		fillCharge := fillCosts(meta)
 
 		// Same direction as existing lots (or flat): this fill opens/adds.
 		if len(lots) == 0 || lots[0].side == f.Side {
 			openLots[f.Symbol] = append(lots, lot{side: f.Side, qty: f.Quantity, price: f.Price, time: f.Timestamp,
-				isPaper: isPaper, id: f.ID, costs: costs, meta: meta})
+				isPaper: isPaper, id: f.ID, costs: fillCharge, meta: meta})
 			continue
 		}
 
@@ -216,7 +247,7 @@ func (s *Server) reconcileTrades() {
 			// across the lots it closes the same way.
 			share := matched.Div(f.Quantity)
 			entryShare := entry.costs.Mul(matched.Div(entry.qty))
-			tradeCosts := entryShare.Add(costs.Mul(share)).Round(2)
+			tradeCosts := entryShare.Add(fillCharge.Mul(share)).Round(2)
 
 			tradeMeta := make(map[string]string, len(entry.meta)+2)
 			for k, v := range entry.meta {
@@ -228,6 +259,22 @@ func (s *Server) reconcileTrades() {
 			delete(tradeMeta, "Costs")
 			delete(tradeMeta, "SpreadCost")
 			delete(tradeMeta, "PaperPnL")
+			// Fold both legs' line items into the trade, prorated the same
+			// way tradeCosts is, so the dashboard can itemise it.
+			entryShareF, _ := matched.Div(entry.qty).Float64()
+			shareF, _ := share.Float64()
+			items := costs.FromItems(entry.meta).Scale(entryShareF).Add(costs.FromItems(meta).Scale(shareF))
+			for k, v := range costs.Items(items) {
+				delete(tradeMeta, k)
+				if v != 0 {
+					tradeMeta[k] = decimal.NewFromFloat(v).StringFixed(2)
+				}
+			}
+			spread := fillSpread(entry.meta).Mul(decimal.NewFromFloat(entryShareF)).
+				Add(fillSpread(meta).Mul(share))
+			if spread.IsPositive() {
+				tradeMeta[costs.KeySpread] = spread.StringFixed(2)
+			}
 
 			trade := models.Trade{
 				Symbol:       f.Symbol,
@@ -265,8 +312,9 @@ func (s *Server) reconcileTrades() {
 
 		// Any remainder reverses the position into a new lot.
 		if remaining.GreaterThan(decimal.Zero) {
+			part := remaining.Div(f.Quantity)
 			lots = append(lots, lot{side: f.Side, qty: remaining, price: f.Price, time: f.Timestamp,
-				isPaper: isPaper, id: f.ID, costs: costs.Mul(remaining.Div(f.Quantity)), meta: meta})
+				isPaper: isPaper, id: f.ID, costs: fillCharge.Mul(part), meta: scaleItems(meta, part)})
 		}
 		openLots[f.Symbol] = lots
 	}

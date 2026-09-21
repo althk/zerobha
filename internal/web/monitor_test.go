@@ -113,6 +113,23 @@ func TestMonitorReadsAPaperOptionTradeEndToEnd(t *testing.T) {
 	if out.Overall.N != 1 || out.Overall.IndexN != 1 || out.Overall.CostsRupees != tr.Costs {
 		t.Errorf("overall = %+v", out.Overall)
 	}
+	// The contract note: every line item the sheet charges on an option
+	// round trip is present, the spread is the ten ticks each way the fills
+	// show (0.50 x 650 x 2 = 650), and together they make up Costs.
+	ci := tr.CostItems
+	if !tr.HasCostItems || ci.Brokerage != 40 || ci.STT <= 0 || ci.Txn <= 0 || ci.GST <= 0 || ci.SEBI <= 0 || ci.Stamp <= 0 || ci.DP != 0 {
+		t.Errorf("cost items = %+v (has=%v)", ci, tr.HasCostItems)
+	}
+	if ci.Spread != 650 {
+		t.Errorf("spread = %.2f, want 650", ci.Spread)
+	}
+	if math.Abs(ci.total()-tr.Costs) > 0.05 {
+		t.Errorf("items sum to %.2f, Costs = %.2f", ci.total(), tr.Costs)
+	}
+	if math.Abs(tr.CostsBps-tr.Costs/(200.5*650)*1e4) > 1e-9 || out.Overall.CostsPerTrade != tr.Costs ||
+		out.Overall.CostsBps != tr.CostsBps || out.Overall.GrossRupees != tr.GrossPnL || out.Overall.CostItems != ci {
+		t.Errorf("cost aggregates: row bps %.2f, overall %+v", tr.CostsBps, out.Overall)
+	}
 	// A two-hour run is not annualised; the return on the paper capital is.
 	if out.Growth.StartingCapital != 1000000 || out.Growth.HasCAGR || math.Abs(out.Growth.ReturnPct-tr.PnL/1000000*100) > 1e-9 {
 		t.Errorf("growth = %+v", out.Growth)

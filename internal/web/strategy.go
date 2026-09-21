@@ -11,6 +11,7 @@ import (
 
 	"zerobha/internal/core"
 	"zerobha/internal/models"
+	"zerobha/pkg/costs"
 	"zerobha/pkg/db"
 
 	"github.com/shopspring/decimal"
@@ -39,6 +40,13 @@ type tradeRow struct {
 	GrossPnL    float64 `json:"gross_pnl"`
 	Costs       float64 `json:"costs"`
 	PnL         float64 `json:"pnl"`
+	// CostItems is the contract-note view of Costs: statutory charges and
+	// brokerage from the shared sheet plus the modelled bid-ask. It sums to
+	// Costs on rows the paper broker stamped; rows from before the line
+	// items were recorded carry only the total, and HasCostItems says so.
+	CostItems    costItems `json:"cost_items"`
+	HasCostItems bool      `json:"has_cost_items"`
+	CostsBps     float64   `json:"costs_bps"` // Costs on the entry notional
 	GrossBps    float64 `json:"gross_bps"` // on the instrument traded (premium for an option)
 	NetBps      float64 `json:"net_bps"`
 	IndexBps    float64 `json:"index_bps"` // NaN-free: HasIndex says whether it is real
@@ -51,6 +59,30 @@ type tradeRow struct {
 	ExitDetail  string  `json:"exit_detail"` // as the broker reported it
 	EntryReason string  `json:"entry_reason"`
 	HoldMin     float64 `json:"hold_min"`
+}
+
+// costItems is a cost breakdown in rupees, itemised the way a contract note
+// itemises it, with the modelled spread alongside.
+type costItems struct {
+	Brokerage float64 `json:"brokerage"`
+	STT       float64 `json:"stt"`
+	Txn       float64 `json:"txn"`
+	Stamp     float64 `json:"stamp"`
+	SEBI      float64 `json:"sebi"`
+	GST       float64 `json:"gst"`
+	DP        float64 `json:"dp"`
+	Spread    float64 `json:"spread"`
+}
+
+func (c costItems) add(o costItems) costItems {
+	return costItems{
+		Brokerage: c.Brokerage + o.Brokerage, STT: c.STT + o.STT, Txn: c.Txn + o.Txn, Stamp: c.Stamp + o.Stamp,
+		SEBI: c.SEBI + o.SEBI, GST: c.GST + o.GST, DP: c.DP + o.DP, Spread: c.Spread + o.Spread,
+	}
+}
+
+func (c costItems) total() float64 {
+	return c.Brokerage + c.STT + c.Txn + c.Stamp + c.SEBI + c.GST + c.DP + c.Spread
 }
 
 // groupStats is one row of the breakdown tables.
@@ -68,7 +100,13 @@ type groupStats struct {
 	AvgWinBps    float64 `json:"avg_win_bps"`
 	AvgLossBps   float64 `json:"avg_loss_bps"`
 	NetRupees    float64 `json:"net_rupees"`
+	GrossRupees  float64 `json:"gross_rupees"`
 	CostsRupees  float64 `json:"costs_rupees"`
+	// CostsPerTrade is CostsRupees / N; CostsBps is the mean per-trade cost
+	// on the entry notional, the figure the backtests quote costs in.
+	CostsPerTrade float64   `json:"costs_per_trade"`
+	CostsBps      float64   `json:"costs_bps"`
+	CostItems     costItems `json:"cost_items"` // rupee totals over the group
 	MaxDDRupees  float64 `json:"max_dd_rupees"`
 	MedianHold   float64 `json:"median_hold_min"`
 }
@@ -200,7 +238,7 @@ func enrich(t models.Trade) tradeRow {
 	entry, _ := t.EntryPrice.Float64()
 	exit, _ := t.ExitPrice.Float64()
 	gross, _ := t.GrossPnL.Float64()
-	costs, _ := t.Costs.Float64()
+	charges, _ := t.Costs.Float64()
 	net, _ := t.PnL.Float64()
 	if t.GrossPnL.IsZero() && !t.PnL.IsZero() && t.Costs.IsZero() {
 		gross = net // rows written before costs were tracked
@@ -208,16 +246,23 @@ func enrich(t models.Trade) tradeRow {
 
 	row := tradeRow{
 		ExitTime: t.ExitTime, EntryTime: t.EntryTime, Symbol: t.Symbol, Strategy: t.Strategy,
-		Quantity: qty, EntryPrice: entry, ExitPrice: exit, GrossPnL: gross, Costs: costs, PnL: net,
+		Quantity: qty, EntryPrice: entry, ExitPrice: exit, GrossPnL: gross, Costs: charges, PnL: net,
 		ExitDetail: t.ExitReason, ExitReason: exitBucket(t.ExitReason),
 		HoldMin: t.ExitTime.Sub(t.EntryTime).Minutes(),
 	}
 	if notional := entry * qty; notional > 0 {
 		row.GrossBps = gross / notional * 1e4
 		row.NetBps = net / notional * 1e4
+		row.CostsBps = charges / notional * 1e4
 	}
 
 	meta := t.Metadata
+	if b := costs.FromItems(meta); b.Total() > 0 || meta[costs.KeySpread] != "" {
+		spread, _ := strconv.ParseFloat(meta[costs.KeySpread], 64)
+		row.CostItems = costItems{Brokerage: b.Brokerage, STT: b.STT, Txn: b.Txn, Stamp: b.Stamp,
+			SEBI: b.SEBI, GST: b.GST, DP: b.DP, Spread: spread}
+		row.HasCostItems = true
+	}
 	row.Underlying = meta["Underlying"]
 	row.EntryReason = meta["Reason"]
 	row.Side = t.Direction
@@ -311,7 +356,7 @@ func statsFor(name string, rows []tradeRow) groupStats {
 	}
 	var sum, sumSq, grossSum, winSum, lossSum float64
 	var wins, losses int
-	var idxSum float64
+	var idxSum, costBpsSum float64
 	var holds []float64
 	cum, peak := 0.0, 0.0
 	for _, r := range rows {
@@ -330,7 +375,10 @@ func statsFor(name string, rows []tradeRow) groupStats {
 			g.IndexN++
 		}
 		g.NetRupees += r.PnL
+		g.GrossRupees += r.GrossPnL
 		g.CostsRupees += r.Costs
+		costBpsSum += r.CostsBps
+		g.CostItems = g.CostItems.add(r.CostItems)
 		holds = append(holds, r.HoldMin)
 		cum += r.PnL
 		if cum > peak {
@@ -343,6 +391,8 @@ func statsFor(name string, rows []tradeRow) groupStats {
 	n := float64(len(rows))
 	g.NetBps = sum / n
 	g.GrossBps = grossSum / n
+	g.CostsPerTrade = g.CostsRupees / n
+	g.CostsBps = costBpsSum / n
 	if g.IndexN > 0 {
 		g.IndexBps = idxSum / float64(g.IndexN)
 	}
