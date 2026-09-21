@@ -160,8 +160,10 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   -e TZ="$CONTAINER_TZ" \
-  -p 9880:9880 \
-  -p 9080:9080 \
+  -p 127.0.0.1:9880:9880 \
+  -p [::1]:9880:9880 \
+  -p 127.0.0.1:9080:9080 \
+  -p [::1]:9080:9080 \
   -v "\$REMOTE_DIR/data:/app/data" \
   -v "\$REMOTE_DIR/logs:/app/logs" \
   "$IMAGE_NAME"
