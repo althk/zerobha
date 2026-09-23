@@ -1,6 +1,8 @@
 package strategy
 
 import (
+	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -220,7 +222,46 @@ func (s *EMACross) Name() string {
 	return config.StrategyEMACross
 }
 
+// Init replays the last few sessions of completed bars through the indicators,
+// so a live session starts with the EMAs, ATR and ADX where the backtest has
+// them. Without it the trader, which restarts every day, began each session
+// cold: no cross before the 21-bar slow EMA filled (~11:00 on 5-minute bars),
+// and EMAs seeded from the 09:15 print rather than carried from yesterday,
+// so every cross after that landed on a different bar from the backtest's.
+//
+// Failures are reported but not fatal: that symbol warms up from the stream.
+// The backtester never calls Init; there the replay does the same job.
 func (s *EMACross) Init(provider core.DataProvider) error {
+	if provider == nil {
+		return nil
+	}
+
+	tf := s.cfg.Timeframe
+	if tf == "" {
+		tf = "5m"
+	}
+	bar := barDuration(tf)
+	now := nowFn()
+	var failures []string
+
+	for symbol, st := range s.state {
+		candles, err := provider.History(symbol, tf, warmupDays)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", symbol, err))
+			continue
+		}
+		candles = completedBars(candles, bar, now)
+		for _, c := range candles {
+			c.Symbol = symbol
+			s.updateCandle(st, c)
+		}
+		log.Printf("[%s] EMACross: warmed up on %d historical bars (EMAs ready: %v)",
+			symbol, len(candles), st.hasPrev)
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("warm-up incomplete for %d symbol(s): %s", len(failures), strings.Join(failures, "; "))
+	}
 	return nil
 }
 

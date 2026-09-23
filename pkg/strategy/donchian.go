@@ -146,6 +146,20 @@ func (s *Donchian) newState() *donchianState {
 	}
 }
 
+// accept records whether the instrument reports volume and says whether this
+// bar may reach the indicators. Live bars and warm-up bars go through it alike.
+//
+// Zero-volume candles are real on Kite (halted or illiquid names) and carry a
+// degenerate range that would poison ATR and the channel alike. Drop them —
+// but only for instruments that report volume at all, or an index would lose
+// every bar.
+func (st *donchianState) accept(candle models.Candle) bool {
+	if candle.Volume.IsPositive() {
+		st.sawVolume = true
+	}
+	return !(st.sawVolume && candle.Volume.IsZero()) && !candle.High.Equal(candle.Low)
+}
+
 // ingest folds one bar into the indicators and returns their state as it stood
 // BEFORE that bar: the channel excluding it, and the ATR including it.
 //
@@ -172,8 +186,14 @@ func (st *donchianState) ingest(candle models.Candle) (upper, lower, atr decimal
 func (s *Donchian) Name() string { return "Donchian" }
 
 // Init warms the indicators from historical bars so a live session can trade
-// from its first candle rather than spending the first ~70 minutes filling a
-// 4-bar channel and a 14-bar ATR.
+// from its first candle rather than spending the first ~2.5 hours filling a
+// 30-bar channel.
+//
+// Every completed bar of the last few sessions is replayed, not just enough to
+// fill the windows: the backtest runs the channel, ATR and ADX continuously
+// across sessions, and Wilder smoothing only matches that after a long run.
+// Bars pass the same gate OnCandle applies (accept), so an index — which
+// reports no volume on any bar — warms up like any other instrument.
 //
 // Failures are reported but not fatal, and the caller treats them that way: a
 // symbol whose history cannot be fetched simply warms up from the live stream
@@ -186,27 +206,25 @@ func (s *Donchian) Init(provider core.DataProvider) error {
 		return nil
 	}
 
-	// Enough bars to fill both windows, and enough calendar days to find them
-	// across a weekend or a holiday.
-	needed := s.cfg.DonchianLookback + s.cfg.ATRPeriod
+	bar := barDuration(s.cfg.Timeframe)
+	now := nowFn()
 	var failures []string
 
 	for symbol, st := range s.state {
-		candles, err := provider.History(symbol, s.cfg.Timeframe, 5)
+		candles, err := provider.History(symbol, s.cfg.Timeframe, warmupDays)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", symbol, err))
 			continue
 		}
-		if len(candles) > needed {
-			candles = candles[len(candles)-needed:]
-		}
-		for _, c := range candles {
-			if c.Volume.IsZero() || c.High.Equal(c.Low) {
-				continue
+		used := 0
+		for _, c := range completedBars(candles, bar, now) {
+			if st.accept(c) {
+				st.ingest(c)
+				used++
 			}
-			st.ingest(c)
 		}
-		log.Printf("[%s] Donchian: warmed up on %d historical bars", symbol, len(candles))
+		log.Printf("[%s] Donchian: warmed up on %d historical bars (channel ready: %v)",
+			symbol, used, st.channel.IsReady())
 	}
 
 	if len(failures) > 0 {
@@ -291,15 +309,7 @@ func (s *Donchian) OnCandle(candle models.Candle) *models.Signal {
 		st.openValid = false
 	}
 
-	if candle.Volume.IsPositive() {
-		st.sawVolume = true
-	}
-
-	// Zero-volume candles are real on Kite (halted or illiquid names) and carry
-	// a degenerate range that would poison ATR, the volume baseline and the
-	// channel alike. Drop them before any indicator sees them — but only for
-	// instruments that report volume at all, or an index would lose every bar.
-	if (st.sawVolume && candle.Volume.IsZero()) || candle.High.Equal(candle.Low) {
+	if !st.accept(candle) {
 		return nil
 	}
 
