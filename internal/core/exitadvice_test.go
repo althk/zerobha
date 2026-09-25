@@ -141,3 +141,20 @@ func TestNoExitAdviceLeavesPositionsAlone(t *testing.T) {
 		t.Errorf("ExitAdvice called %d times, want 1 per candle", s.calls)
 	}
 }
+
+// An option leg is closed on an index candle. The index close is not a price
+// for the contract: passing it through sold a Rs1,314 SENSEX call at 73,617
+// on paper and booked a Rs2.6cr profit. The engine must hand over no price and
+// let the broker mark the contract itself.
+func TestExitAdviceDoesNotPriceAnotherInstrumentAtTheCandleClose(t *testing.T) {
+	b := &closingBroker{found: true}
+	s := &advisingStrategy{advice: &ExitAdvice{Symbol: "SENSEX26O0172700CE", ForSide: models.BuySignal, Reason: "index stop"}}
+	advisoryEngine(t, b, s).Execute(exitCandle())
+
+	if b.closedSymbol != "SENSEX26O0172700CE" {
+		t.Fatalf("closed %q, want the option contract", b.closedSymbol)
+	}
+	if !b.closedPrice.IsZero() {
+		t.Errorf("closed the contract at %s, the index candle's close; want zero (broker prices it)", b.closedPrice)
+	}
+}

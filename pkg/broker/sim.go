@@ -511,6 +511,10 @@ func stopNoBetterThanMarket(side models.SignalType, stop, market decimal.Decimal
 // the live path does) would open a second position here instead of closing the
 // first.
 func (s *SimBroker) ClosePosition(symbol string, side models.SignalType, price decimal.Decimal, at time.Time, reason string) (bool, error) {
+	if !price.IsPositive() {
+		return false, fmt.Errorf("sim broker: no price to close %s at", symbol)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

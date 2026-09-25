@@ -895,6 +895,15 @@ func (p *PaperAdapter) ClosePosition(symbol string, forSide models.SignalType, p
 		}
 	}()
 
+	// No price from the caller: the engine's candle was a different
+	// instrument (the index, for an option leg). Price the contract itself.
+	// Resolved before taking the lock, which fillPriceFor takes too.
+	if !price.IsPositive() {
+		if mark, err := p.fillPriceFor(models.Order{Symbol: symbol}); err == nil {
+			price = mark
+		}
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

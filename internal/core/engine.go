@@ -505,7 +505,15 @@ func (e *Engine) applyExitAdvice(candle models.Candle) {
 	}
 
 	if closer, ok := e.Broker.(PositionCloser); ok {
-		closed, err := closer.ClosePosition(advice.Symbol, advice.ForSide, candle.Close, candle.EndTime, advice.Reason)
+		// The candle only prices its own symbol. When the advice names a
+		// different instrument — an option contract closed on an index
+		// signal — the index close is not a price for it, so leave the
+		// broker to price the contract at its own market.
+		price := candle.Close
+		if advice.Symbol != candle.Symbol {
+			price = decimal.Zero
+		}
+		closed, err := closer.ClosePosition(advice.Symbol, advice.ForSide, price, candle.EndTime, advice.Reason)
 		if err != nil {
 			log.Printf("ERROR: Failed to close %s on strategy exit advice: %v", advice.Symbol, err)
 			return

@@ -134,6 +134,9 @@ type PositionCloser interface {
 	// price, tagging the resulting trade with reason. `at` is the market time
 	// of the exit, not wall clock — the simulator has no other way to stamp the
 	// trade, and an unstamped one drops out of every time-ordered analysis.
+	// A zero price means the caller has no price for symbol (the engine's
+	// candle is the index, the position is an option): the broker must price
+	// the exit at its own market for that instrument, or refuse.
 	// It reports whether a position was actually found and closed.
 	ClosePosition(symbol string, side models.SignalType, price decimal.Decimal, at time.Time, reason string) (bool, error)
 }

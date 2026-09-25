@@ -424,3 +424,27 @@ func assertExitReason(t *testing.T, p *PaperAdapter, want string) {
 		t.Errorf("exit reason = %q, want %q", got, want)
 	}
 }
+
+// With no price from the caller (the engine's candle was the index, not the
+// contract), the exit fills at the contract's own last observed price.
+func TestPaperClosePositionWithoutPriceUsesContractMark(t *testing.T) {
+	p := newTestPaper(1000000)
+	if _, err := p.PlaceOrder(entry("SENSEX26O0172700CE", models.BuySignal, 360, 1314)); err != nil {
+		t.Fatalf("PlaceOrder failed: %v", err)
+	}
+	p.OnTick("SENSEX26O0172700CE", rs(1200), time.Now())
+
+	closed, err := p.ClosePosition("SENSEX26O0172700CE", models.BuySignal, decimal.Zero, time.Now(), "index stop")
+	if err != nil || !closed {
+		t.Fatalf("ClosePosition failed: closed=%v err=%v", closed, err)
+	}
+	trades, _ := p.GetTrades()
+	exit := trades[len(trades)-1]
+	if !exit.Price.Equal(rs(1200)) {
+		t.Errorf("exit filled at %s, want the contract's mark 1200", exit.Price)
+	}
+	if want := rs(1000000 - 114*360); !func() bool { b, _ := p.GetBalance(); return b.Equal(want) }() {
+		b, _ := p.GetBalance()
+		t.Errorf("balance = %s, want %s", b, want)
+	}
+}
