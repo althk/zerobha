@@ -52,8 +52,9 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/intraday", s.handleIntraday)
 	mux.HandleFunc("/api/strategy", s.handleStrategy)
 
-	addr := ":" + strconv.Itoa(s.port)
-	log.Printf("Starting Web Dashboard at http://localhost%s", addr)
+	// Localhost only: the dashboard has no auth; reach it through an SSH forward.
+	addr := "127.0.0.1:" + strconv.Itoa(s.port)
+	log.Printf("Starting Web Dashboard at http://%s", addr)
 
 	// Background recorder: equity snapshots + trade reconciliation
 	go s.trackLoop()

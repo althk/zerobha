@@ -134,3 +134,4 @@ backtest_orb_watchlist.log
 *.tar.gz
 *.tar
 *.tgz
+bin/trader-linux

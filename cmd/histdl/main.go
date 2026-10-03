@@ -90,7 +90,7 @@ func saveCachedToken(token string) {
 func fetchRequestToken(loginURL string) (string, error) {
 	fmt.Println("Open the following url in your browser:\n", loginURL)
 
-	srv := &http.Server{Addr: ":9880"}
+	srv := &http.Server{Addr: "127.0.0.1:9880"} // localhost only, never exposed
 	var requestToken string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/kite/callback", func(w http.ResponseWriter, r *http.Request) {

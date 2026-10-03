@@ -53,7 +53,8 @@ func fetchRequestToken(loginURL string) (string, error) {
 
 	// Obtain request token after Kite Connect login flow
 	// Run a temporary server to listen for callback
-	srv := &http.Server{Addr: ":9880"}
+	// Localhost only: reached through an SSH LocalForward, never exposed.
+	srv := &http.Server{Addr: "127.0.0.1:9880"}
 	var requestToken string
 	http.HandleFunc("/auth/kite/callback", func(w http.ResponseWriter, r *http.Request) {
 		requestToken = r.URL.Query()["request_token"][0]
