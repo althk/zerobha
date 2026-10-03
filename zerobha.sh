@@ -164,7 +164,7 @@ print_access() {
 
 cmd_logs() {
   require_remote_host
-  rssh_tty "tail -n 100 -F '$REMOTE_DIR/logs/zerobha_\$(date +%F).log'"
+  rssh_tty "tail -n 100 -F \"$REMOTE_DIR/logs/zerobha_\$(date +%F).log\""
 }
 
 cmd_attach() {
