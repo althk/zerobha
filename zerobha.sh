@@ -6,15 +6,16 @@
 # Usage: ./zerobha.sh <command> [user@host]
 #   build         Cross-compile the Linux trader binary locally (bin/trader-linux)
 #   copy          scp the binary, config and CSVs to the VM
-#   deploy        build + copy + install the service + restart it
-#   install       (Re)write the systemd service and timer on the VM
-#   start         Start the trader now (it exits on its own outside 07:00-15:05)
+#   deploy        build + copy + restart the trader
+#   start|run     Start the trader in tmux session "zerobha" (it exits on its
+#                 own outside 07:00-15:05)
 #   restart       Restart the trader (a fresh Kite login is needed afterwards)
-#   stop          Stop the trader
-#   logs          Follow the trader's output (Ctrl-C to detach)
-#   status        Show system time, service/timer status, data dir, backup cron
-#   setup         One-time VM prep: timezone, packages, dirs, backup script +
-#                 cron, and removal of the old Docker container
+#   stop          Stop the trader (Ctrl-C into the tmux session)
+#   logs          Follow today's log file (Ctrl-C stops following only)
+#   attach        Attach to the tmux session (detach with Ctrl-b d)
+#   status        Show system time, trader session, data dir, backup cron
+#   setup         One-time VM prep: timezone, packages (incl. tmux), dirs,
+#                 backup script + cron, removal of old Docker/systemd setups
 #   rclone-setup  Interactive `rclone config` on the VM, to link Google Drive
 #   backup        Run the installed backup script on the VM immediately
 #
@@ -28,13 +29,13 @@
 #   data/  logs/        database and logs - same layout the Docker volumes used,
 #                       so an existing zerobha.db carries straight over
 #
-# systemd runs it: zerobha.timer starts zerobha.service at 07:00 IST Mon-Fri,
-# the trader shuts itself down at 15:30, and Restart=on-failure brings it back
-# after a crash. The trader binds 9880 (Kite callback) and 9080 (dashboard) to
-# 127.0.0.1 only; reach them through an SSH LocalForward.
+# The trader runs in a detached tmux session called "zerobha", started by hand
+# with 'start'. It exits on its own outside hours and at 15:30, closing the
+# session. It binds 9880 (Kite callback) and 9080 (dashboard) to 127.0.0.1
+# only; reach them through an SSH LocalForward.
 #
 # Environment variables (all optional):
-#   REMOTE_DIR=/opt/zerobha   SSH_PORT=22   GDRIVE_REMOTE=gdrive
+#   REMOTE_DIR=${HOME}/opt/zerobha   SSH_PORT=22   GDRIVE_REMOTE=gdrive
 #   SSH_OPTS="-o ClearAllForwardings=yes"
 #   (ClearAllForwardings stops a LocalForward in ~/.ssh/config from trying to
 #   rebind 9880/9080 locally on every connection this script makes.)
@@ -43,10 +44,10 @@ set -euo pipefail
 
 COMMAND="${1:-}"
 REMOTE_HOST="${2:-${REMOTE_HOST:-}}"
-REMOTE_DIR="${REMOTE_DIR:-/opt/zerobha}"
+REMOTE_DIR="${REMOTE_DIR:-opt/zerobha}"
 SSH_PORT="${SSH_PORT:-22}"
 GDRIVE_REMOTE="${GDRIVE_REMOTE:-gdrive}"
-SERVICE="zerobha"
+SESSION="zerobha"
 BINARY="bin/trader-linux"
 # Files the trader opens by path relative to its working directory:
 # the config, the MIS leverage map (internal/core/engine.go), the strategy
@@ -103,85 +104,72 @@ cmd_copy() {
   rssh "chmod +x '$REMOTE_DIR/trader.new' && mv -f '$REMOTE_DIR/trader.new' '$REMOTE_DIR/trader' && chmod 600 '$REMOTE_DIR/config.local.toml'"
 }
 
-cmd_install() {
-  require_remote_host
-  log_info "Installing systemd service and timer on $REMOTE_HOST"
-  # shellcheck disable=SC2087
-  rssh_tty bash -s <<EOF
-set -euo pipefail
-RUN_USER="\$(id -un)"
-sudo tee /etc/systemd/system/$SERVICE.service >/dev/null <<UNIT
-[Unit]
-Description=Zerobha trader
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=\$RUN_USER
-WorkingDirectory=$REMOTE_DIR
-Environment=TZ=Asia/Kolkata
-ExecStart=$REMOTE_DIR/trader -config $REMOTE_DIR/config.local.toml
-# A clean exit (outside hours, holiday, 15:30 shutdown) stays down until the
-# timer fires again; a crash comes back.
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-sudo tee /etc/systemd/system/$SERVICE.timer >/dev/null <<UNIT
-[Unit]
-Description=Start the Zerobha trader on weekday mornings
-
-[Timer]
-OnCalendar=Mon..Fri *-*-* 07:00:00 Asia/Kolkata
-# Fires at boot if the VM was down at 07:00; the trader itself checks the window.
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-UNIT
-sudo systemctl daemon-reload
-sudo systemctl enable --now $SERVICE.timer
-EOF
-}
-
 cmd_deploy() {
   require_remote_host
   cmd_build
   cmd_copy
-  cmd_install
   cmd_restart
 }
 
+# The trader runs in a detached tmux session; when it exits (outside hours,
+# holiday, 15:30 shutdown, crash) the session closes with it. Its output also
+# goes to logs/zerobha_<date>.log, which is what 'logs' follows.
 cmd_start() {
   require_remote_host
-  rssh_tty "sudo systemctl start $SERVICE"
-  print_access
-}
-
-cmd_restart() {
-  require_remote_host
-  log_info "Restarting $SERVICE on $REMOTE_HOST"
-  rssh_tty "sudo systemctl restart $SERVICE"
+  # shellcheck disable=SC2087
+  rssh bash -s <<EOF
+set -euo pipefail
+if tmux has-session -t $SESSION 2>/dev/null; then
+  echo "tmux session '$SESSION' is already running; use restart or stop" >&2
+  exit 1
+fi
+cd '$REMOTE_DIR'
+tmux new-session -d -s $SESSION -c "\$PWD" "TZ=Asia/Kolkata ./trader -config config.local.toml"
+EOF
   print_access
 }
 
 cmd_stop() {
   require_remote_host
-  rssh_tty "sudo systemctl stop $SERVICE"
+  # shellcheck disable=SC2087
+  rssh bash -s <<EOF
+if ! tmux has-session -t $SESSION 2>/dev/null; then
+  echo "tmux session '$SESSION' is not running"
+  exit 0
+fi
+# Ctrl-C lets the trader shut down cleanly; kill the session if it hangs.
+tmux send-keys -t $SESSION C-c
+for _ in \$(seq 1 20); do
+  tmux has-session -t $SESSION 2>/dev/null || { echo "stopped"; exit 0; }
+  sleep 1
+done
+echo "trader did not exit within 20s, killing the session"
+tmux kill-session -t $SESSION
+EOF
+}
+
+cmd_restart() {
+  require_remote_host
+  log_info "Restarting the trader in tmux session '$SESSION' on $REMOTE_HOST"
+  cmd_stop
+  cmd_start
 }
 
 print_access() {
-  log_success "Started. Outside 07:00-15:05 IST it exits immediately, which is expected."
+  log_success "Started in tmux session '$SESSION'. Outside 07:00-15:05 IST it exits immediately, which is expected."
   log_info "  Logs (Kite login URL appears here): ./zerobha.sh logs $REMOTE_HOST"
+  log_info "  Or on the VM: tmux attach -t $SESSION   (detach with Ctrl-b d, NOT Ctrl-c)"
   log_info "  Kite callback / dashboard: http://localhost:9880 / your LocalForward to 9080"
 }
 
 cmd_logs() {
   require_remote_host
-  rssh_tty "journalctl -u $SERVICE -f -n 100 --no-hostname"
+  rssh_tty "tail -n 100 -F '$REMOTE_DIR/logs/zerobha_\$(date +%F).log'"
+}
+
+cmd_attach() {
+  require_remote_host
+  rssh_tty "tmux attach -t $SESSION"
 }
 
 cmd_status() {
@@ -191,11 +179,13 @@ cmd_status() {
 echo "=== System Time & Timezone ==="
 timedatectl | grep -E "Local time|Time zone" || date
 echo ""
-echo "=== Service ==="
-systemctl status $SERVICE --no-pager -n 5 || true
-echo ""
-echo "=== Next start ==="
-systemctl list-timers $SERVICE.timer --no-pager || true
+echo "=== Trader ==="
+if tmux has-session -t $SESSION 2>/dev/null; then
+  echo "tmux session '$SESSION' is running"
+  pgrep -af '$REMOTE_DIR/trader|\./trader -config' || true
+else
+  echo "tmux session '$SESSION' is not running"
+fi
 echo ""
 echo "=== Data ==="
 ls -lh "$REMOTE_DIR" "$REMOTE_DIR/data" 2>/dev/null || true
@@ -205,8 +195,8 @@ crontab -l 2>/dev/null | grep backup || echo "No backup cron job configured."
 EOF
 }
 
-# The backup script installed on the VM. Unquoted heredoc: REMOTE_DIR,
-# SERVICE and GDRIVE_REMOTE are baked in now; escaped "$" survive into the file.
+# The backup script installed on the VM. Unquoted heredoc: REMOTE_DIR
+# and GDRIVE_REMOTE are baked in now; escaped "$" survive into the file.
 generate_backup_script() {
   cat <<BACKUP_EOF
 #!/usr/bin/env bash
@@ -232,7 +222,6 @@ else
   echo "warning: no database at \$db_path yet, skipping DB snapshot"
 fi
 
-journalctl -u $SERVICE --since today --no-pager > "\${backup_tmp}/journal_${SERVICE}_\${date_day}.log" 2>&1 || true
 if [ -d "\$LOGS_DIR" ]; then
   cp -r "\${LOGS_DIR}/"* "\$backup_tmp/" 2>/dev/null || true
 fi
@@ -267,7 +256,13 @@ echo "==> Setting timezone to Asia/Kolkata"
 sudo timedatectl set-timezone Asia/Kolkata
 echo "==> Installing packages"
 sudo apt-get update -y
-sudo apt-get install -y sqlite3 rclone ca-certificates tzdata gzip
+sudo apt-get install -y sqlite3 rclone ca-certificates tzdata gzip tmux
+if [ -f /etc/systemd/system/$SESSION.service ]; then
+  echo "==> Removing the old zerobha systemd service and timer"
+  sudo systemctl disable --now $SESSION.timer $SESSION.service 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/$SESSION.service /etc/systemd/system/$SESSION.timer
+  sudo systemctl daemon-reload
+fi
 if command -v docker >/dev/null 2>&1 && sudo docker ps -a --format '{{.Names}}' | grep -q '^zerobha\$'; then
   echo "==> Removing the old zerobha Docker container (data/ and logs/ are kept)"
   sudo docker rm -f zerobha
@@ -309,17 +304,17 @@ cmd_backup() {
   rssh "$REMOTE_DIR/backup.sh"
 }
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "$COMMAND" in
   build)                cmd_build ;;
   copy)                 cmd_copy ;;
   deploy)               cmd_deploy ;;
-  install)              cmd_install ;;
-  start)                cmd_start ;;
+  start|run)            cmd_start ;;
   restart)              cmd_restart ;;
   stop)                 cmd_stop ;;
   logs)                 cmd_logs ;;
+  attach)               cmd_attach ;;
   status)               cmd_status ;;
   setup|setup-prereqs)  cmd_setup ;;
   rclone-setup)         cmd_rclone_setup ;;

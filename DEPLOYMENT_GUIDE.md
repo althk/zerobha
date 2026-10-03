@@ -1,6 +1,7 @@
 # Zerobha VM Deployment & Operations Guide
 
-The trader runs **natively** on a Debian 12 VM under systemd — no Docker.
+The trader runs **natively** on a Debian 12 VM in a tmux session called
+`zerobha` — no Docker, no systemd.
 Everything is driven from `./zerobha.sh` on your own machine over SSH. It is a
 bash script, so on Windows run it from **Git Bash or WSL**; it needs `go`,
 `ssh` and `scp` on `PATH`.
@@ -19,14 +20,14 @@ bash script, so on Windows run it from **Git Bash or WSL**; it needs `go`,
   backup.sh                  installed by setup
 ```
 
-The service's working directory is `/opt/zerobha`, so the relative `[paths]`
+The trader runs from `/opt/zerobha`, so the relative `[paths]`
 and CSV names resolve there. This is the same `data/` + `logs/` layout the old
 Docker volumes used, so an existing database carries straight over.
 
-**Lifecycle.** `zerobha.timer` starts `zerobha.service` at 07:00 IST Mon–Fri
-(and at boot if the VM was down then). The trader exits on its own on holidays,
-outside 07:00–15:05, and at 15:30 after square-off; a clean exit stays down
-until the next timer, a crash is restarted after 30 s.
+**Lifecycle.** Nothing starts it automatically: run `./zerobha.sh start` each
+trading morning. It runs in a detached tmux session `zerobha`, and exits on its
+own on holidays, outside 07:00–15:05, and at 15:30 after square-off; the session
+closes with it. A crash is not restarted — check `status` and `start` again.
 
 **Ports.** The trader binds 9880 (Kite callback) and 9080 (dashboard) to
 `127.0.0.1` only. The dashboard has no auth, so reach both through an SSH
@@ -38,8 +39,8 @@ until the next timer, a crash is restarted after 30 s.
    `[section]` header; `db_path = "data/zerobha.db"`, `log_dir = "logs"`).
 2. Register `http://localhost:9880/auth/kite/callback` as the redirect URL in
    the Kite developer console.
-3. Prepare the VM — timezone, packages, dirs, backup cron, and removal of the
-   old Docker container if one exists:
+3. Prepare the VM — timezone, packages (incl. tmux), dirs, backup cron, and
+   removal of the old Docker container / systemd units if they exist:
 
    ```bash
    ./zerobha.sh setup user@vm
@@ -52,8 +53,8 @@ until the next timer, a crash is restarted after 30 s.
 ./zerobha.sh deploy user@vm
 ```
 
-Builds `bin/trader-linux`, copies it with the config and CSVs, (re)installs the
-systemd units and restarts the service. Config changes are shipped the same
+Builds `bin/trader-linux`, copies it with the config and CSVs, and restarts the
+trader in its tmux session. Config changes are shipped the same
 way. A restart during market hours needs a fresh Kite login.
 
 If the Windows C: drive is full, the build fails writing Go's temp files; point
@@ -75,6 +76,7 @@ Host myvm
 `ssh myvm` open to carry them, and in a second terminal:
 
 ```bash
+./zerobha.sh start myvm
 ./zerobha.sh logs myvm
 ```
 
@@ -86,14 +88,15 @@ the callback reaches the VM through the forward. The dashboard is then at
 
 | Task | Command |
 | --- | --- |
-| Follow logs | `./zerobha.sh logs user@vm` |
-| Service, timer, data and cron status | `./zerobha.sh status user@vm` |
+| Follow today's log file | `./zerobha.sh logs user@vm` |
+| Attach to the tmux session (detach: Ctrl-b d) | `./zerobha.sh attach user@vm` |
+| Trader session, data and cron status | `./zerobha.sh status user@vm` |
 | Start now / restart / stop | `./zerobha.sh start\|restart\|stop user@vm` |
 | Backup now | `./zerobha.sh backup user@vm` |
 | Rebuild & redeploy | `./zerobha.sh deploy user@vm` |
 
-On the VM itself: `journalctl -u zerobha -f`, `systemctl status zerobha`,
-`systemctl list-timers zerobha.timer`.
+On the VM itself: `tmux attach -t zerobha` (detach with **Ctrl-b d** — Ctrl-c
+stops the trader), `tail -F /opt/zerobha/logs/zerobha_$(date +%F).log`.
 
-Backups run at 15:45 IST Mon–Fri: an online SQLite snapshot, the day's
-journal and `logs/`, uploaded with rclone to `gdrive:zerobha_backups/<date>`.
+Backups run at 15:45 IST Mon–Fri: an online SQLite snapshot and
+`logs/`, uploaded with rclone to `gdrive:zerobha_backups/<date>`.
