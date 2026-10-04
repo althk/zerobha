@@ -103,8 +103,8 @@ type DailyRevConfig struct {
 // panic open mean-reverts within the session.
 type GapFadeConfig struct {
 	Timeframe string `toml:"timeframe"` // default "5m"
-	CSVFile   string `toml:"csv_file"`  // default "ind_nifty200list.csv"
-	Limit     int    `toml:"limit"`     // default 200
+	CSVFile   string `toml:"csv_file"`  // default "ind_nifty500list.csv"
+	Limit     int    `toml:"limit"`     // default 500
 
 	// MinGapDownPct is the magnitude (positive percent) of the minimum
 	// qualifying gap down, measured open vs previous close. Default 5.
@@ -573,8 +573,8 @@ const (
 func DefaultGapFadeConfig() GapFadeConfig {
 	return GapFadeConfig{
 		Timeframe:        "5m",
-		CSVFile:          "ind_nifty200list.csv",
-		Limit:            200,
+		CSVFile:          "ind_nifty500list.csv",
+		Limit:            500,
 		MinGapDownPct:    5.0,
 		MaxGapDownPct:    20.0,
 		ObserveEndMin:    9*60 + 30,
@@ -1032,7 +1032,8 @@ func intPtr(i int) *int { return &i }
 
 func LoadConfig(path string) (*Config, error) {
 	var config Config
-	if _, err := toml.DecodeFile(path, &config); err != nil {
+	md, err := toml.DecodeFile(path, &config)
+	if err != nil {
 		return nil, fmt.Errorf("failed to load config file: %w", err)
 	}
 
@@ -1305,6 +1306,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Donchian.ADXPeriod == 0 {
 		config.Donchian.ADXPeriod = dcD.ADXPeriod
+	}
+	// adx_threshold = 0 is a real setting (gate off), so the zero test the
+	// knobs around it use cannot tell it from an absent key - and the
+	// default of 15 silently never applied to a config without the key.
+	// Ask the decoder whether the key was written instead.
+	if !md.IsDefined("donchian", "adx_threshold") {
+		config.Donchian.ADXThreshold = dcD.ADXThreshold
 	}
 	if config.Donchian.MaxEntriesPerSymbol == 0 {
 		config.Donchian.MaxEntriesPerSymbol = dcD.MaxEntriesPerSymbol
