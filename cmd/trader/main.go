@@ -80,14 +80,10 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	ss := cfg.ActiveStrategySettings()
-
-	// Parse Timeframe
-	tf, err := time.ParseDuration(ss.Timeframe)
-	if err != nil {
-		log.Fatalf("Invalid timeframe: %v", err)
+	// Fail on a strategy the trader cannot run before the interactive login.
+	if err := checkLiveStrategies(cfg); err != nil {
+		log.Fatal(err)
 	}
-	log.Printf("Timeframe set to: %s", tf)
 
 	apiKey, apiSecret := cfg.APIKey, cfg.APISecret
 	loc, err := time.LoadLocation("Asia/Kolkata")
@@ -128,7 +124,7 @@ func main() {
 
 	// 1. Initialization
 	log.Println("=== ZEROBHA LIVE TRADING SYSTEM STARTING ===")
-	logConfig(cfg, ss, tf)
+	logConfig(cfg)
 
 	// Initialize Kite Client (REST API)
 	kc := kiteconnect.New(apiKey)
@@ -144,20 +140,7 @@ func main() {
 
 	kc.SetAccessToken(data.AccessToken)
 
-	// 2. Instrument Mapping (Crucial	// Load symbols from CSV
-	watchlist, err := loadSymbolsFromCSV(ss.CSVFile)
-	if err != nil {
-		log.Printf("WARNING: Failed to load %s: %v. Using fallback list.", ss.CSVFile, err)
-		// Fallback list
-		watchlist = []string{"IDEA", "CANBK", "LTF", "NBCC", "RELIANCE"}
-	}
-
-	// Limit symbols if requested
-	if ss.Limit > 0 && len(watchlist) > ss.Limit {
-		fmt.Printf("Limiting watchlist to top %d symbols.\n", ss.Limit)
-		watchlist = watchlist[:ss.Limit]
-	}
-
+	// 2. Instrument Mapping
 	// One instrument dump serves the NSE cash symbols the equity strategies
 	// watch, and the NFO contracts the option work will need.
 	im := broker.NewInstrumentManager()
@@ -170,8 +153,6 @@ func main() {
 
 	// Broker Adapter (The Execution Arm).
 	kiteAdapter := broker.NewZerodhaAdapter(kc, symbolToToken)
-
-	fmt.Printf("Loaded %d symbols for trading.\n", len(watchlist))
 
 	// Database (SQLite)
 	// db_path may name a subdirectory (the container points it at the data
@@ -187,18 +168,6 @@ func main() {
 	}
 	defer store.Close()
 
-	// 3. Define Watchlist (The stocks you want to trade)
-	// Already loaded from final_portfolio.csv above
-	var tokensToSubscribe []uint32
-
-	for _, sym := range watchlist {
-		if token, ok := symbolToToken[sym]; ok {
-			tokensToSubscribe = append(tokensToSubscribe, token)
-		} else {
-			log.Printf("WARNING: Symbol %s not found in instrument list", sym)
-		}
-	}
-
 	// 4. Setup Core Components
 	// Risk Manager (The Gatekeeper)
 	riskMgr := risk.NewManager(store,
@@ -211,79 +180,44 @@ func main() {
 	log.Printf("Risk limits (all strategies combined): per stock per day Rs%d, monthly Rs%d (0 = off)",
 		cfg.Risk.MaxLossPerStockPerDay, cfg.Risk.MaxMonthlyLoss)
 
-	// Strategy (The Brain). ORB and gapfade are the intraday (MIS) strategies
-	// wired for live trading; dailyrev is backtest-only research (CNC,
-	// multi-day holds) whose positions the live loop's square-off would close
-	// the same day. Fail loudly on anything else rather than logging the
-	// configured name and silently running ORB against another strategy's
-	// watchlist and timeframe.
-	// Decided here because the strategies tag what they persist with it.
+	// Strategies (The Brains), in priority order. Each brings its own
+	// watchlist, timeframe and entry settings; the account, the risk limits
+	// and the square-off are shared.
 	isPaper := cfg.PaperTrading || *paperFlag
-	var strat core.Strategy
-	var maxConcurrent int
-	switch cfg.Strategy {
-	case "", config.StrategyORB:
-		orb := strategy.NewORBStrategy(watchlist, cfg.ORB)
-		// Inject DB (Manual Dependency Injection) so opening ranges and
-		// per-day state survive a mid-session restart.
-		orb.SetDB(store)
-		strat = orb
-		maxConcurrent = cfg.ORB.MaxConcurrent
-	case config.StrategyGapFade:
-		gate, err := buildUpstoxGate(cfg)
+	deps := strategyDeps{cfg: cfg, store: store, isPaper: isPaper, im: im, kc: kc}
+	var runners []*liveRunner
+	var engineRunners []*core.Runner
+	totalConcurrent := 0
+	for _, name := range cfg.ActiveStrategies() {
+		lr, err := buildRunner(name, deps)
 		if err != nil {
-			log.Fatalf("gapfade needs the Upstox news/earnings gate: %v", err)
+			log.Fatalf("%v", err)
 		}
-		strat = strategy.NewGapFadeStrategy(watchlist, cfg.GapFade, gate)
-		maxConcurrent = cfg.GapFade.MaxConcurrent
-	case config.StrategyDonchian:
-		dc := strategy.NewDonchianStrategy(watchlist, cfg.Donchian)
-		dc.SetDB(store, isPaper)
-		minDTE := 2
-		if cfg.Donchian.MinDaysToExpiry != nil {
-			minDTE = *cfg.Donchian.MinDaysToExpiry
+		if err := lr.runner.Strategy.Init(kiteAdapter); err != nil {
+			log.Printf("WARNING: %s Init failed: %v", lr.runner.Name(), err)
 		}
-		dc.SetOptionExecution(buildOptionExecutor("Donchian", optionExecParams{
-			TargetDelta:           cfg.Donchian.TargetDelta,
-			TargetDeltaNearExpiry: cfg.Donchian.TargetDeltaNearExpiry,
-			MinDaysToExpiry:       minDTE,
-			FallbackIV:            cfg.Donchian.FallbackIV,
-		}, im, kc))
-		strat = dc
-		maxConcurrent = cfg.Donchian.MaxConcurrent
-	case config.StrategyEMACross:
-		ec := strategy.NewEMACrossStrategy(watchlist, cfg.EMACross)
-		ec.SetDB(store, isPaper)
-		// asset_type = "options" expresses the INDEX signal through a weekly
-		// contract; without this the strategy would send MIS orders for
-		// "NIFTY 50" itself, which no exchange accepts.
-		if strings.EqualFold(cfg.EMACross.AssetType, "options") {
-			minDTE := 0
-			if cfg.EMACross.MinDaysToExpiry != nil {
-				minDTE = *cfg.EMACross.MinDaysToExpiry
-			}
-			nearExpiry := cfg.EMACross.TargetDeltaNearExpiry
-			if nearExpiry == 0 {
-				nearExpiry = cfg.EMACross.TargetDelta
-			}
-			ec.SetOptionExecution(buildOptionExecutor("EMACross", optionExecParams{
-				TargetDelta:           cfg.EMACross.TargetDelta,
-				TargetDeltaNearExpiry: nearExpiry,
-				MinDaysToExpiry:       minDTE,
-				FallbackIV:            cfg.EMACross.FallbackIV,
-			}, im, kc))
-		}
-		strat = ec
-		maxConcurrent = cfg.EMACross.MaxConcurrent
-	default:
-		log.Fatalf("live trading supports strategy=%q, %q, %q, or %q, got %q. %q is backtest-only (go run ./cmd/backtest -strategy %s).",
-			config.StrategyORB, config.StrategyGapFade, config.StrategyDonchian, config.StrategyEMACross,
-			cfg.Strategy, cfg.Strategy, cfg.Strategy)
+		runners = append(runners, lr)
+		engineRunners = append(engineRunners, lr.runner)
+		totalConcurrent += lr.runner.MaxConcurrent
 	}
 
-	if err := strat.Init(kiteAdapter); err != nil {
-		log.Printf("WARNING: strategy Init failed: %v", err)
+	// The union of every strategy's watchlist is what the ticker subscribes.
+	var tokensToSubscribe []uint32
+	subscribed := map[uint32]bool{}
+	for _, lr := range runners {
+		for _, sym := range lr.watchlist {
+			token, ok := symbolToToken[sym]
+			if !ok {
+				log.Printf("WARNING: Symbol %s not found in instrument list", sym)
+				continue
+			}
+			if !subscribed[token] {
+				subscribed[token] = true
+				tokensToSubscribe = append(tokensToSubscribe, token)
+			}
+		}
 	}
+	fmt.Printf("Subscribing %d instruments for %d strategies.\n", len(tokensToSubscribe), len(runners))
 
 	// Journal
 	j, err := journal.NewJournal(filepath.Join(cfg.Paths.LogDir, fmt.Sprintf("journal_%s.csv", today.Format("2006-01-02"))))
@@ -330,7 +264,8 @@ func main() {
 	}
 
 	// Engine (The Orchestrator)
-	engine = core.NewEngine(strat, brokerAdapter, riskMgr, j, im, store)
+	engine = core.NewEngine(engineRunners[0].Strategy, brokerAdapter, riskMgr, j, im, store)
+	engine.Runners = engineRunners
 	engine.PaperMode = isPaper
 	if paperAdapter != nil {
 		// Refreshes marks for instruments the ticker does not subscribe to —
@@ -338,60 +273,17 @@ func main() {
 		paperAdapter.Start()
 		defer paperAdapter.Close()
 	}
-	engine.MaxConcurrent = maxConcurrent
-	engine.UptrendOnly = *cfg.UptrendOnly
+	// The account-wide cap is the strategies' caps added up unless [engine]
+	// sets one; each strategy is still held to its own.
+	engine.MaxConcurrent = totalConcurrent
+	if cfg.Engine.MaxConcurrent > 0 {
+		engine.MaxConcurrent = cfg.Engine.MaxConcurrent
+	}
 	engine.DataProvider = kiteAdapter
 	engine.MinBalance = int64(cfg.Engine.MinBalance)
 	engine.MinCapitalPerTrade = int64(cfg.Engine.MinCapitalPerTrade)
 	engine.MaxCapitalPerTrade = int64(cfg.Engine.MaxCapitalPerTrade)
-	engine.TradeCutoffMin = cfg.Engine.TradeCutoffMin
-
-	if cfg.Strategy == config.StrategyDonchian {
-		// The engine's global cutoff gates every signal and is earlier than
-		// Donchian's own last-entry time, so it has to give way to it.
-		engine.TradeCutoffMin = cfg.Donchian.EntryCutoffMin + 1
-		// Same reasoning for capital: the engine's cap is sized for cash
-		// equities, and an index priced above it is not traded smaller, it is
-		// not traded at all.
-		if cfg.Donchian.MaxCapitalPerTrade > 0 {
-			engine.MaxCapitalPerTrade = cfg.Donchian.MaxCapitalPerTrade
-			log.Printf("Donchian: max capital per trade Rs%d (overrides [engine] Rs%d)",
-				cfg.Donchian.MaxCapitalPerTrade, int64(cfg.Engine.MaxCapitalPerTrade))
-		}
-		// The NIFTY uptrend filter blocks every signal on a down day, not just
-		// the longs. On a symmetric long/short strategy that is not a filter,
-		// it is a switch that turns off half the strategy on exactly the days
-		// the short side exists to trade.
-		if engine.UptrendOnly {
-			log.Println("Donchian: disabling the NIFTY uptrend filter — it would gate the short side out of existence")
-			engine.UptrendOnly = false
-		}
-		// Donchian states its kill switch as a percent of capital, not rupees.
-		if balance, err := brokerAdapter.GetBalance(); err == nil {
-			riskMgr.MaxDailyLoss = balance.Mul(decimal.NewFromFloat(cfg.Donchian.MaxDailyLossPct / 100))
-			log.Printf("Donchian kill switch: %.2f%% of Rs%s = Rs%s",
-				cfg.Donchian.MaxDailyLossPct, balance.StringFixed(0), riskMgr.MaxDailyLoss.StringFixed(0))
-		} else {
-			log.Printf("WARNING: could not read balance to size the daily-loss limit (%v); keeping [risk] max_daily_loss = %d",
-				err, cfg.Risk.MaxDailyLoss)
-		}
-	}
-	if cfg.Strategy == config.StrategyEMACross {
-		// +1 so a bar STARTING at the cutoff minute is still admitted: the
-		// engine gates on EndTime, and the backtester uses the same +1.
-		if cfg.EMACross.EntryCutoffMin > 0 {
-			engine.TradeCutoffMin = cfg.EMACross.EntryCutoffMin + 1
-		}
-		if cfg.EMACross.MaxCapitalPerTrade > 0 {
-			engine.MaxCapitalPerTrade = cfg.EMACross.MaxCapitalPerTrade
-			log.Printf("EMACross: max capital per trade Rs%d (overrides [engine] Rs%d)",
-				cfg.EMACross.MaxCapitalPerTrade, int64(cfg.Engine.MaxCapitalPerTrade))
-		}
-		if engine.UptrendOnly && (cfg.EMACross.AllowShort == nil || *cfg.EMACross.AllowShort) {
-			log.Println("EMACross: disabling the NIFTY uptrend filter for symmetric long/short trading")
-			engine.UptrendOnly = false
-		}
-	}
+	log.Printf("Engine: %d strategies, max %d concurrent positions across them", len(runners), engine.MaxConcurrent)
 	engine.InitNiftyEMAs()
 
 	// Web Dashboard
@@ -414,11 +306,20 @@ func main() {
 	// Channel to carry completed candles from Aggregator to Engine
 	candleChan := make(chan models.Candle, 100)
 
-	// The Aggregator (Calculated Timeframe Candles)
-	builders := make(map[uint32]*core.CandleBuilder)
-	for _, token := range tokensToSubscribe {
-		// Create a builder for each subscribed token
-		builders[token] = core.NewCandleBuilder(tf, candleChan)
+	// The Aggregator: one builder per instrument and timeframe, so a symbol
+	// two strategies watch on different bar sizes feeds both.
+	builders := make(map[uint32][]*core.CandleBuilder)
+	built := map[string]bool{}
+	for _, lr := range runners {
+		for _, sym := range lr.watchlist {
+			token, ok := symbolToToken[sym]
+			key := fmt.Sprintf("%d/%s", token, lr.timeframe)
+			if !ok || built[key] {
+				continue
+			}
+			built[key] = true
+			builders[token] = append(builders[token], core.NewCandleBuilder(lr.timeframe, candleChan))
+		}
 	}
 
 	// 6. Start the Engine Listener (Consumer)
@@ -484,7 +385,7 @@ func main() {
 		zTick.Volume = decimal.NewFromInt(int64(deltaVol))
 
 		// B. Push to the specific Aggregator for this token
-		if builder, exists := builders[tick.InstrumentToken]; exists {
+		for _, builder := range builders[tick.InstrumentToken] {
 			builder.Update(zTick)
 		}
 
@@ -528,12 +429,19 @@ func main() {
 
 		// Target Ticker Stop: 15:05 Today
 		targetTickerStop := time.Date(now.Year(), now.Month(), now.Day(), 15, 5, 0, 0, loc)
-		// Target SquareOff: 15:13 Today, or the strategy's own earlier flatten.
-		squareOffMin := 15*60 + 13
-		if cfg.Strategy == config.StrategyDonchian {
-			squareOffMin = cfg.Donchian.SquareOffMin
-		} else if cfg.Strategy == config.StrategyEMACross && cfg.EMACross.SquareOffMin > 0 {
-			squareOffMin = cfg.EMACross.SquareOffMin
+		// Target SquareOff: the latest strategy's flatten (15:13 by default);
+		// a strategy that flattens earlier closes only its own positions then.
+		squareOffMin, early := squareOffPlan(runners)
+		for minute, names := range early {
+			at := time.Date(now.Year(), now.Month(), now.Day(), minute/60, minute%60, 0, 0, loc)
+			names := names
+			log.Printf("Scheduled square-off of %v in %v (at %02d:%02d IST)", names, at.Sub(now), minute/60, minute%60)
+			time.AfterFunc(at.Sub(now), func() {
+				for _, n := range names {
+					log.Printf("⏰ Square-off trigger for %s", n)
+					engine.SquareOffStrategy(n)
+				}
+			})
 		}
 		targetSquareOff := time.Date(now.Year(), now.Month(), now.Day(), squareOffMin/60, squareOffMin%60, 0, 0, loc)
 		// Target Flush: 15:23 Today
@@ -562,8 +470,10 @@ func main() {
 		log.Printf("Scheduled EOD Flush in %v (at 15:23 IST)", durationFlush)
 		time.AfterFunc(durationFlush, func() {
 			log.Println("⏰ 15:23 PM Trigger: Flushing candles for EOD processing...")
-			for _, b := range builders {
-				b.Flush()
+			for _, bs := range builders {
+				for _, b := range bs {
+					b.Flush()
+				}
 			}
 		})
 
@@ -604,12 +514,20 @@ func main() {
 	log.Println("Zerobha Shutdown Complete.")
 }
 
-func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration) {
-	log.Println("=== STRATEGY:", cfg.Strategy)
+func logConfig(cfg *config.Config) {
+	log.Println("=== STRATEGIES (priority order):", strings.Join(cfg.ActiveStrategies(), ", "))
 	log.Println("=== UPTREND ONLY:", *cfg.UptrendOnly)
-	log.Printf("=== TIMEFRAME: %s | CSV: %s | LIMIT: %d", tf, ss.CSVFile, ss.Limit)
+	for _, name := range cfg.ActiveStrategies() {
+		logStrategyConfig(cfg, name)
+	}
+	log.Println("==========================================")
+}
 
-	switch cfg.Strategy {
+func logStrategyConfig(cfg *config.Config, name string) {
+	ss := cfg.StrategySettingsFor(name)
+	log.Printf("=== %s | TIMEFRAME: %s | CSV: %s | LIMIT: %d", strings.ToUpper(name), ss.Timeframe, ss.CSVFile, ss.Limit)
+
+	switch name {
 	case config.StrategyGapFade:
 		c := cfg.GapFade
 		log.Printf("--- GAPFADE CONFIG ---")
@@ -681,7 +599,6 @@ func logConfig(cfg *config.Config, ss config.StrategySettings, tf time.Duration)
 		log.Printf("  Body Strength    : %.2f  Max Gap Pct: %.2f%%", c.BodyStrengthThreshold, c.MaxGapPct)
 		log.Printf("  One Trade/Day    : %v  Stop Floor At Range: %v", *c.OneTradePerDay, *c.StopFloorAtRange)
 	}
-	log.Println("==========================================")
 }
 
 func isMarketClosed() bool {

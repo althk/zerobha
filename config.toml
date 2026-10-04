@@ -1,7 +1,15 @@
 # Zerobha Trading Bot Configuration
 
-# Strategy to run: orb | gapfade (both intraday/MIS), or dailyrev (backtest only)
+# Strategy to run live: orb | gapfade | donchian | emacross. dailyrev and
+# srlevels are backtest only.
 strategy = "orb"
+# Or several at once on one account, in priority order - replaces `strategy`
+# when set. Each keeps its own section (timeframe, watchlist, entry window,
+# capital cap, max_concurrent). Shared: the [risk] limits, capital, and the
+# square-off. When two want the same stock or index, the one holding it keeps
+# it until flat, and on the same candle the earlier one in this list wins. A
+# strategy only exits and squares off its own positions.
+# strategies = ["emacross", "orb"]
 uptrend_only = false
 # Paper trading: real market data and real quotes, simulated fills against
 # virtual capital. The paper broker holds the stop and target itself, so
@@ -65,6 +73,8 @@ max_trades_per_stock = 0      # 0 = disabled; ORB's one_trade_per_day already ca
 min_balance          = 3000   # INR; skip all signals when available balance is below this
 min_capital_per_trade = 30000 # INR floor allocated per open slot
 max_capital_per_trade = 50000 # INR cap allocated per open slot
+# Open positions across all strategies; 0 = their max_concurrent values summed.
+max_concurrent       = 0
 trade_cutoff_min     = 845    # minutes from midnight (845 = 14:05); no new signals after this time
 
 [orb]

@@ -387,7 +387,10 @@ type EngineConfig struct {
 	MinBalance         int `toml:"min_balance"`           // INR floor below which all signals are skipped, default 3000
 	MinCapitalPerTrade int `toml:"min_capital_per_trade"` // INR floor per slot, default 30000
 	MaxCapitalPerTrade int `toml:"max_capital_per_trade"` // INR cap per slot, default 50000
-	TradeCutoffMin     int `toml:"trade_cutoff_min"`      // minutes from midnight, default 845 (14:05)
+	// MaxConcurrent caps open positions across every strategy. 0 (the
+	// default) = the strategies' own max_concurrent values added up.
+	MaxConcurrent  int `toml:"max_concurrent"`
+	TradeCutoffMin int `toml:"trade_cutoff_min"` // minutes from midnight, default 845 (14:05)
 }
 
 // PathsConfig locates the files the trader writes. Both default to paths
@@ -476,9 +479,14 @@ type EMACrossConfig struct {
 }
 
 type Config struct {
-	Strategy  string `toml:"strategy"`
-	APIKey    string `toml:"api_key"`
-	APISecret string `toml:"api_secret"`
+	// Strategy is the single strategy to run. Strategies, when set, replaces
+	// it with a list run together on one account, in priority order: the
+	// earlier strategy wins an underlying both want. Bare keys, like the
+	// credentials: they must sit above the first [section] header.
+	Strategy   string   `toml:"strategy"`
+	Strategies []string `toml:"strategies"`
+	APIKey     string   `toml:"api_key"`
+	APISecret  string   `toml:"api_secret"`
 	// Paths holds the on-disk locations the trader writes to.
 	Paths PathsConfig `toml:"paths"`
 	// PaperTrading, when true, runs with simulated order fills and virtual balance
@@ -510,11 +518,29 @@ type Config struct {
 	Upstox            UpstoxConfig   `toml:"upstox"`
 }
 
+// ActiveStrategies lists the strategies to run, in priority order:
+// `strategies` when set, otherwise the single `strategy`.
+func (c *Config) ActiveStrategies() []string {
+	if len(c.Strategies) > 0 {
+		return c.Strategies
+	}
+	if c.Strategy == "" {
+		return []string{StrategyORB}
+	}
+	return []string{c.Strategy}
+}
+
 // ActiveStrategySettings returns the Timeframe, CSVFile, and Limit the engine
 // bootstraps from, taken from the section belonging to the selected strategy.
 // Callers do not reach into the per-strategy configs directly.
 func (c *Config) ActiveStrategySettings() StrategySettings {
-	switch c.Strategy {
+	return c.StrategySettingsFor(c.Strategy)
+}
+
+// StrategySettingsFor returns the Timeframe, CSVFile and Limit of the named
+// strategy's section. An unknown name gets ORB's, as `strategy` always has.
+func (c *Config) StrategySettingsFor(name string) StrategySettings {
+	switch name {
 	case StrategyDailyRev:
 		return StrategySettings{Timeframe: c.DailyRev.Timeframe, CSVFile: c.DailyRev.CSVFile, Limit: c.DailyRev.Limit}
 	case StrategyGapFade:
@@ -1018,6 +1044,9 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Strategy == "" {
 		config.Strategy = "orb"
 	}
+	if err := validateStrategies(config.Strategies); err != nil {
+		return nil, err
+	}
 
 	// Risk defaults
 	riskD := DefaultRiskConfig()
@@ -1480,4 +1509,23 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// validateStrategies rejects a `strategies` list naming an unknown or repeated
+// strategy. A typo would otherwise fall through to ORB's settings silently,
+// and a repeat would run one strategy twice against itself.
+func validateStrategies(names []string) error {
+	known := map[string]bool{StrategyORB: true, StrategyDailyRev: true, StrategyGapFade: true,
+		StrategyDonchian: true, StrategySRLevels: true, StrategyEMACross: true}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if !known[n] {
+			return fmt.Errorf("strategies: unknown strategy %q", n)
+		}
+		if seen[n] {
+			return fmt.Errorf("strategies: %q listed twice", n)
+		}
+		seen[n] = true
+	}
+	return nil
 }

@@ -127,10 +127,8 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	// A derivative position's real exit is an index level the strategy holds,
 	// which no broker can show. Attach it.
 	legs := map[string]core.OpenLeg{}
-	if reporter, ok := s.engine.Strategy.(core.LegReporter); ok {
-		for _, leg := range reporter.OpenLegs() {
-			legs[leg.Symbol] = leg
-		}
+	for _, leg := range s.allOpenLegs() {
+		legs[leg.Symbol] = leg
 	}
 	type positionView struct {
 		models.Position

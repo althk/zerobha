@@ -19,6 +19,11 @@ import (
 )
 
 type Engine struct {
+	// Runners are the strategies trading this account, in priority order:
+	// when two want the same underlying on the same candle, the earlier one
+	// wins. Empty means single-strategy mode, described by Strategy and the
+	// entry settings below (the backtester and most tests use that).
+	Runners           []*Runner
 	Strategy          Strategy
 	Broker            Broker
 	Risk              *risk.Manager
@@ -59,6 +64,8 @@ type Engine struct {
 	// underlying its risk counts against; see underlyingOf.
 	underlyingMu sync.Mutex
 	underlyings  map[string]string
+	// owners maps a traded symbol to the runner that opened it; see ownerOf.
+	owners map[string]string
 	// monthBase caches the month's realised PnL before monthBaseDate.
 	monthBase     decimal.Decimal
 	monthBaseDate string
@@ -89,6 +96,7 @@ func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *br
 		openOrders:         make(map[string]*models.Order),
 		lastStopPush:       make(map[string]time.Time),
 		underlyings:        make(map[string]string),
+		owners:             make(map[string]string),
 	}
 	e.loadLeverageMap()
 	return e
@@ -98,7 +106,7 @@ func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *br
 // sets the initial uptrend state from the most recent completed daily candle.
 // Must be called after UptrendOnly and DataProvider are set.
 func (e *Engine) InitNiftyEMAs() {
-	if !e.UptrendOnly || e.DataProvider == nil {
+	if !e.anyUptrendFilter() || e.DataProvider == nil {
 		return
 	}
 
@@ -197,21 +205,34 @@ func (e *Engine) loadLeverageMap() {
 	log.Printf("Loaded leverage for %d symbols", len(e.LeverageMap))
 }
 
-// Execute is called whenever a candle closes
+// Execute is called whenever a candle closes. Every runner that consumes the
+// candle gets it, in priority order.
 func (e *Engine) Execute(candle models.Candle) {
+	runners := e.runners()
+	for _, r := range runners {
+		if r.wants(candle) {
+			e.executeFor(r, candle, len(runners) > 1)
+		}
+	}
+}
+
+// executeFor runs one strategy's exit advice and entry pipeline on a candle.
+// shared is true when other strategies trade the same account, which turns on
+// position ownership: see ownerOf.
+func (e *Engine) executeFor(r *Runner, candle models.Candle, shared bool) {
 	// Exits first, and ahead of every gate below. The entry cutoff, the trade
 	// limits and the uptrend filter all decide whether a NEW position may be
 	// opened; none of them is a reason to keep holding one the strategy has
 	// just said to close.
-	e.applyExitAdvice(candle)
+	e.applyExitAdvice(r, candle, shared)
 
 	h, m, _ := candle.EndTime.Clock()
-	if h*60+m >= e.TradeCutoffMin {
+	if h*60+m >= r.TradeCutoffMin {
 		return
 	}
 
 	// Uptrend master filter: update state on NIFTY 50 daily candles, gate all signals
-	if e.UptrendOnly {
+	if r.UptrendOnly {
 		isNifty := candle.Symbol == "NIFTY 50" || candle.Symbol == "^NSEI" || candle.Symbol == "NSEI"
 		isDaily := candle.Timeframe == "1d" || candle.Timeframe == "day"
 
@@ -239,10 +260,16 @@ func (e *Engine) Execute(candle models.Candle) {
 	}
 
 	// 1. Get Signal from Strategy
-	signal := e.Strategy.OnCandle(candle)
+	signal := r.Strategy.OnCandle(candle)
 	if signal == nil {
 		return
 	}
+	// The engine's own ownership tag. Strategies write their own "Strategy"
+	// value (ORB writes ORB_Long / ORB_Short), so it cannot serve as the key.
+	if signal.Metadata == nil {
+		signal.Metadata = map[string]string{}
+	}
+	signal.Metadata["Owner"] = r.Name()
 
 	log.Printf("New signal:%+v\n", signal)
 	if e.Journal != nil {
@@ -389,10 +416,28 @@ func (e *Engine) Execute(candle models.Candle) {
 	// (Kite does, and the paper broker mirrors it so the two agree), and
 	// counting those would retire a concurrency slot for every trade already
 	// exited — the cap would tighten as the day went on.
-	openCount := int64(0)
+	openCount, ownCount := int64(0), int64(0)
 	for _, p := range openPositions {
 		if p.NetQuantity != 0 {
 			openCount++
+			if shared && e.ownerOf(p.Tradingsymbol) == r.Name() {
+				ownCount++
+			}
+		}
+	}
+	// First come, first served: an underlying another strategy holds is
+	// theirs until it is flat. Two strategies in one index would otherwise
+	// stack opposite or doubled exposure that neither sized for.
+	if shared {
+		if other := e.underlyingHeldByOther(signalUnderlying(signal), r.Name(), openPositions); other != "" {
+			log.Printf("Skipping signal for %s (%s): %s already holds %s", signal.Symbol, r.Name(), other, signalUnderlying(signal))
+			outcome, outcomeReason = db.SignalPositionOpen, other+" holds "+signalUnderlying(signal)
+			return
+		}
+		if r.MaxConcurrent > 0 && ownCount >= int64(r.MaxConcurrent) {
+			log.Printf("No remaining slots for %s (open: %d, max: %d)", r.Name(), ownCount, r.MaxConcurrent)
+			outcome, outcomeReason = db.SignalNoCapital, "no free concurrency slot for "+r.Name()
+			return
 		}
 	}
 	maxConcurrent := int64(e.MaxConcurrent)
@@ -402,8 +447,12 @@ func (e *Engine) Execute(candle models.Candle) {
 		outcome, outcomeReason = db.SignalNoCapital, "no free concurrency slot"
 		return
 	}
+	maxCapital := e.MaxCapitalPerTrade
+	if r.MaxCapitalPerTrade > 0 {
+		maxCapital = r.MaxCapitalPerTrade
+	}
 	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(e.MinCapitalPerTrade))
-	capital = decimal.Min(capital, decimal.NewFromInt(e.MaxCapitalPerTrade))
+	capital = decimal.Min(capital, decimal.NewFromInt(maxCapital))
 
 	leverage := decimal.NewFromInt(1)
 	if signal.ProductType == "MIS" {
@@ -501,6 +550,7 @@ func (e *Engine) Execute(candle models.Candle) {
 		// Update Risk Manager stats: count the entry and remember the risk
 		// it put on its underlying for the per-stock limit.
 		e.rememberUnderlying(order.Symbol, underlying)
+		e.rememberOwner(order.Symbol, r.Name())
 		e.Risk.RecordEntry(order.Symbol, underlying, riskPerUnit(signal).Mul(order.Quantity))
 
 		// Track the order for the tick-driven breakeven-trail monitor when
@@ -545,14 +595,24 @@ func (e *Engine) dayPnL() (decimal.Decimal, error) {
 // exists: a strategy cannot see whether its entry signal was actually filled
 // (risk limits and the concurrency cap drop signals silently), so it can only
 // say "if you are long this, get out".
-func (e *Engine) applyExitAdvice(candle models.Candle) {
-	advisor, ok := e.Strategy.(ExitAdvisor)
+//
+// With several strategies on the account a strategy may only close what it
+// opened: its advice names a symbol, not a position, and the position in that
+// symbol may belong to someone else.
+func (e *Engine) applyExitAdvice(r *Runner, candle models.Candle, shared bool) {
+	advisor, ok := r.Strategy.(ExitAdvisor)
 	if !ok {
 		return
 	}
 	advice := advisor.ExitAdvice(candle)
 	if advice == nil {
 		return
+	}
+	if shared {
+		if owner := e.ownerOf(advice.Symbol); owner != r.Name() {
+			log.Printf("Ignoring %s's exit advice for %s: the position belongs to %q", r.Name(), advice.Symbol, owner)
+			return
+		}
 	}
 
 	if closer, ok := e.Broker.(PositionCloser); ok {
@@ -748,7 +808,18 @@ func (e *Engine) OnTick(symbol string, price decimal.Decimal) {
 
 // SquareOff cancels all GTTs, Open MIS Orders and Closes all MIS positions
 func (e *Engine) SquareOff() {
-	log.Println("⚡ STARTING AUTO SQUAREOFF SEQUENCE ⚡")
+	e.squareOff("AutoSquareOff", func(string) bool { return true })
+}
+
+// SquareOffStrategy flattens only the positions, GTTs and open orders that
+// belong to one strategy, for a strategy whose own flatten time is earlier
+// than the account-wide square-off.
+func (e *Engine) SquareOffStrategy(name string) {
+	e.squareOff("SquareOff:"+name, func(symbol string) bool { return e.ownerOf(symbol) == name })
+}
+
+func (e *Engine) squareOff(reason string, include func(symbol string) bool) {
+	log.Printf("⚡ STARTING AUTO SQUAREOFF SEQUENCE (%s) ⚡", reason)
 
 	// 1. Cancel All Active GTTs
 	gtts, err := e.Broker.GetGTTs()
@@ -756,6 +827,9 @@ func (e *Engine) SquareOff() {
 		log.Printf("SquareOff Error: Failed to fetch GTTs: %v", err)
 	} else {
 		for _, g := range gtts {
+			if !include(g.Tradingsymbol) {
+				continue
+			}
 			log.Printf("SquareOff: Cancelling GTT %d (%s)", g.ID, g.Tradingsymbol)
 			if err := e.Broker.CancelGTT(g.ID); err != nil {
 				log.Printf("SquareOff Error: Failed to cancel GTT %d: %v", g.ID, err)
@@ -769,7 +843,7 @@ func (e *Engine) SquareOff() {
 		log.Printf("SquareOff Error: Failed to fetch Orders: %v", err)
 	} else {
 		for _, o := range orders {
-			if o.ProductType == "MIS" {
+			if o.ProductType == "MIS" && include(o.Symbol) {
 				log.Printf("SquareOff: Cancelling Open MIS Order %s (%s)", o.ID, o.Symbol)
 				if err := e.Broker.CancelOrder(o.ID); err != nil {
 					log.Printf("SquareOff Error: Failed to cancel Order %s: %v", o.ID, err)
@@ -786,7 +860,7 @@ func (e *Engine) SquareOff() {
 	}
 
 	for _, p := range positions {
-		if p.Product != "MIS" || p.NetQuantity == 0 {
+		if p.Product != "MIS" || p.NetQuantity == 0 || !include(p.Tradingsymbol) {
 			continue
 		}
 
@@ -809,7 +883,7 @@ func (e *Engine) SquareOff() {
 			Type:        "MARKET",
 			ProductType: "MIS",
 			Quantity:    qty,
-			Metadata:    map[string]string{"Reason": "AutoSquareOff"},
+			Metadata:    map[string]string{"Reason": reason},
 		}
 
 		// Execute
@@ -825,7 +899,7 @@ func (e *Engine) SquareOff() {
 		} else {
 			log.Printf("SquareOff: Successfully submitted close order for %s", p.Tradingsymbol)
 			if e.Journal != nil {
-				e.Journal.LogOrder(placedOrder, "SUCCESS", fmt.Sprintf("OrderID: %s | Reason: AutoSquareOff", placedOrder.ID))
+				e.Journal.LogOrder(placedOrder, "SUCCESS", fmt.Sprintf("OrderID: %s | Reason: %s", placedOrder.ID, reason))
 			}
 			if e.DB != nil {
 				_ = e.DB.SaveOrder(placedOrder, "SUBMITTED")

@@ -176,9 +176,14 @@ func (s *Server) handleStrategy(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, enrich(t))
 	}
 
-	strategyName := s.engine.Strategy.Name()
+	var names []string
+	var refs []reference
+	for _, st := range s.engine.Strategies() {
+		names = append(names, st.Name())
+		refs = append(refs, references[st.Name()]...)
+	}
 	out := map[string]interface{}{
-		"strategy":   strategyName,
+		"strategy":   strings.Join(names, " + "),
 		"paper_mode": s.PaperMode,
 		"since":      since,
 		"funnel":     funnelSummary(funnel),
@@ -195,21 +200,30 @@ func (s *Server) handleStrategy(w http.ResponseWriter, r *http.Request) {
 		"by_dte":    groupBy(rows, dteBucket),
 		"by_week":   groupBy(rows, func(r tradeRow) string { y, wk := r.ExitTime.ISOWeek(); return strconv.Itoa(y) + "-W" + pad2(wk) }),
 		"trades":    newestFirst(rows, 200),
-		"reference": references[strategyName],
+		"by_strategy": groupBy(rows, func(r tradeRow) string { return r.Strategy }),
+		"reference":   refs,
 		"open_legs": s.openLegs(),
 	}
 	json.NewEncoder(w).Encode(out)
 }
 
-// openLegs asks the strategy for the option legs it is holding an index stop
-// for, and marks them against the underlying's last price.
-func (s *Server) openLegs() []map[string]interface{} {
-	reporter, ok := s.engine.Strategy.(core.LegReporter)
-	if !ok {
-		return nil
+// allOpenLegs collects the option legs every strategy is holding an index
+// stop for.
+func (s *Server) allOpenLegs() []core.OpenLeg {
+	var legs []core.OpenLeg
+	for _, st := range s.engine.Strategies() {
+		if reporter, ok := st.(core.LegReporter); ok {
+			legs = append(legs, reporter.OpenLegs()...)
+		}
 	}
+	return legs
+}
+
+// openLegs marks every strategy's open option legs against the underlying's
+// last price.
+func (s *Server) openLegs() []map[string]interface{} {
 	var out []map[string]interface{}
-	for _, leg := range reporter.OpenLegs() {
+	for _, leg := range s.allOpenLegs() {
 		row := map[string]interface{}{
 			"symbol":      leg.Symbol,
 			"underlying":  leg.Underlying,
