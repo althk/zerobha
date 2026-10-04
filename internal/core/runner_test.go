@@ -167,3 +167,52 @@ func TestSingleRunnerModeKeepsLegacyFields(t *testing.T) {
 		t.Errorf("implicit runner = %+v, want the engine's own settings", rs[0])
 	}
 }
+
+// capitalSignal is sized by capital alone: a 100% risk budget against a Rs10
+// stop never binds before purchasing power does, so quantity x price is the
+// capital the engine allotted.
+func capitalSignal(symbol string) *models.Signal {
+	s := equitySignal(symbol, 100, 90)
+	s.RiskPct = decimal.NewFromInt(1)
+	return s
+}
+
+// An 80/20 split on Rs10L: alpha (2 slots) gets Rs8L split in two, beta
+// (10 slots) Rs2L split in ten, and beta's positions do not shrink alpha's
+// next trade - the share is of the whole account, not of what is left free.
+func TestCapitalAllocationSplitsTheAccountByShare(t *testing.T) {
+	a := named("alpha", capitalSignal("AAA"), nil, capitalSignal("CCC"))
+	b := named("beta", nil, capitalSignal("BBB"))
+	e, paper := multiEngine(t, nil, a, b)
+	e.MaxCapitalPerTrade, e.MinCapitalPerTrade = 10000000, 1000
+	e.Runners[0].CapitalPct, e.Runners[0].MaxConcurrent = 80, 2
+	e.Runners[1].CapitalPct, e.Runners[1].MaxConcurrent = 20, 10
+
+	for i := 0; i < 3; i++ {
+		e.Execute(limitBar(i))
+	}
+	for sym, want := range map[string]int{
+		"AAA": 4000, // Rs8L / 2 slots = Rs4L at Rs100
+		"BBB": 200,  // Rs2L / 10 slots = Rs20k
+		"CCC": 4000, // Rs8L - Rs4L in use, over the 1 slot left
+	} {
+		if q := openQty(t, paper, sym); q != want {
+			t.Errorf("%s quantity = %d, want %d", sym, q, want)
+		}
+	}
+}
+
+func TestCapitalShareFreeNeverLendsAnotherStrategysShare(t *testing.T) {
+	e, _ := multiEngine(t, nil, named("alpha"), named("beta"))
+	e.rememberOwner("AAA", "alpha")
+	e.rememberOwner("BBB", "beta")
+	r := &Runner{Strategy: named("beta"), CapitalPct: 20}
+	// Account Rs10L: Rs7L free, Rs1L in alpha's AAA, Rs2L in beta's BBB.
+	positions := []models.Position{
+		{Tradingsymbol: "AAA", NetQuantity: 1000, AveragePrice: decimal.NewFromInt(100), Product: "CNC"},
+		{Tradingsymbol: "BBB", NetQuantity: 2000, AveragePrice: decimal.NewFromInt(100), Product: "CNC"},
+	}
+	if free := e.capitalShareFree(r, decimal.NewFromInt(700000), positions, true); !free.IsZero() {
+		t.Errorf("beta has its whole Rs2L share in BBB, free = %s, want 0", free)
+	}
+}

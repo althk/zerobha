@@ -53,3 +53,30 @@ strategies = `+tc.list+`
 		}
 	}
 }
+
+func TestAllocation(t *testing.T) {
+	load := func(body string) error {
+		_, err := LoadConfig(writeConfig(t, `
+api_key = "k"
+api_secret = "s"
+strategies = ["emacross", "orb"]
+`+body))
+		return err
+	}
+	if err := load("\n[allocation]\nemacross = 80\norb = 20\n"); err != nil {
+		t.Errorf("80/20 should load, got %v", err)
+	}
+	if err := load(""); err != nil {
+		t.Errorf("no allocation should load, got %v", err)
+	}
+	for _, tc := range []struct{ body, want string }{
+		{"\n[allocation]\nemacross = 80\n", `no share for running strategy "orb"`},
+		{"\n[allocation]\nemacross = 80\norb = 30\n", "more than the account"},
+		{"\n[allocation]\nemacross = 80\norb = 20\ndonchian = 1\n", "not a running strategy"},
+		{"\n[allocation]\nemacross = 100\norb = 0\n", "want a percent"},
+	} {
+		if err := load(tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: err = %v, want %q", tc.body, err, tc.want)
+		}
+	}
+}

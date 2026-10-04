@@ -218,6 +218,9 @@ func main() {
 		}
 	}
 	fmt.Printf("Subscribing %d instruments for %d strategies.\n", len(tokensToSubscribe), len(runners))
+	if len(runners) > 1 && len(cfg.Allocation) == 0 {
+		log.Println("WARNING: several strategies and no [allocation]: each sizes against the whole balance split across every free slot, so each trades smaller than it would alone")
+	}
 
 	// Journal
 	j, err := journal.NewJournal(filepath.Join(cfg.Paths.LogDir, fmt.Sprintf("journal_%s.csv", today.Format("2006-01-02"))))

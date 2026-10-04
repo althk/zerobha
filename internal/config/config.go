@@ -505,17 +505,21 @@ type Config struct {
 	//
 	// Like api_key/api_secret this is a bare key: it MUST appear above the
 	// first [section] header or TOML silently assigns it to that section.
-	UpstoxAccessToken string         `toml:"upstox_access_token"`
-	UptrendOnly       *bool          `toml:"uptrend_only"`
-	Risk              RiskConfig     `toml:"risk"`
-	Engine            EngineConfig   `toml:"engine"`
-	ORB               ORBConfig      `toml:"orb"`
-	DailyRev          DailyRevConfig `toml:"dailyrev"`
-	GapFade           GapFadeConfig  `toml:"gapfade"`
-	Donchian          DonchianConfig `toml:"donchian"`
-	SRLevels          SRLevelsConfig `toml:"srlevels"`
-	EMACross          EMACrossConfig `toml:"emacross"`
-	Upstox            UpstoxConfig   `toml:"upstox"`
+	UpstoxAccessToken string     `toml:"upstox_access_token"`
+	UptrendOnly       *bool      `toml:"uptrend_only"`
+	Risk              RiskConfig `toml:"risk"`
+	// Allocation gives each running strategy a share of the account, in
+	// percent, keyed by strategy name: [allocation] emacross = 80. Empty means
+	// no split - every strategy draws on the whole balance.
+	Allocation map[string]float64 `toml:"allocation"`
+	Engine     EngineConfig       `toml:"engine"`
+	ORB        ORBConfig          `toml:"orb"`
+	DailyRev   DailyRevConfig     `toml:"dailyrev"`
+	GapFade    GapFadeConfig      `toml:"gapfade"`
+	Donchian   DonchianConfig     `toml:"donchian"`
+	SRLevels   SRLevelsConfig     `toml:"srlevels"`
+	EMACross   EMACrossConfig     `toml:"emacross"`
+	Upstox     UpstoxConfig       `toml:"upstox"`
 }
 
 // ActiveStrategies lists the strategies to run, in priority order:
@@ -1047,6 +1051,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err := validateStrategies(config.Strategies); err != nil {
 		return nil, err
 	}
+	if err := validateAllocation(config.Allocation, config.ActiveStrategies()); err != nil {
+		return nil, err
+	}
 
 	// Risk defaults
 	riskD := DefaultRiskConfig()
@@ -1526,6 +1533,37 @@ func validateStrategies(names []string) error {
 			return fmt.Errorf("strategies: %q listed twice", n)
 		}
 		seen[n] = true
+	}
+	return nil
+}
+
+// validateAllocation checks the [allocation] table against the strategies
+// that will run. Once any share is set, every running strategy needs one: a
+// strategy without a share would size against the whole balance and spend
+// the others' capital. Shares must be positive and add up to 100 at most.
+func validateAllocation(alloc map[string]float64, active []string) error {
+	if len(alloc) == 0 {
+		return nil
+	}
+	running := map[string]bool{}
+	for _, n := range active {
+		running[n] = true
+		if _, ok := alloc[n]; !ok {
+			return fmt.Errorf("allocation: no share for running strategy %q", n)
+		}
+	}
+	total := 0.0
+	for n, pct := range alloc {
+		if !running[n] {
+			return fmt.Errorf("allocation: %q is not a running strategy", n)
+		}
+		if pct <= 0 || pct > 100 {
+			return fmt.Errorf("allocation: %s = %g, want a percent in (0, 100]", n, pct)
+		}
+		total += pct
+	}
+	if total > 100.0001 {
+		return fmt.Errorf("allocation: shares add up to %g%%, more than the account", total)
 	}
 	return nil
 }

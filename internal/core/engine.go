@@ -451,8 +451,32 @@ func (e *Engine) executeFor(r *Runner, candle models.Candle, shared bool) {
 	if r.MaxCapitalPerTrade > 0 {
 		maxCapital = r.MaxCapitalPerTrade
 	}
-	capital := decimal.Max(balance.Div(remainingSlots), decimal.NewFromInt(e.MinCapitalPerTrade))
+	// Without an allocation every strategy draws on the whole balance, split
+	// across the account's free slots. With one, a strategy draws only on
+	// what is left of its own share, split across its own free slots.
+	pool, slots := balance, remainingSlots
+	if r.CapitalPct > 0 {
+		free := e.capitalShareFree(r, balance, openPositions, shared)
+		if !free.IsPositive() {
+			log.Printf("Skipping signal for %s: %s's %.0f%% capital share is fully in use", signal.Symbol, r.Name(), r.CapitalPct)
+			outcome, outcomeReason = db.SignalNoCapital, r.Name()+"'s capital share is in use"
+			return
+		}
+		pool = decimal.Min(free, balance)
+		if r.MaxConcurrent > 0 {
+			own := ownCount
+			if !shared {
+				own = openCount
+			}
+			slots = decimal.NewFromInt(max(int64(r.MaxConcurrent)-own, 1))
+		}
+	}
+	capital := decimal.Max(pool.Div(slots), decimal.NewFromInt(e.MinCapitalPerTrade))
 	capital = decimal.Min(capital, decimal.NewFromInt(maxCapital))
+	if r.CapitalPct > 0 {
+		// The floor above must not reach into another strategy's share.
+		capital = decimal.Min(capital, pool)
+	}
 
 	leverage := decimal.NewFromInt(1)
 	if signal.ProductType == "MIS" {

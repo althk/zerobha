@@ -4,6 +4,8 @@ import (
 	"log"
 
 	"zerobha/internal/models"
+
+	"github.com/shopspring/decimal"
 )
 
 // Runner is one strategy trading inside the engine, with the entry settings
@@ -27,6 +29,10 @@ type Runner struct {
 	// MaxConcurrent caps this runner's own open positions when several
 	// runners share the account; the engine's MaxConcurrent caps them all.
 	MaxConcurrent int
+	// CapitalPct is this runner's share of the account, in percent. Zero
+	// means no share: it sizes against the whole balance. See
+	// capitalShareFree.
+	CapitalPct float64
 }
 
 // Name identifies the runner, and is the owner tag on its orders.
@@ -130,4 +136,35 @@ func (e *Engine) underlyingHeldByOther(underlying, self string, positions []mode
 		}
 	}
 	return ""
+}
+
+// capitalShareFree is how much of its share a runner may still deploy:
+//
+//	(free balance + capital tied up in every open position) x share
+//	  - capital tied up in the runner's own open positions
+//
+// The account value is rebuilt from the balance plus open positions because
+// the balance alone shrinks as positions open, which would shrink every
+// strategy's share whenever any one of them traded. Capital tied up in a
+// position is what it blocks: quantity x average price over the MIS leverage
+// the engine sized it with (1 for an option bought outright).
+func (e *Engine) capitalShareFree(r *Runner, balance decimal.Decimal, positions []models.Position, shared bool) decimal.Decimal {
+	all, own := decimal.Zero, decimal.Zero
+	for _, p := range positions {
+		if p.NetQuantity == 0 {
+			continue
+		}
+		used := decimal.NewFromInt(int64(p.NetQuantity)).Abs().Mul(p.AveragePrice)
+		if p.Product == "MIS" {
+			if lev, ok := e.LeverageMap[p.Tradingsymbol]; ok && lev > 0 {
+				used = used.Div(decimal.NewFromFloat(lev))
+			}
+		}
+		all = all.Add(used)
+		if !shared || e.ownerOf(p.Tradingsymbol) == r.Name() {
+			own = own.Add(used)
+		}
+	}
+	share := balance.Add(all).Mul(decimal.NewFromFloat(r.CapitalPct / 100))
+	return share.Sub(own)
 }

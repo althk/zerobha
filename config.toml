@@ -69,6 +69,16 @@ max_loss_per_stock_per_day = 0
 max_monthly_loss     = 0
 max_trades_per_stock = 0      # 0 = disabled; ORB's one_trade_per_day already caps per-symbol entries
 
+# [allocation]
+# With several strategies, each one's share of the account in percent. Once
+# set it must cover every running strategy and total 100 or less. A strategy
+# sizes from what is left of its own share (account = free balance + capital
+# in open positions), split across its own max_concurrent slots, so one
+# strategy's positions never shrink another's trades. Without it, every
+# strategy sizes against the whole balance split across all free slots.
+# emacross = 80
+# orb      = 20
+
 [engine]
 min_balance          = 3000   # INR; skip all signals when available balance is below this
 min_capital_per_trade = 30000 # INR floor allocated per open slot

@@ -177,6 +177,10 @@ func buildRunner(name string, d strategyDeps) (*liveRunner, error) {
 		return nil, fmt.Errorf("strategy %q is not supported live", name)
 	}
 
+	r.CapitalPct = cfg.Allocation[name]
+	if r.CapitalPct > 0 {
+		log.Printf("%s: %.0f%% of the account, split across its %d slots", r.Name(), r.CapitalPct, r.MaxConcurrent)
+	}
 	if r.MaxCapitalPerTrade > 0 {
 		log.Printf("%s: max capital per trade Rs%d (overrides [engine] Rs%d)",
 			r.Name(), r.MaxCapitalPerTrade, int64(cfg.Engine.MaxCapitalPerTrade))
