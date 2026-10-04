@@ -353,6 +353,51 @@ func (s *Store) GetTradeHistory(since time.Time, paper bool) ([]models.Trade, er
 	return trades, rows.Err()
 }
 
+// RealisedPnL sums the PnL of trades exited in [from, to), in one execution
+// mode. The risk manager's monthly limit reads the month's earlier sessions
+// from here, since the broker only knows today.
+//
+// Times are stored as text, so SQL compares them as strings and a row saved
+// in another zone would sort wrongly. The query therefore over-fetches by a
+// day either side and the exact cut is made here on parsed times.
+func (s *Store) RealisedPnL(from, to time.Time, paper bool) (decimal.Decimal, error) {
+	rows, err := s.db.Query(`SELECT exit_time, pnl FROM trades WHERE exit_time >= ? AND exit_time < ? AND is_paper = ?;`,
+		from.Add(-24*time.Hour), to.Add(24*time.Hour), boolToInt(paper))
+	if err != nil {
+		return decimal.Zero, err
+	}
+	defer rows.Close()
+	total := decimal.Zero
+	for rows.Next() {
+		var exit time.Time
+		var pnl float64
+		if err := rows.Scan(&exit, &pnl); err != nil {
+			return decimal.Zero, err
+		}
+		if !exit.Before(from) && exit.Before(to) {
+			total = total.Add(decimal.NewFromFloat(pnl))
+		}
+	}
+	return total, rows.Err()
+}
+
+// LatestOrderMetadata returns the metadata of the latest order for symbol that
+// carried any, or nil. Kite's position book does not say which index an option
+// contract expresses, nor which strategy opened it; the order journal does
+// (the Underlying and Owner keys).
+func (s *Store) LatestOrderMetadata(symbol string) (map[string]string, error) {
+	var raw sql.NullString
+	err := s.db.QueryRow(`SELECT metadata FROM orders WHERE symbol = ? AND metadata IS NOT NULL AND metadata != '' ORDER BY timestamp DESC LIMIT 1;`,
+		symbol).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decodeMeta(raw.String), nil
+}
+
 // --- Equity Snapshot Methods ---
 
 // EquityPoint is one periodic sample of account state used for the

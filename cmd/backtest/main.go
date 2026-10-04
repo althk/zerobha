@@ -350,6 +350,10 @@ func main() {
 			maxLoss = initialCapital.Mul(decimal.NewFromFloat(srCfg.MaxDailyLossPct / 100))
 		}
 		riskMgr := risk.NewManager(nil, maxLoss, maxTrades, maxPerStock)
+		if appCfg != nil {
+			// The monthly limit needs the trade journal and is live/paper only.
+			riskMgr.MaxLossPerStockPerDay = decimal.NewFromInt(int64(appCfg.Risk.MaxLossPerStockPerDay))
+		}
 
 		orbCfg := config.DefaultORBConfig()
 		if appCfg != nil {

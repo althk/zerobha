@@ -48,6 +48,17 @@ log_dir = "logs"
 # full stops. 0 = no limit. Inert before 2026-09-12 (see CLAUDE.md).
 max_daily_loss       = 60000
 max_trades_per_day   = 10     # entry orders placed across all symbols
+# INR, combined across every strategy. One underlying (a stock, or an index
+# for option legs) may not have more than this at stake in a day: its loss so
+# far + the risk of its open positions + the new trade's risk (entry to stop x
+# quantity; option legs use their approximate premium stop, and a signal with
+# no stop risks its whole price). A new trade is cut down
+# to the budget left, or refused. 0 = no limit.
+max_loss_per_stock_per_day = 0
+# INR. No new entries once the month's PnL (earlier sessions' realised trades
+# from the journal + today's as the broker reports it) is below this. Paper
+# and live are counted separately. 0 = no limit.
+max_monthly_loss     = 0
 max_trades_per_stock = 0      # 0 = disabled; ORB's one_trade_per_day already caps per-symbol entries
 
 [engine]

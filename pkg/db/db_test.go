@@ -278,3 +278,54 @@ func TestTradeAndOrderMetadataRoundTrip(t *testing.T) {
 		t.Errorf("round trip lost fields: %+v", g)
 	}
 }
+
+// The monthly loss limit reads earlier sessions from here. Times are stored
+// as text, so a row saved in another zone must still land on the right side
+// of the cut, and paper and live rows must never mix.
+func TestRealisedPnLWindowAcrossZones(t *testing.T) {
+	store, err := NewStore(t.TempDir() + "/month.db")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ist := time.FixedZone("IST", 5*3600+1800)
+	save := func(key string, exit time.Time, pnl int64, paper bool) {
+		tr := models.Trade{Symbol: "SBIN", PnL: decimal.NewFromInt(pnl), EntryTime: exit.Add(-time.Hour), ExitTime: exit, IsPaper: paper}
+		if err := store.SaveTrade(key, tr); err != nil {
+			t.Fatalf("SaveTrade: %v", err)
+		}
+	}
+	save("a", time.Date(2026, 9, 30, 15, 0, 0, 0, ist), -9999, false)     // last month
+	save("b", time.Date(2026, 10, 1, 10, 0, 0, 0, ist), -3000, false)     // in
+	save("c", time.Date(2026, 10, 1, 4, 0, 0, 0, time.UTC), -2000, false) // 09:30 IST, in, saved as UTC
+	save("d", time.Date(2026, 9, 30, 20, 0, 0, 0, time.UTC), -500, false) // 01:30 IST on the 1st, in
+	save("e", time.Date(2026, 10, 2, 11, 0, 0, 0, ist), -7777, false)     // today: excluded
+	save("f", time.Date(2026, 10, 1, 11, 0, 0, 0, ist), -4444, true)      // paper
+
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, ist)
+	to := time.Date(2026, 10, 2, 0, 0, 0, 0, ist)
+	got, err := store.RealisedPnL(from, to, false)
+	if err != nil || !got.Equal(decimal.NewFromInt(-5500)) {
+		t.Errorf("live month-to-yesterday = %s (%v), want -5500", got, err)
+	}
+	if got, _ := store.RealisedPnL(from, to, true); !got.Equal(decimal.NewFromInt(-4444)) {
+		t.Errorf("paper = %s, want -4444", got)
+	}
+}
+
+func TestLatestOrderMetadata(t *testing.T) {
+	store, err := NewStore(t.TempDir() + "/und.db")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	_ = store.SaveOrder(models.Order{ID: "1", Symbol: "NIFTY26OCT24000CE",
+		Metadata: map[string]string{"Strategy": "emacross", "Underlying": "NIFTY 50", "Owner": "emacross"}}, "SUBMITTED")
+	if m, err := store.LatestOrderMetadata("NIFTY26OCT24000CE"); err != nil || m["Underlying"] != "NIFTY 50" || m["Owner"] != "emacross" {
+		t.Errorf("metadata = %v (%v), want Underlying NIFTY 50, Owner emacross", m, err)
+	}
+	if m, err := store.LatestOrderMetadata("SBIN"); err != nil || m != nil {
+		t.Errorf("unknown symbol = %v (%v), want nil", m, err)
+	}
+}

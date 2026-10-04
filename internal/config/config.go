@@ -371,6 +371,15 @@ type RiskConfig struct {
 	MaxDailyLoss      int `toml:"max_daily_loss"`       // INR, default 5000
 	MaxTradesPerDay   int `toml:"max_trades_per_day"`   // default 10
 	MaxTradesPerStock int `toml:"max_trades_per_stock"` // default 0 (disabled); use one_trade_per_day for ORB
+	// MaxLossPerStockPerDay (INR) caps one underlying's day across every
+	// strategy: its loss so far + risk still open on it + the new trade's
+	// risk. Option legs count against their index. 0 = no limit (the default,
+	// so no default substitution applies).
+	MaxLossPerStockPerDay int `toml:"max_loss_per_stock_per_day"`
+	// MaxMonthlyLoss (INR) stops new entries once the month's PnL (earlier
+	// sessions' realised trades + today) is below -max_monthly_loss.
+	// 0 = no limit (the default).
+	MaxMonthlyLoss int `toml:"max_monthly_loss"`
 }
 
 // EngineConfig holds capital-sizing and trade-gating parameters for the engine.

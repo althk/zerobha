@@ -206,6 +206,10 @@ func main() {
 		cfg.Risk.MaxTradesPerDay,
 		cfg.Risk.MaxTradesPerStock,
 	)
+	riskMgr.MaxLossPerStockPerDay = decimal.NewFromInt(int64(cfg.Risk.MaxLossPerStockPerDay))
+	riskMgr.MaxMonthlyLoss = decimal.NewFromInt(int64(cfg.Risk.MaxMonthlyLoss))
+	log.Printf("Risk limits (all strategies combined): per stock per day Rs%d, monthly Rs%d (0 = off)",
+		cfg.Risk.MaxLossPerStockPerDay, cfg.Risk.MaxMonthlyLoss)
 
 	// Strategy (The Brain). ORB and gapfade are the intraday (MIS) strategies
 	// wired for live trading; dailyrev is backtest-only research (CNC,

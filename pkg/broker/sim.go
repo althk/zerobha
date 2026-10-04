@@ -24,6 +24,9 @@ type SimBroker struct {
 	// backtest as it does live.
 	sessionDate string
 	sessionPnL  decimal.Decimal
+	// sessionBySymbol splits sessionPnL by traded symbol, for the risk
+	// manager's per-stock daily limit.
+	sessionBySymbol map[string]decimal.Decimal
 }
 
 // bookTradeLocked appends a completed trade and rolls the session's realised
@@ -32,8 +35,25 @@ func (s *SimBroker) bookTradeLocked(t models.Trade) {
 	s.Trades = append(s.Trades, t)
 	if day := t.ExitTime.Format("2006-01-02"); day != s.sessionDate {
 		s.sessionDate, s.sessionPnL = day, decimal.Zero
+		s.sessionBySymbol = nil
 	}
 	s.sessionPnL = s.sessionPnL.Add(t.PnL)
+	if s.sessionBySymbol == nil {
+		s.sessionBySymbol = make(map[string]decimal.Decimal)
+	}
+	s.sessionBySymbol[t.Symbol] = s.sessionBySymbol[t.Symbol].Add(t.PnL)
+}
+
+// DailyPnLBySymbol implements core.SymbolPnLReporter: the current session's
+// realised PnL per traded symbol, on the same terms as DailyPnL.
+func (s *SimBroker) DailyPnLBySymbol() (map[string]decimal.Decimal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]decimal.Decimal, len(s.sessionBySymbol))
+	for sym, pnl := range s.sessionBySymbol {
+		out[sym] = pnl
+	}
+	return out, nil
 }
 
 // DailyPnL implements core.DailyPnLReporter with the current session's

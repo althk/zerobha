@@ -54,6 +54,14 @@ type Engine struct {
 	// broker, keyed by symbol. The in-memory ratchet stays exact; only the
 	// network call is rate-limited, and a breakeven move bypasses it.
 	lastStopPush map[string]time.Time
+
+	// underlyings maps a traded symbol (an option contract) to the
+	// underlying its risk counts against; see underlyingOf.
+	underlyingMu sync.Mutex
+	underlyings  map[string]string
+	// monthBase caches the month's realised PnL before monthBaseDate.
+	monthBase     decimal.Decimal
+	monthBaseDate string
 }
 
 // trailPushInterval is the minimum gap between two broker-side stop
@@ -80,6 +88,7 @@ func NewEngine(s Strategy, b Broker, r *risk.Manager, j *journal.Journal, im *br
 		niftyEMA200:        indicators.NewEMA(200),
 		openOrders:         make(map[string]*models.Order),
 		lastStopPush:       make(map[string]time.Time),
+		underlyings:        make(map[string]string),
 	}
 	e.loadLeverageMap()
 	return e
@@ -334,6 +343,13 @@ func (e *Engine) Execute(candle models.Candle) {
 	// in ClosePosition, never through this path.
 	if pnl, err := e.dayPnL(); err == nil {
 		e.Risk.SetDayPnL(pnl)
+		if e.Risk.MaxMonthlyLoss.IsPositive() {
+			if month, err := e.monthPnL(pnl, candle.EndTime); err == nil {
+				e.Risk.SetMonthPnL(month)
+			} else {
+				log.Printf("WARNING: could not read month PnL for the monthly loss limit: %v", err)
+			}
+		}
 	} else {
 		log.Printf("WARNING: could not read day PnL for the loss limit: %v", err)
 	}
@@ -398,6 +414,40 @@ func (e *Engine) Execute(candle models.Candle) {
 
 	qty := CalculateQuantity(capital, signal, leverage)
 
+	// Per-stock daily limit, across every strategy: shrink the position to
+	// what is left of the underlying's budget, or refuse it.
+	underlying := signalUnderlying(signal)
+	if e.Risk.MaxLossPerStockPerDay.IsPositive() && qty.IsPositive() {
+		stockPnL, err := e.underlyingDayPnL(underlying, openPositions)
+		if err != nil {
+			log.Printf("Skipping signal for %s: failed to read %s's day PnL: %v", signal.Symbol, underlying, err)
+			outcome, outcomeReason = db.SignalBrokerError, "stock pnl: "+err.Error()
+			return
+		}
+		budget, _, err := e.Risk.StockRiskBudget(underlying, stockPnL, e.isPositionOpen)
+		if err != nil {
+			log.Printf("BLOCKED: %s | Signal: %v", err, signal.Type)
+			if e.Journal != nil {
+				e.Journal.LogRiskBlock(signal, err.Error())
+			}
+			outcome, outcomeReason = db.SignalRiskBlocked, err.Error()
+			return
+		}
+		if capped := capQuantityToRisk(qty, signal, budget); capped.LessThan(qty) {
+			log.Printf("Per-stock limit: %s quantity %s -> %s (Rs %s of %s's budget left)",
+				signal.Symbol, qty.String(), capped.String(), budget.StringFixed(0), underlying)
+			if capped.IsZero() {
+				reason := fmt.Sprintf("risk rejection: Rs %s left of %s's daily risk budget affords no quantity", budget.StringFixed(0), underlying)
+				if e.Journal != nil {
+					e.Journal.LogRiskBlock(signal, reason)
+				}
+				outcome, outcomeReason = db.SignalRiskBlocked, reason
+				return
+			}
+			qty = capped
+		}
+	}
+
 	if qty.IsZero() {
 		// Silent in the log until now, and the reason SENSEX once produced
 		// exactly zero trades against a stock-sized capital cap.
@@ -448,9 +498,10 @@ func (e *Engine) Execute(candle models.Candle) {
 			_ = e.DB.SaveOrder(order, "SUBMITTED")
 		}
 		outcome, outcomeReason = db.SignalPlaced, order.ID
-		// Update Risk Manager stats
-		// TODO: Handle actual pnl
-		e.Risk.UpdateTradeLog(order.Symbol)
+		// Update Risk Manager stats: count the entry and remember the risk
+		// it put on its underlying for the per-stock limit.
+		e.rememberUnderlying(order.Symbol, underlying)
+		e.Risk.RecordEntry(order.Symbol, underlying, riskPerUnit(signal).Mul(order.Quantity))
 
 		// Track the order for the tick-driven breakeven-trail monitor when
 		// the strategy attached a partial-exit level and the broker placed a
