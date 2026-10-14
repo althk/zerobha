@@ -124,8 +124,11 @@ func (z *ZerodhaAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 		Quantity:        int(order.Quantity.IntPart()),
 		Product:         product,
 		OrderType:       kiteconnect.OrderTypeMarket,
-		Validity:        kiteconnect.ValidityDay,
-		Tag:             "ZEROBHA_BOT", // Helps identify bot orders in Kite Console
+		// Kite rejects API market orders without market protection; auto
+		// lets the exchange cap the fill at its own price band.
+		MarketProtection: kiteconnect.MarketProtectionAuto,
+		Validity:         kiteconnect.ValidityDay,
+		Tag:              "ZEROBHA_BOT", // Helps identify bot orders in Kite Console
 	})
 
 	if err != nil {
