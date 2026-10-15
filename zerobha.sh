@@ -37,7 +37,7 @@ SESSION="zerobha"
 BINARY="bin/trader-linux"
 # Files the trader opens by relative path: the config, the MIS leverage map,
 # the strategy watchlist and the Upstox gate's isin_csv.
-SHIP_FILES=(config.local.toml zerodha-mis-margins.csv indices.csv ind_nifty500list.csv)
+SHIP_FILES=(config.local.toml zerodha-mis-margins.csv indices.csv sensex.csv ind_nifty500list.csv)
 
 SSH_OPTS_RAW="${SSH_OPTS-"-o ClearAllForwardings=yes"}"
 SSH_OPTS=()
