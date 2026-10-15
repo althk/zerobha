@@ -72,12 +72,18 @@ func main() {
 	// Config Path
 	configPath := flag.String("config", "config.toml", "Path to config file")
 	paperFlag := flag.Bool("paper", false, "Enable paper trading mode with virtual execution and live market feeds")
+	showConfig := flag.Bool("show-config", false, "Print the effective config (strategies, capital, limits) and exit")
 	flag.Parse()
 
 	// Load Config
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	if *showConfig {
+		printConfig(os.Stdout, cfg, *configPath, cfg.PaperTrading || *paperFlag)
+		return
 	}
 
 	// Fail on a strategy the trader cannot run before the interactive login.

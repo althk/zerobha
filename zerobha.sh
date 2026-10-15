@@ -13,6 +13,8 @@
 #   logs          Follow today's log (Kite login URL appears here)
 #   attach        Attach to tmux (detach with Ctrl-b d, NOT Ctrl-c)
 #   status        VM time, trader session, data dir, backup cron
+#   config        Print the effective config (strategies, capital, limits);
+#                 on the VM with a host, else locally from config.local.toml
 #   backup        Run the backup (DB + logs to Google Drive) now
 #
 # On the VM, $REMOTE_DIR (relative to home, or absolute) holds trader,
@@ -140,7 +142,7 @@ EOF
   ok "Setup done. Next: ./zerobha.sh rclone-setup $REMOTE_HOST (once), then ./zerobha.sh deploy $REMOTE_HOST"
 }
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "$COMMAND" in
   build)          cmd_build ;;
@@ -152,6 +154,9 @@ case "$COMMAND" in
   logs)           need_host; rssh_tty "tail -n 100 -F \"$REMOTE_DIR/logs/zerobha_\$(date +%F).log\"" ;;
   attach)         need_host; rssh_tty "tmux attach -t $SESSION" ;;
   status)         cmd_status ;;
+  config)
+    if [[ -n "$REMOTE_HOST" ]]; then rssh "cd '$REMOTE_DIR' && ./trader -config config.local.toml -show-config"
+    else go run ./cmd/trader -config config.local.toml -show-config; fi ;;
   setup)          cmd_setup ;;
   rclone-setup)   need_host; rssh_tty "rclone config" ;;
   backup)         need_host; rssh "$REMOTE_DIR/backup.sh" ;;
