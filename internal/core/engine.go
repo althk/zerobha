@@ -661,6 +661,9 @@ func (e *Engine) applyExitAdvice(r *Runner, candle models.Candle, shared bool) {
 	}
 
 	// Live path: no dedicated close, so flatten with a counter market order.
+	// The position's resting GTT must go first: once the position is flat,
+	// a GTT left behind would sell what is no longer held and open a short.
+	e.cancelGTTsFor(advice.Symbol)
 	positions, err := e.Broker.GetPositions()
 	if err != nil {
 		log.Printf("ERROR: Cannot act on exit advice for %s: %v", advice.Symbol, err)
@@ -685,6 +688,7 @@ func (e *Engine) applyExitAdvice(r *Runner, candle models.Candle, shared bool) {
 			Side:        side,
 			Type:        "MARKET",
 			ProductType: p.Product,
+			Exchange:    p.Exchange, // empty routes to NSE; an option is NFO/BFO
 			Quantity:    qty,
 			Metadata:    map[string]string{"Reason": advice.Reason},
 		}
@@ -704,6 +708,26 @@ func (e *Engine) applyExitAdvice(r *Runner, candle models.Candle, shared bool) {
 			_ = e.DB.SaveOrder(placed, "SUBMITTED")
 		}
 		e.forgetTrackedOrder(advice.Symbol)
+	}
+}
+
+// cancelGTTsFor cancels the active GTTs resting on symbol. A failure is
+// logged, not fatal: closing the position matters more than the GTT.
+func (e *Engine) cancelGTTsFor(symbol string) {
+	gtts, err := e.Broker.GetGTTs()
+	if err != nil {
+		log.Printf("ERROR: cannot list GTTs to cancel for %s before closing it: %v", symbol, err)
+		return
+	}
+	for _, g := range gtts {
+		if g.Tradingsymbol != symbol || (g.Status != "" && g.Status != "active") {
+			continue
+		}
+		if err := e.Broker.CancelGTT(g.ID); err != nil {
+			log.Printf("ERROR: failed to cancel GTT %d on %s before closing it: %v - cancel it by hand", g.ID, symbol, err)
+			continue
+		}
+		log.Printf("Cancelled GTT %d on %s before closing it", g.ID, symbol)
 	}
 }
 
@@ -906,6 +930,7 @@ func (e *Engine) squareOff(reason string, include func(symbol string) bool) {
 			Side:        side,
 			Type:        "MARKET",
 			ProductType: "MIS",
+			Exchange:    p.Exchange, // empty routes to NSE; an option is NFO/BFO
 			Quantity:    qty,
 			Metadata:    map[string]string{"Reason": reason},
 		}

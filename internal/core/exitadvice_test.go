@@ -100,6 +100,46 @@ func TestExitAdviceFallsBackToCounterOrder(t *testing.T) {
 	}
 }
 
+// An option closed on an index signal lives on NFO/BFO. A counter order with
+// no exchange routes to NSE, which rejects it and leaves the position open.
+func TestExitAdviceCounterOrderKeepsThePositionsExchange(t *testing.T) {
+	b := &mockBroker{Positions: []models.Position{
+		{Tradingsymbol: "SENSEX26OCT82000CE", Exchange: "BFO", NetQuantity: 20, Product: "MIS"},
+	}}
+	s := &advisingStrategy{advice: &ExitAdvice{Symbol: "SENSEX26OCT82000CE", ForSide: models.BuySignal, Reason: "index stop"}}
+	advisoryEngine(t, b, s).Execute(exitCandle())
+
+	if len(b.PlacedOrders) != 1 {
+		t.Fatalf("placed %d orders, want 1", len(b.PlacedOrders))
+	}
+	if got := b.PlacedOrders[0].Exchange; got != "BFO" {
+		t.Errorf("counter order exchange = %q, want BFO", got)
+	}
+}
+
+// A GTT left resting after the strategy closes the position would later sell
+// a contract no longer held, opening a short. Only that symbol's active GTTs
+// go, and before the close.
+func TestExitAdviceCancelsTheSymbolsGTTBeforeClosing(t *testing.T) {
+	b := &mockBroker{
+		Positions: []models.Position{{Tradingsymbol: "OPT", Exchange: "BFO", NetQuantity: 20, Product: "MIS"}},
+		GTTs: []models.GTT{
+			{ID: 1, Tradingsymbol: "OPT", Status: "active"},
+			{ID: 2, Tradingsymbol: "OTHER", Status: "active"},
+			{ID: 3, Tradingsymbol: "OPT", Status: "triggered"},
+		},
+	}
+	s := &advisingStrategy{advice: &ExitAdvice{Symbol: "OPT", ForSide: models.BuySignal, Reason: "index stop"}}
+	advisoryEngine(t, b, s).Execute(exitCandle())
+
+	if len(b.CancelledGTTs) != 1 || b.CancelledGTTs[0] != 1 {
+		t.Errorf("cancelled GTTs %v, want [1]", b.CancelledGTTs)
+	}
+	if len(b.PlacedOrders) != 1 {
+		t.Errorf("placed %d orders, want 1", len(b.PlacedOrders))
+	}
+}
+
 // Advice names the side it applies to. A strategy that thinks it is long must
 // not close a short that happens to be open in the same symbol.
 func TestExitAdviceIgnoresOppositeSidePosition(t *testing.T) {

@@ -137,3 +137,19 @@ func TestSquareOff(t *testing.T) {
 		t.Error("HDFC closing order not found")
 	}
 }
+
+// The square-off's close orders route to the position's exchange: an option
+// close sent to NSE is rejected and the position survives the square-off.
+func TestSquareOffKeepsThePositionsExchange(t *testing.T) {
+	broker := &mockBroker{Positions: []models.Position{
+		{Tradingsymbol: "SENSEX26OCT82000CE", Exchange: "BFO", Product: "MIS", NetQuantity: 20},
+	}}
+	NewEngine(&mockStrategy{}, broker, nil, nil, nil, nil).SquareOff()
+
+	if len(broker.PlacedOrders) != 1 {
+		t.Fatalf("placed %d orders, want 1", len(broker.PlacedOrders))
+	}
+	if got := broker.PlacedOrders[0].Exchange; got != "BFO" {
+		t.Errorf("square-off order exchange = %q, want BFO", got)
+	}
+}
