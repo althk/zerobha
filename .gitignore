@@ -107,7 +107,7 @@ go.work.sum
 .idea/
 
 # project directories that are not part of the codebase
-test/data/**
+test/data*/**
 logs/
 *.local*
 .old*
