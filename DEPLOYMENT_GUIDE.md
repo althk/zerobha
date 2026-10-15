@@ -39,8 +39,7 @@ closes with it. A crash is not restarted — check `status` and `start` again.
    `[section]` header; `db_path = "data/zerobha.db"`, `log_dir = "logs"`).
 2. Register `http://localhost:9880/auth/kite/callback` as the redirect URL in
    the Kite developer console.
-3. Prepare the VM — timezone, packages (incl. tmux), dirs, backup cron, and
-   removal of the old Docker container / systemd units if they exist:
+3. Prepare the VM — timezone, packages (incl. tmux), dirs and backup cron:
 
    ```bash
    ./zerobha.sh setup user@vm
