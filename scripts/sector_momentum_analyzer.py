@@ -10,7 +10,10 @@ Weightage: 1W (30%), 1M (40%), 3M (30%)
 
 import argparse
 import pandas as pd
-import yfinance as yf
+import json
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, time as dt_time
 
 # Sector index to Nifty 500 industry mapping.
@@ -47,27 +50,38 @@ SECTOR_INDUSTRY_MAP = {
     ],
 }
 
-# Default NSE sectoral indices (Yahoo Finance tickers)
+# Default NSE sectoral indices (Upstox instrument keys). Yahoo stopped serving
+# history for most of these in 2026-10 (one bar per ticker), so the data now
+# comes from Upstox, which serves index candles anonymously.
 NSE_SECTORS = {
-    "Nifty Bank": "^NSEBANK",
-    "Nifty IT": "^CNXIT",
-    "Nifty FMCG": "^CNXFMCG",
-    "Nifty Pharma": "^CNXPHARMA",
-    "Nifty Auto": "^CNXAUTO",
-    "Nifty Consumption": "^CNXCONSUM",
-    "Nifty PSE": "^CNXPSE",
-    "Nifty Service Sector": "^CNXSERVICE",
-    "Nifty Metal": "^CNXMETAL",
-    "Nifty Realty": "^CNXREALTY",
-    "Nifty Media": "^CNXMEDIA",
-    "Nifty Energy": "^CNXENERGY",
-    "Nifty Infra": "^CNXINFRA",
-    "Nifty PSU Bank": "^CNXPSUBANK",
-    "Nifty Private Bank": "NIFTY_PVT_BANK.NS",
-    # ^CNXFIN is stale on Yahoo (sporadic single bars); this symbol has
-    # full daily history
-    "Nifty Financial Services": "NIFTY_FIN_SERVICE.NS",
+    "Nifty Bank": "NSE_INDEX|Nifty Bank",
+    "Nifty IT": "NSE_INDEX|Nifty IT",
+    "Nifty FMCG": "NSE_INDEX|Nifty FMCG",
+    "Nifty Pharma": "NSE_INDEX|Nifty Pharma",
+    "Nifty Auto": "NSE_INDEX|Nifty Auto",
+    "Nifty Consumption": "NSE_INDEX|Nifty Consumption",
+    "Nifty PSE": "NSE_INDEX|Nifty PSE",
+    "Nifty Service Sector": "NSE_INDEX|Nifty Serv Sector",
+    "Nifty Metal": "NSE_INDEX|Nifty Metal",
+    "Nifty Realty": "NSE_INDEX|Nifty Realty",
+    "Nifty Media": "NSE_INDEX|Nifty Media",
+    "Nifty Energy": "NSE_INDEX|Nifty Energy",
+    "Nifty Infra": "NSE_INDEX|Nifty Infra",
+    "Nifty PSU Bank": "NSE_INDEX|Nifty PSU Bank",
+    "Nifty Private Bank": "NSE_INDEX|Nifty Pvt Bank",
+    "Nifty Financial Services": "NSE_INDEX|Nifty Fin Service",
 }
+
+BENCHMARK = "NSE_INDEX|Nifty 50"
+
+# Upstox v3 daily candles; newest bar first, [ts, o, h, l, c, vol, oi]
+UPSTOX_CANDLE_URL = (
+    "https://api.upstox.com/v3/historical-candle/{key}/days/1/{to}/{frm}"
+)
+# Cloudflare refuses Python's default User-Agent (error 1010), and a burst of
+# parallel requests earns a ~15-minute ban (1015), so fetch one at a time.
+UPSTOX_HEADERS = {"Accept": "application/json", "User-Agent": "zerobha-sectors/1.0"}
+UPSTOX_PACE_SEC = 0.3
 
 # Weights for composite score
 WEIGHT_1W = 0.30
@@ -126,14 +140,43 @@ def window_perf(series, days, offset=0):
     return (current / past) - 1
 
 
-def calculate_sector_momentum(sectors, benchmark="^NSEI", as_of_date=None):
+def fetch_daily_closes(keys, start_date, end_date):
+    """
+    Daily closes for Upstox instrument keys over [start_date, end_date], one
+    column per key, indexed by date. A key that fails is left out (and
+    reported) rather than aborting the whole run.
+    """
+    closes = {}
+    for key in keys:
+        url = UPSTOX_CANDLE_URL.format(
+            key=urllib.parse.quote(key), to=end_date, frm=start_date
+        )
+        try:
+            req = urllib.request.Request(url, headers=UPSTOX_HEADERS)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                candles = json.load(resp)["data"]["candles"]
+        except Exception as e:
+            print(f"  Fetch failed for {key}: {e}")
+            continue
+        finally:
+            time.sleep(UPSTOX_PACE_SEC)
+        if candles:
+            closes[key] = pd.Series(
+                {pd.Timestamp(c[0][:10]): float(c[4]) for c in candles}
+            )
+    if not closes:
+        return pd.DataFrame()
+    return pd.DataFrame(closes).sort_index()
+
+
+def calculate_sector_momentum(sectors, benchmark=BENCHMARK, as_of_date=None):
     """
     Calculates Composite Relative Strength Score for NSE sectors.
 
     Uses 1W/1M/3M windows with RRG quadrant classification and
     momentum-of-momentum detection.
     """
-    as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
+    as_of_date = as_of_date or datetime.now()
     weights = {"1W": WEIGHT_1W, "1M": WEIGHT_1M, "3M": WEIGHT_3M}
 
     # Need enough history for 3M + previous-week shift + holiday buffer
@@ -145,12 +188,9 @@ def calculate_sector_momentum(sectors, benchmark="^NSEI", as_of_date=None):
     tickers = [benchmark] + list(sectors.values())
     print(f"Fetching data for {len(tickers)} symbols from {start_date}...")
 
-    try:
-        data = yf.download(tickers, start=start_date, interval="1d", auto_adjust=True)[
-            "Close"
-        ]
-    except Exception as e:
-        print(f"Error fetching data: {e}")
+    data = fetch_daily_closes(tickers, start_date, as_of_date.strftime("%Y-%m-%d"))
+    if data.empty:
+        print("Error fetching data: no candles returned")
         return pd.DataFrame()
 
     # Forward-fill interior gaps (holidays, missed sessions). Do NOT bfill:
@@ -292,8 +332,8 @@ def main():
     parser.add_argument(
         "--benchmark",
         type=str,
-        default="^NSEI",
-        help="Benchmark ticker (default: ^NSEI)",
+        default=BENCHMARK,
+        help=f"Benchmark Upstox instrument key (default: {BENCHMARK})",
     )
     parser.add_argument(
         "--top",

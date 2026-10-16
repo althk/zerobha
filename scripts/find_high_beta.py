@@ -61,6 +61,9 @@ def process_symbol(args):
         close = stock_data['Close']
         if hasattr(close, 'iloc') and len(close.shape) > 1:
             close = close.iloc[:, 0]
+        # Yahoo sometimes lags a day on some symbols and returns the latest
+        # close as NaN, which would blank last_price and rs_1m
+        close = close.dropna()
 
         stock_returns = close.pct_change().dropna()
         beta = calculate_beta(stock_returns, market_returns)
@@ -162,6 +165,7 @@ def main():
     market_close = market_data['Close']
     if hasattr(market_close, 'iloc') and len(market_close.shape) > 1:
         market_close = market_close.iloc[:, 0]
+    market_close = market_close.dropna()
 
     market_returns = market_close.pct_change().dropna()
 
