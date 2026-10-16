@@ -189,7 +189,7 @@ func main() {
 	minDTE := flag.Int("min-dte", 0, "skip trades with fewer than this many days to expiry (2 skips expiry day and the day before)")
 	split := flag.String("split", "", "optional YYYY-MM-DD; reports before/after separately")
 	timeframe := flag.String("timeframe", "1m", "premium candle timeframe: 1m (or 1minute), 5m (or 5minute)")
-	indexBar := flag.String("index-bar", "5m", "bar size the index trade list was backtested on: 1m or 5m; the entry fills at the close of that bar")
+	indexBar := flag.String("index-bar", "5m", "bar size the index trade list was backtested on: 1m, 5m, 10m, 15m, 30m or 60m; the entry fills at the close of that bar")
 	flag.Parse()
 
 	if *tradesPath == "" {
@@ -233,13 +233,22 @@ func main() {
 		intervalStr = "5minute"
 	}
 
-	indexBarDur := 5 * time.Minute
+	var indexBarDur time.Duration
 	switch *indexBar {
-	case "5m", "5minute":
 	case "1m", "1minute":
 		indexBarDur = 1 * time.Minute
+	case "5m", "5minute":
+		indexBarDur = 5 * time.Minute
+	case "10m", "10minute":
+		indexBarDur = 10 * time.Minute
+	case "15m", "15minute":
+		indexBarDur = 15 * time.Minute
+	case "30m", "30minute":
+		indexBarDur = 30 * time.Minute
+	case "60m", "60minute":
+		indexBarDur = 60 * time.Minute
 	default:
-		log.Fatalf("-index-bar %q: want 1m or 5m", *indexBar)
+		log.Fatalf("-index-bar %q: want 1m, 5m, 10m, 15m, 30m or 60m", *indexBar)
 	}
 	if indexBarDur < barDur {
 		log.Fatalf("-index-bar %s is finer than -timeframe %s: a %s index bar cannot be located in %s premium candles", *indexBar, *timeframe, *indexBar, *timeframe)
