@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"zerobha/pkg/indicators"
 
@@ -520,7 +522,19 @@ type Config struct {
 	SRLevels   SRLevelsConfig     `toml:"srlevels"`
 	EMACross   EMACrossConfig     `toml:"emacross"`
 	Upstox     UpstoxConfig       `toml:"upstox"`
+	Telegram   TelegramConfig     `toml:"telegram"`
 }
+
+// TelegramConfig is optional: with either value empty, notifications go to the
+// log only. TELEGRAM_TOKEN / TELEGRAM_CHAT_ID override the file, the same
+// names rsrankbot reads.
+type TelegramConfig struct {
+	Token  string `toml:"token"`
+	ChatID string `toml:"chat_id"`
+}
+
+// Enabled reports whether both the token and the chat id are set.
+func (t TelegramConfig) Enabled() bool { return t.Token != "" && t.ChatID != "" }
 
 // ActiveStrategies lists the strategies to run, in priority order:
 // `strategies` when set, otherwise the single `strategy`.
@@ -1039,6 +1053,13 @@ func LoadConfig(path string) (*Config, error) {
 
 	if config.APIKey == "" || config.APISecret == "" {
 		return nil, fmt.Errorf("api_key and api_secret are required in config file")
+	}
+
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_TOKEN")); v != "" {
+		config.Telegram.Token = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID")); v != "" {
+		config.Telegram.ChatID = v
 	}
 
 	if config.UptrendOnly == nil {

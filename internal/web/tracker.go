@@ -9,6 +9,7 @@ import (
 	"zerobha/internal/models"
 	"zerobha/pkg/costs"
 	"zerobha/pkg/db"
+	"zerobha/pkg/notify"
 	"zerobha/pkg/nseutils"
 
 	"github.com/shopspring/decimal"
@@ -296,8 +297,10 @@ func (s *Server) reconcileTrades() {
 			}
 
 			key := fmt.Sprintf("%s:%d", f.ID, lotIndex)
-			if err := s.engine.DB.SaveTrade(key, trade); err != nil {
+			if isNew, err := s.engine.DB.SaveTradeIfNew(key, trade); err != nil {
 				log.Printf("Tracker: failed to save trade %s: %v", key, err)
+			} else if isNew {
+				notify.Or(s.engine.Notifier).Notify(notify.Info, ExitMessage(trade))
 			}
 
 			lotIndex++

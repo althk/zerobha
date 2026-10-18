@@ -14,6 +14,7 @@ import (
 	"zerobha/pkg/db"
 	indicators "zerobha/pkg/indicators"
 	"zerobha/pkg/journal"
+	"zerobha/pkg/notify"
 
 	"github.com/shopspring/decimal"
 )
@@ -41,6 +42,12 @@ type Engine struct {
 	MinCapitalPerTrade int64
 	MaxCapitalPerTrade int64
 	TradeCutoffMin     int
+	// Notifier receives operator notifications (entries, failed orders, the
+	// risk kill switch, square-off). Nil sends nothing.
+	Notifier notify.Notifier
+	// riskAlertDay is the date the account-wide risk block was last
+	// notified, so a tripped kill switch alerts once a day, not per signal.
+	riskAlertDay string
 
 	niftyEMA50     *indicators.EMA
 	niftyEMA200    *indicators.EMA
@@ -382,6 +389,11 @@ func (e *Engine) executeFor(r *Runner, candle models.Candle, shared bool) {
 	}
 	if err := e.Risk.Evaluate(signal); err != nil {
 		log.Printf("BLOCKED: %s | Signal: %v", err, signal.Type)
+		if day := candle.EndTime.Format("2006-01-02"); e.riskAlertDay != day {
+			e.riskAlertDay = day
+			e.notify(notify.Alert, fmt.Sprintf("%sRisk limit hit, no new entries today: %v (first blocked: %s %s)",
+				e.modeTag(), err, r.Name(), signal.Symbol))
+		}
 		if e.Journal != nil {
 			e.Journal.LogRiskBlock(signal, err.Error())
 		}
@@ -562,8 +574,11 @@ func (e *Engine) executeFor(r *Runner, candle models.Candle, shared bool) {
 			_ = e.DB.SaveOrder(order, "FAILED")
 		}
 		outcome, outcomeReason = db.SignalOrderFailed, errExec.Error()
+		e.notify(notify.Warn, fmt.Sprintf("%sEntry order FAILED: %s %s %s x%s: %v",
+			e.modeTag(), r.Name(), order.Side, order.Symbol, order.Quantity.String(), errExec))
 	} else {
 		log.Printf("SUCCESS: Order Placed %s | order: %v", order.Symbol, order)
+		e.notify(notify.Info, e.entryMessage(r.Name(), order))
 		if e.Journal != nil {
 			e.Journal.LogOrder(order, "SUCCESS", fmt.Sprintf("OrderID: %s", order.ID))
 		}
@@ -651,6 +666,8 @@ func (e *Engine) applyExitAdvice(r *Runner, candle models.Candle, shared bool) {
 		closed, err := closer.ClosePosition(advice.Symbol, advice.ForSide, price, candle.EndTime, advice.Reason)
 		if err != nil {
 			log.Printf("ERROR: Failed to close %s on strategy exit advice: %v", advice.Symbol, err)
+			e.notify(notify.Alert, fmt.Sprintf("%sFailed to close %s on exit advice (%s): %v - check the position",
+				e.modeTag(), advice.Symbol, advice.Reason, err))
 			return
 		}
 		if closed {
@@ -695,6 +712,8 @@ func (e *Engine) applyExitAdvice(r *Runner, candle models.Candle, shared bool) {
 		placed, err := e.Broker.PlaceOrder(counter)
 		if err != nil {
 			log.Printf("ERROR: Failed to close %s on strategy exit advice: %v", advice.Symbol, err)
+			e.notify(notify.Alert, fmt.Sprintf("%sFailed to close %s on exit advice (%s): %v - check the position",
+				e.modeTag(), advice.Symbol, advice.Reason, err))
 			if e.Journal != nil {
 				e.Journal.LogOrder(counter, "FAILED", err.Error())
 			}
@@ -868,6 +887,17 @@ func (e *Engine) SquareOffStrategy(name string) {
 
 func (e *Engine) squareOff(reason string, include func(symbol string) bool) {
 	log.Printf("⚡ STARTING AUTO SQUAREOFF SEQUENCE (%s) ⚡", reason)
+	closed, failed := 0, 0
+	defer func() {
+		if failed < 0 {
+			return // already alerted: positions could not be read
+		}
+		level := notify.Info
+		if failed > 0 {
+			level = notify.Alert
+		}
+		e.notify(level, fmt.Sprintf("%sSquare-off (%s): %d position(s) closed, %d failed", e.modeTag(), reason, closed, failed))
+	}()
 
 	// 1. Cancel All Active GTTs
 	gtts, err := e.Broker.GetGTTs()
@@ -904,6 +934,8 @@ func (e *Engine) squareOff(reason string, include func(symbol string) bool) {
 	positions, err := e.Broker.GetPositions()
 	if err != nil {
 		log.Printf("SquareOff Error: Failed to fetch Positions: %v", err)
+		failed = -1
+		e.notify(notify.Alert, fmt.Sprintf("%sSquare-off (%s) could not read positions: %v - flatten manually", e.modeTag(), reason, err))
 		return
 	}
 
@@ -939,6 +971,8 @@ func (e *Engine) squareOff(reason string, include func(symbol string) bool) {
 		placedOrder, err := e.Broker.PlaceOrder(order)
 		if err != nil {
 			log.Printf("SquareOff Error: Failed to close position %s: %v", p.Tradingsymbol, err)
+			failed++
+			e.notify(notify.Alert, fmt.Sprintf("%sSquare-off FAILED for %s (qty %d): %v", e.modeTag(), p.Tradingsymbol, p.NetQuantity, err))
 			if e.Journal != nil {
 				e.Journal.LogOrder(order, "FAILED", err.Error())
 			}
@@ -947,6 +981,7 @@ func (e *Engine) squareOff(reason string, include func(symbol string) bool) {
 			}
 		} else {
 			log.Printf("SquareOff: Successfully submitted close order for %s", p.Tradingsymbol)
+			closed++
 			if e.Journal != nil {
 				e.Journal.LogOrder(placedOrder, "SUCCESS", fmt.Sprintf("OrderID: %s | Reason: %s", placedOrder.ID, reason))
 			}

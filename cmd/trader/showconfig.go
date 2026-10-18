@@ -67,6 +67,7 @@ func printConfig(w io.Writer, cfg *config.Config, configPath string, paper bool)
 	p("--- PATHS / CREDENTIALS ---")
 	p("  DB / Logs       : %s / %s", cfg.Paths.DBPath, cfg.Paths.LogDir)
 	p("  Kite key/secret : %s / %s   Upstox token: %s", setOrMissing(cfg.APIKey), setOrMissing(cfg.APISecret), setOrMissing(cfg.UpstoxAccessToken))
+	p("  Telegram        : token %s, chat %s", setOrMissing(cfg.Telegram.Token), setOrMissing(cfg.Telegram.ChatID))
 	p("")
 
 	// The per-strategy detail already exists as log lines; route them here

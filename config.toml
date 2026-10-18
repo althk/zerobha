@@ -442,3 +442,12 @@ squareoff_min = 915           # 15:15 IST
 risk_pct = 2.0
 max_capital_per_trade = 150000 # Sized for index contracts (~78k for SENSEX)
 max_concurrent = 5
+
+[telegram]
+# Optional operator notifications: start-up with the effective config, the
+# Kite login link, every entry and exit, risk kill switch, feed drops,
+# square-off, fatal errors and an end-of-day summary. Either value empty =
+# log only. TELEGRAM_TOKEN / TELEGRAM_CHAT_ID override these (same names as
+# rsrankbot). Keep the real token in config.local.toml.
+token = ""
+chat_id = ""

@@ -121,12 +121,13 @@ func TestDB(t *testing.T) {
 			ExitTime:   time.Now(),
 		}
 
-		// Saving the same key twice must not duplicate
-		if err := store.SaveTrade("ORDER1:0", trade); err != nil {
-			t.Fatalf("SaveTrade failed: %v", err)
+		// Saving the same key twice must not duplicate, and only the first
+		// save reports a new row (that is what sends the exit notification).
+		if isNew, err := store.SaveTradeIfNew("ORDER1:0", trade); err != nil || !isNew {
+			t.Fatalf("SaveTradeIfNew = %v, %v; want true, nil", isNew, err)
 		}
-		if err := store.SaveTrade("ORDER1:0", trade); err != nil {
-			t.Fatalf("SaveTrade (repeat) failed: %v", err)
+		if isNew, err := store.SaveTradeIfNew("ORDER1:0", trade); err != nil || isNew {
+			t.Fatalf("SaveTradeIfNew (repeat) = %v, %v; want false, nil", isNew, err)
 		}
 
 		trades, err := store.GetTradeHistory(time.Now().Add(-24*time.Hour), false)

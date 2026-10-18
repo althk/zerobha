@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"zerobha/pkg/broker"
 	"zerobha/pkg/db"
 	"zerobha/pkg/journal"
+	"zerobha/pkg/notify"
 	"zerobha/pkg/options"
 	"zerobha/pkg/strategy"
 	"zerobha/pkg/upstox"
@@ -48,8 +50,9 @@ type Holiday struct {
 	ClosedExchanges []string `json:"closed_exchanges"`
 }
 
-func fetchRequestToken(loginURL string) (string, error) {
+func fetchRequestToken(loginURL string, notifier notify.Notifier) (string, error) {
 	fmt.Println("Open the following url in your browser:\n", loginURL)
+	notifier.Notify(notify.Warn, "🔑 Kite login needed. Open (with the :9880 tunnel up):\n"+loginURL)
 
 	// Obtain request token after Kite Connect login flow
 	// Run a temporary server to listen for callback
@@ -81,14 +84,30 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	isPaper := cfg.PaperTrading || *paperFlag
 	if *showConfig {
-		printConfig(os.Stdout, cfg, *configPath, cfg.PaperTrading || *paperFlag)
+		printConfig(os.Stdout, cfg, *configPath, isPaper)
 		return
+	}
+
+	// Notifications. log.Fatal skips deferred calls, so fatalf drains the
+	// queue itself before exiting; use it instead of log.Fatal from here on.
+	notifier, closeNotifier := buildNotifier(cfg)
+	defer closeNotifier()
+	modeTag := ""
+	if isPaper {
+		modeTag = "[PAPER] "
+	}
+	fatalf := func(format string, a ...any) {
+		msg := fmt.Sprintf(format, a...)
+		notifier.Notify(notify.Alert, modeTag+"zerobha stopped: "+msg)
+		closeNotifier()
+		log.Fatal(msg)
 	}
 
 	// Fail on a strategy the trader cannot run before the interactive login.
 	if err := checkLiveStrategies(cfg); err != nil {
-		log.Fatal(err)
+		fatalf("%v", err)
 	}
 
 	apiKey, apiSecret := cfg.APIKey, cfg.APISecret
@@ -120,31 +139,35 @@ func main() {
 
 	if isMarketClosed() {
 		log.Println("Market is closed today, not starting trader")
+		notifier.Notify(notify.Info, modeTag+"zerobha: market closed today, not starting")
 		return
 	}
 
 	if !isTradingTime() {
 		log.Println("Outside trading hours (07:00 - 15:05 IST), not starting trader")
+		notifier.Notify(notify.Info, modeTag+"zerobha: outside 07:00-15:05 IST, not starting")
 		return
 	}
 
 	// 1. Initialization
 	log.Println("=== ZEROBHA LIVE TRADING SYSTEM STARTING ===")
 	logConfig(cfg)
+	notifier.Notify(notify.Info, startupMessage(cfg, *configPath, isPaper))
 
 	// Initialize Kite Client (REST API)
 	kc := kiteconnect.New(apiKey)
-	requestToken, err := fetchRequestToken(kc.GetLoginURL())
+	requestToken, err := fetchRequestToken(kc.GetLoginURL(), notifier)
 	if err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Error fetching request token: %v", err)
+		fatalf("Error fetching request token: %v", err)
 	}
 
 	data, err := kc.GenerateSession(requestToken, apiSecret)
 	if err != nil {
-		log.Fatalf("Error generating Kite session: %v", err)
+		fatalf("Error generating Kite session: %v", err)
 	}
 
 	kc.SetAccessToken(data.AccessToken)
+	notifier.Notify(notify.Info, fmt.Sprintf("%s✅ Kite login OK (%s)", modeTag, data.UserID))
 
 	// 2. Instrument Mapping
 	// One instrument dump serves the NSE cash symbols the equity strategies
@@ -152,7 +175,7 @@ func main() {
 	im := broker.NewInstrumentManager()
 	log.Println("Fetching Instrument Master list from Zerodha (NSE & NFO)...")
 	if err := im.FetchInstruments(kc); err != nil {
-		log.Fatalf("Failed to fetch instruments: %v", err)
+		fatalf("Failed to fetch instruments: %v", err)
 	}
 	symbolToToken, tokenToSymbol := im.SymbolTokenMaps()
 	log.Printf("Loaded %d instruments", len(symbolToToken))
@@ -165,12 +188,12 @@ func main() {
 	// volume as "data/zerobha.db"), and SQLite will not create one.
 	if dir := filepath.Dir(cfg.Paths.DBPath); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Fatalf("Failed to create database directory %s: %v", dir, err)
+			fatalf("Failed to create database directory %s: %v", dir, err)
 		}
 	}
 	store, err := db.NewStore(cfg.Paths.DBPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		fatalf("Failed to initialize database: %v", err)
 	}
 	defer store.Close()
 
@@ -189,7 +212,6 @@ func main() {
 	// Strategies (The Brains), in priority order. Each brings its own
 	// watchlist, timeframe and entry settings; the account, the risk limits
 	// and the square-off are shared.
-	isPaper := cfg.PaperTrading || *paperFlag
 	deps := strategyDeps{cfg: cfg, store: store, isPaper: isPaper, im: im, kc: kc}
 	var runners []*liveRunner
 	var engineRunners []*core.Runner
@@ -197,10 +219,11 @@ func main() {
 	for _, name := range cfg.ActiveStrategies() {
 		lr, err := buildRunner(name, deps)
 		if err != nil {
-			log.Fatalf("%v", err)
+			fatalf("%v", err)
 		}
 		if err := lr.runner.Strategy.Init(kiteAdapter); err != nil {
 			log.Printf("WARNING: %s Init failed: %v", lr.runner.Name(), err)
+			notifier.Notify(notify.Warn, fmt.Sprintf("%s%s warm-up failed: %v - it trades cold until its indicators fill", modeTag, lr.runner.Name(), err))
 		}
 		runners = append(runners, lr)
 		engineRunners = append(engineRunners, lr.runner)
@@ -276,6 +299,7 @@ func main() {
 	engine = core.NewEngine(engineRunners[0].Strategy, brokerAdapter, riskMgr, j, im, store)
 	engine.Runners = engineRunners
 	engine.PaperMode = isPaper
+	engine.Notifier = notifier
 	if paperAdapter != nil {
 		// Refreshes marks for instruments the ticker does not subscribe to —
 		// an option contract above all — so their stops can still fire.
@@ -407,8 +431,23 @@ func main() {
 		log.Printf("Ticker Error: %v\n", err)
 	})
 
+	// A dropped feed means no candles, so no exits from index-driven stops:
+	// worth a message once per outage, not once per retry.
+	var reconnecting atomic.Bool
+	ticker.OnReconnect(func(attempt int, delay time.Duration) {
+		if reconnecting.CompareAndSwap(false, true) {
+			notifier.Notify(notify.Warn, modeTag+"Market data feed dropped, reconnecting...")
+		}
+	})
+	ticker.OnNoReconnect(func(attempt int) {
+		notifier.Notify(notify.Alert, fmt.Sprintf("%sMarket data feed gave up after %d reconnect attempts - no candles, no index-driven exits. Check the bot.", modeTag, attempt))
+	})
+
 	ticker.OnConnect(func() {
 		log.Println("Connected to Zerodha WebSocket. Subscribing...")
+		if reconnecting.CompareAndSwap(true, false) {
+			notifier.Notify(notify.Info, modeTag+"Market data feed reconnected")
+		}
 		err := ticker.Subscribe(tokensToSubscribe)
 		if err != nil {
 			log.Printf("Subscription failed: %v", err)
@@ -502,6 +541,8 @@ func main() {
 	}()
 
 	log.Println("System is LIVE. Waiting for ticks... (Press Ctrl+C to stop)")
+	notifier.Notify(notify.Info, fmt.Sprintf("%s🚀 zerobha is live: %s, %d instruments subscribed",
+		modeTag, strings.Join(cfg.ActiveStrategies(), ", "), len(tokensToSubscribe)))
 
 	// 9. Shutdown Waiter
 	<-stop
@@ -520,6 +561,13 @@ func main() {
 	log.Println("Waiting for engine to finish processing...")
 	wg.Wait()
 
+	dayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
+	if trades, err := store.GetTradeHistory(dayStart, isPaper); err == nil {
+		notifier.Notify(notify.Info, web.DaySummary(trades, isPaper))
+	} else {
+		log.Printf("Could not read today's trades for the summary: %v", err)
+	}
+	notifier.Notify(notify.Info, modeTag+"🛑 zerobha stopped")
 	log.Println("Zerobha Shutdown Complete.")
 }
 

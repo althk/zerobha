@@ -293,6 +293,13 @@ func (s *Store) GetSignalFunnel(since time.Time, paper bool) ([]SignalCount, err
 // matched lot (e.g. "<exit_order_id>:<lot_index>") so re-running the
 // reconciler over the same broker fills is idempotent.
 func (s *Store) SaveTrade(key string, t models.Trade) error {
+	_, err := s.SaveTradeIfNew(key, t)
+	return err
+}
+
+// SaveTradeIfNew is SaveTrade, also reporting whether the row was new - false
+// when key was already saved by an earlier pass of the reconciler.
+func (s *Store) SaveTradeIfNew(key string, t models.Trade) (bool, error) {
 	query := `INSERT OR IGNORE INTO trades
 			  (trade_key, symbol, strategy, direction, quantity, entry_price, exit_price, pnl, entry_time, exit_time, exit_reason, is_paper,
 			   gross_pnl, costs, entry_order_id, exit_order_id, metadata)
@@ -306,9 +313,13 @@ func (s *Store) SaveTrade(key string, t models.Trade) error {
 	cost, _ := t.Costs.Float64()
 	isPaper := boolToInt(t.IsPaper || strings.HasPrefix(key, PaperOrderPrefix))
 
-	_, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason, isPaper,
+	res, err := s.db.Exec(query, key, t.Symbol, t.Strategy, t.Direction, qty, entry, exit, pnl, t.EntryTime, t.ExitTime, t.ExitReason, isPaper,
 		gross, cost, t.EntryOrderID, t.ExitOrderID, encodeMeta(t.Metadata))
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // GetTradeHistory returns completed trades exited after `since`,
