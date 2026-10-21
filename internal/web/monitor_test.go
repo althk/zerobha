@@ -102,13 +102,17 @@ func TestMonitorReadsAPaperOptionTradeEndToEnd(t *testing.T) {
 	if !tr.HasIndex || tr.IndexBps < 49 || tr.IndexBps > 50 {
 		t.Errorf("index bps = %.2f (has=%v), want ~+49.4", tr.IndexBps, tr.HasIndex)
 	}
-	// Spread: buy at 200.50, sell at 259.50; gross (259.5-200.5)*650 = 38,350;
-	// charges on both legs on top. Net must be below gross by the charges.
+	// Spread: buy at 200.50, sell at 259.50. Gross is quoted at the mid,
+	// (260-200)*650 = 39,000, and Costs carries the spread plus charges, so
+	// net is the fills' 38,350 less the charges - the spread counted once.
 	if tr.EntryPrice != 200.5 || tr.ExitPrice != 259.5 {
 		t.Errorf("fills = %.2f / %.2f, want 200.50 / 259.50 (half spread each way)", tr.EntryPrice, tr.ExitPrice)
 	}
-	if tr.Costs <= 0 || tr.PnL >= tr.GrossPnL || tr.GrossPnL != 38350 {
+	if tr.Costs <= 0 || tr.PnL >= tr.GrossPnL || tr.GrossPnL != 39000 {
 		t.Errorf("gross %.2f costs %.2f net %.2f", tr.GrossPnL, tr.Costs, tr.PnL)
+	}
+	if charges := tr.Costs - tr.CostItems.Spread; math.Abs(tr.PnL-(38350-charges)) > 0.05 {
+		t.Errorf("net %.2f, want fills' 38,350 less charges %.2f (spread counted twice?)", tr.PnL, charges)
 	}
 	if out.Overall.N != 1 || out.Overall.IndexN != 1 || out.Overall.CostsRupees != tr.Costs {
 		t.Errorf("overall = %+v", out.Overall)

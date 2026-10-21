@@ -490,8 +490,7 @@ func (p *PaperAdapter) PlaceOrder(order models.Order) (models.Order, error) {
 		return order, err
 	}
 
-	p.orderSeq++
-	order.ID = fmt.Sprintf("%s%06d", db.PaperOrderPrefix, p.orderSeq)
+	order.ID = p.nextOrderIDLocked("")
 	order.Status = models.OrderFilled
 	order.Price = fillPrice
 	if order.Timestamp.IsZero() {
@@ -951,8 +950,7 @@ func (p *PaperAdapter) ClosePosition(symbol string, forSide models.SignalType, p
 	p.chargeFillLocked(&exit, pos, price, qty)
 	pos.Metadata, pos.EntryOrderID = nil, ""
 
-	p.orderSeq++
-	exit.ID = fmt.Sprintf("%sEXIT-%06d", db.PaperOrderPrefix, p.orderSeq)
+	exit.ID = p.nextOrderIDLocked("EXIT-")
 	exit.Status = models.OrderFilled
 	exit.Price = price
 	exit.IsPaper = true
@@ -1154,6 +1152,16 @@ func (p *PaperAdapter) restore() {
 	}
 	log.Printf("[PAPER] Restored %s: free cash Rs %s, margin Rs %s, realised Rs %s, %d open position(s)",
 		p.tradeDate, p.cash.StringFixed(2), p.margin.StringFixed(2), p.realized.StringFixed(2), open)
+}
+
+// nextOrderIDLocked mints the next paper order id. The sequence restarts every
+// trading date (the book is persisted per date), so the date is part of the id:
+// without it today's PAPER-000002 collided with an earlier session's, and the
+// trades table - keyed on the exit order id, INSERT OR IGNORE - silently
+// dropped the new round trip.
+func (p *PaperAdapter) nextOrderIDLocked(kind string) string {
+	p.orderSeq++
+	return fmt.Sprintf("%s%s-%s%06d", db.PaperOrderPrefix, strings.ReplaceAll(p.tradeDate, "-", ""), kind, p.orderSeq)
 }
 
 // --- helpers ---

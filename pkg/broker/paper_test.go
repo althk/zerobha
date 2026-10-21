@@ -448,3 +448,29 @@ func TestPaperClosePositionWithoutPriceUsesContractMark(t *testing.T) {
 		t.Errorf("balance = %s, want %s", b, want)
 	}
 }
+
+// The order sequence restarts every trading date, and the trades table keys
+// each round trip on its exit order id with INSERT OR IGNORE. When two sessions
+// minted the same "PAPER-000002", the second session's trade was silently
+// dropped (2026-10-21: an ~Rs80k emacross trade never reached the dashboard).
+func TestPaperOrderIDsAreUniqueAcrossSessions(t *testing.T) {
+	ids := map[string]string{}
+	for _, date := range []string{"2026-09-22", "2026-10-21"} {
+		p := newTestPaper(1000000)
+		p.tradeDate = date
+		in, err := p.PlaceOrder(entry("SENSEX26O2274800PE", models.BuySignal, 160, 800))
+		if err != nil {
+			t.Fatalf("%s: PlaceOrder failed: %v", date, err)
+		}
+		out, err := p.PlaceOrder(entry("SENSEX26O2274800PE", models.SellSignal, 160, 900))
+		if err != nil {
+			t.Fatalf("%s: exit PlaceOrder failed: %v", date, err)
+		}
+		for _, id := range []string{in.ID, out.ID} {
+			if prev, dup := ids[id]; dup {
+				t.Errorf("order id %s minted on both %s and %s", id, prev, date)
+			}
+			ids[id] = date
+		}
+	}
+}

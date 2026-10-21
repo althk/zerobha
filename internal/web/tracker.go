@@ -276,6 +276,11 @@ func (s *Server) reconcileTrades() {
 			if spread.IsPositive() {
 				tradeMeta[costs.KeySpread] = spread.StringFixed(2)
 			}
+			// Paper fills are already half a spread worse each way, and
+			// tradeCosts charges that spread again. Quote gross at the mid
+			// (fill PnL + spread) so net = gross - costs is what the account
+			// actually booked, rather than the spread taken twice.
+			pnl = pnl.Add(spread)
 
 			trade := models.Trade{
 				Symbol:       f.Symbol,
