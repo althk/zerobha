@@ -27,6 +27,7 @@ import (
 	"zerobha/pkg/broker"
 	"zerobha/pkg/db"
 	"zerobha/pkg/journal"
+	"zerobha/pkg/kiteauth"
 	"zerobha/pkg/notify"
 	"zerobha/pkg/options"
 	"zerobha/pkg/strategy"
@@ -156,9 +157,25 @@ func main() {
 
 	// Initialize Kite Client (REST API)
 	kc := kiteconnect.New(apiKey)
-	requestToken, err := fetchRequestToken(kc.GetLoginURL(), notifier)
-	if err != nil && err != http.ErrServerClosed {
-		fatalf("Error fetching request token: %v", err)
+	var requestToken string
+	if cfg.AutoLogin() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		requestToken, err = kiteauth.New().RequestToken(ctx, cfg.KiteCredentials(), kc.GetLoginURL())
+		cancel()
+		if err != nil {
+			// Kite can change its web login at any time; a manual login
+			// still beats not trading.
+			log.Printf("WARNING: automatic Kite login failed: %v - falling back to the browser login", err)
+			notifier.Notify(notify.Warn, modeTag+"⚠️ Automatic Kite login failed: "+err.Error())
+		} else {
+			log.Println("Kite login: automatic (TOTP)")
+		}
+	}
+	if requestToken == "" {
+		requestToken, err = fetchRequestToken(kc.GetLoginURL(), notifier)
+		if err != nil && err != http.ErrServerClosed {
+			fatalf("Error fetching request token: %v", err)
+		}
 	}
 
 	data, err := kc.GenerateSession(requestToken, apiSecret)

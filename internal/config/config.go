@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"zerobha/pkg/indicators"
+	"zerobha/pkg/kiteauth"
 
 	"github.com/BurntSushi/toml"
 )
@@ -489,6 +490,14 @@ type Config struct {
 	Strategies []string `toml:"strategies"`
 	APIKey     string   `toml:"api_key"`
 	APISecret  string   `toml:"api_secret"`
+	// KiteUserID, KitePassword and KiteTOTPSecret, when all three are set,
+	// let the trader and histdl log in without a browser (pkg/kiteauth).
+	// All three empty keeps the manual login-URL flow. Bare keys, like the
+	// app credentials. KITE_USER_ID / KITE_PASSWORD / KITE_TOTP_SECRET in
+	// the environment override them.
+	KiteUserID     string `toml:"kite_user_id"`
+	KitePassword   string `toml:"kite_password"`
+	KiteTOTPSecret string `toml:"kite_totp_secret"`
 	// Paths holds the on-disk locations the trader writes to.
 	Paths PathsConfig `toml:"paths"`
 	// PaperTrading, when true, runs with simulated order fills and virtual balance
@@ -1044,6 +1053,24 @@ func floatPtr(f float64) *float64 { return &f }
 
 func intPtr(i int) *int { return &i }
 
+func countNonEmpty(ss ...string) int {
+	n := 0
+	for _, s := range ss {
+		if s != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// AutoLogin reports whether the Kite TOTP credentials are configured.
+func (c *Config) AutoLogin() bool { return c.KiteUserID != "" }
+
+// KiteCredentials returns the account login for pkg/kiteauth.
+func (c *Config) KiteCredentials() kiteauth.Credentials {
+	return kiteauth.Credentials{UserID: c.KiteUserID, Password: c.KitePassword, TOTPSecret: c.KiteTOTPSecret}
+}
+
 func LoadConfig(path string) (*Config, error) {
 	var config Config
 	md, err := toml.DecodeFile(path, &config)
@@ -1053,6 +1080,24 @@ func LoadConfig(path string) (*Config, error) {
 
 	if config.APIKey == "" || config.APISecret == "" {
 		return nil, fmt.Errorf("api_key and api_secret are required in config file")
+	}
+
+	for env, field := range map[string]*string{
+		"KITE_USER_ID":     &config.KiteUserID,
+		"KITE_PASSWORD":    &config.KitePassword,
+		"KITE_TOTP_SECRET": &config.KiteTOTPSecret,
+	} {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			*field = v
+		}
+	}
+	if set := countNonEmpty(config.KiteUserID, config.KitePassword, config.KiteTOTPSecret); set != 0 && set != 3 {
+		return nil, fmt.Errorf("kite_user_id, kite_password and kite_totp_secret must be set together (or all left empty for the browser login)")
+	}
+	if config.AutoLogin() {
+		if err := config.KiteCredentials().Validate(); err != nil {
+			return nil, err
+		}
 	}
 
 	if v := strings.TrimSpace(os.Getenv("TELEGRAM_TOKEN")); v != "" {

@@ -27,6 +27,14 @@ paper_option_spread_ticks = 20
 # assigns them to that section and the config fails to load.
 api_key = ""
 api_secret = ""
+# Optional: log in without a browser. Your Zerodha user id, password, and the
+# base32 TOTP key shown when you set up an authenticator app (Kite > My
+# profile > Password & Security > 2FA). Set all three or none; empty keeps the
+# login-URL flow. The Connect app must have been authorised once by hand.
+# KITE_USER_ID / KITE_PASSWORD / KITE_TOTP_SECRET in the environment override.
+kite_user_id = ""
+kite_password = ""
+kite_totp_secret = ""
 
 # Upstox read-only access token, used only by the gapfade news/earnings gate.
 # Long-lived (~1 year) and unrelated to the Kite credentials above. Bare key —

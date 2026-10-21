@@ -7,8 +7,9 @@
 // large enough to be significant.
 //
 // It requires a Kite Connect subscription with the historical data add-on, and
-// an interactive login: the tool prints a login URL, waits for the callback on
-// :9880, and caches the resulting access token for the rest of the day.
+// a login: automatic when kite_user_id / kite_password / kite_totp_secret are
+// configured, otherwise the tool prints a login URL and waits for the callback
+// on :9880. Either way the access token is cached for the rest of the day.
 //
 // Usage:
 //
@@ -32,6 +33,7 @@ import (
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 
 	"zerobha/internal/config"
+	"zerobha/pkg/kiteauth"
 )
 
 // chunkDays is the maximum span the Kite historical API serves per request,
@@ -124,9 +126,22 @@ func login(cfg *config.Config) (*kiteconnect.Client, error) {
 		log.Println("Cached token rejected, starting a fresh login.")
 	}
 
-	requestToken, err := fetchRequestToken(kc.GetLoginURL())
-	if err != nil {
-		return nil, fmt.Errorf("login: %w", err)
+	var requestToken string
+	if cfg.AutoLogin() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		tok, err := kiteauth.New().RequestToken(ctx, cfg.KiteCredentials(), kc.GetLoginURL())
+		cancel()
+		if err != nil {
+			log.Printf("Automatic login failed (%v), falling back to the browser login.", err)
+		}
+		requestToken = tok
+	}
+	if requestToken == "" {
+		tok, err := fetchRequestToken(kc.GetLoginURL())
+		if err != nil {
+			return nil, fmt.Errorf("login: %w", err)
+		}
+		requestToken = tok
 	}
 	data, err := kc.GenerateSession(requestToken, cfg.APISecret)
 	if err != nil {
