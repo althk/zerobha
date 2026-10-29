@@ -20,7 +20,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -52,37 +52,30 @@ func chunkDays(interval string) int {
 	}
 }
 
-// tokenCache persists the access token so repeated runs on the same day skip
-// the browser login. Kite invalidates tokens each morning, so a cache from a
-// previous day is discarded.
-type tokenCache struct {
-	Date        string `json:"date"`
-	AccessToken string `json:"access_token"`
-}
-
-const tokenCachePath = ".kite_token.json"
-
-func loadCachedToken() string {
-	b, err := os.ReadFile(tokenCachePath)
+// loadCachedToken reuses the day's token from ~/.kite_token (written by the
+// trader or an earlier run), so repeated runs skip the login and do not
+// invalidate a token another app is using.
+func loadCachedToken(apiKey string) string {
+	path, err := kiteauth.DefaultTokenPath()
 	if err != nil {
 		return ""
 	}
-	var tc tokenCache
-	if err := json.Unmarshal(b, &tc); err != nil {
+	tok, err := kiteauth.LoadToken(path, apiKey, time.Now())
+	if err != nil {
+		if !errors.Is(err, kiteauth.ErrNoToken) {
+			log.Printf("WARNING: %v", err)
+		}
 		return ""
 	}
-	if tc.Date != time.Now().Format("2006-01-02") {
-		return ""
-	}
-	return tc.AccessToken
+	return tok.AccessToken
 }
 
-func saveCachedToken(token string) {
-	b, err := json.Marshal(tokenCache{Date: time.Now().Format("2006-01-02"), AccessToken: token})
-	if err != nil {
-		return
+func saveCachedToken(apiKey, token string) {
+	path, err := kiteauth.DefaultTokenPath()
+	if err == nil {
+		err = kiteauth.SaveToken(path, kiteauth.Token{APIKey: apiKey, AccessToken: token, IssuedAt: time.Now()})
 	}
-	if err := os.WriteFile(tokenCachePath, b, 0600); err != nil {
+	if err != nil {
 		log.Printf("WARNING: could not cache access token: %v", err)
 	}
 }
@@ -117,7 +110,7 @@ func fetchRequestToken(loginURL string) (string, error) {
 func login(cfg *config.Config) (*kiteconnect.Client, error) {
 	kc := kiteconnect.New(cfg.APIKey)
 
-	if cached := loadCachedToken(); cached != "" {
+	if cached := loadCachedToken(cfg.APIKey); cached != "" {
 		kc.SetAccessToken(cached)
 		if _, err := kc.GetUserProfile(); err == nil {
 			log.Println("Reusing cached access token.")
@@ -148,7 +141,7 @@ func login(cfg *config.Config) (*kiteconnect.Client, error) {
 		return nil, fmt.Errorf("generate session: %w", err)
 	}
 	kc.SetAccessToken(data.AccessToken)
-	saveCachedToken(data.AccessToken)
+	saveCachedToken(cfg.APIKey, data.AccessToken)
 	return kc, nil
 }
 

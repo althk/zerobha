@@ -184,6 +184,12 @@ func main() {
 	}
 
 	kc.SetAccessToken(data.AccessToken)
+	// Share the day's token: a second login on this app key would invalidate it.
+	if path, err := kiteauth.DefaultTokenPath(); err != nil {
+		log.Printf("WARNING: not sharing the Kite token: %v", err)
+	} else if err := kiteauth.SaveToken(path, kiteauth.Token{APIKey: apiKey, AccessToken: data.AccessToken, IssuedAt: time.Now()}); err != nil {
+		log.Printf("WARNING: not sharing the Kite token: %v", err)
+	}
 	notifier.Notify(notify.Info, fmt.Sprintf("%s✅ Kite login OK (%s)", modeTag, data.UserID))
 
 	// 2. Instrument Mapping
