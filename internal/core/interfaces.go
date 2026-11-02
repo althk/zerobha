@@ -141,29 +141,6 @@ type PositionCloser interface {
 	ClosePosition(symbol string, side models.SignalType, price decimal.Decimal, at time.Time, reason string) (bool, error)
 }
 
-// GateVerdict is the outcome of a NewsGate consultation. Reason is always
-// populated — it is journalled with the signal so a blocked or allowed entry
-// can be audited after the fact.
-type GateVerdict struct {
-	Allow  bool
-	Reason string
-}
-
-// NewsGate lets a strategy ask an external research source whether a price
-// move is explained by genuinely bad information (a fraud probe, a collapsed
-// quarter) before trading against it.
-//
-// It is deliberately narrow and lives beside the other contracts so that
-// strategies depend on this abstraction rather than on any particular vendor:
-// the live trader injects an Upstox-backed implementation, a backtest injects
-// nil (no gate) or a recorded one.
-//
-// asOf is the market timestamp of the decision, not wall-clock time, so an
-// implementation can bound "recent news" against the candle being evaluated.
-type NewsGate interface {
-	Assess(symbol string, asOf time.Time) (GateVerdict, error)
-}
-
 // TickObserver is an optional Broker capability: a broker that has to fill its
 // own resting protective orders needs to see the traded price.
 //

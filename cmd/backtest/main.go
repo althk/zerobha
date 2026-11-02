@@ -17,7 +17,6 @@ import (
 	"zerobha/internal/models"
 	"zerobha/internal/risk"
 	"zerobha/pkg/broker"
-	"zerobha/pkg/indicators"
 	"zerobha/pkg/strategy" // Import your strategies package
 
 	"github.com/shopspring/decimal"
@@ -29,7 +28,7 @@ func main() {
 	// Parse command line flags
 	startDateStr := flag.String("start", "", "Start date for backtest (YYYY-MM-DD)")
 	endDateStr := flag.String("end", "", "End date for backtest (YYYY-MM-DD)")
-	strategyName := flag.String("strategy", "orb", "Strategy to run: orb, gapfade, donchian, srlevels (all intraday 5m) or dailyrev (daily short-term reversal)")
+	strategyName := flag.String("strategy", "orb", "Strategy to run: orb, donchian or emacross (all intraday 5m)")
 	csvFile := flag.String("csv", "high_beta_stocks.csv", "CSV file containing symbols")
 	minBeta := flag.Float64("min-beta", 0.0, "Minimum Beta threshold for stock selection")
 	timeframe := flag.String("timeframe", "5m", "Timeframe for candles (e.g. 1d, 1h)")
@@ -40,15 +39,6 @@ func main() {
 	tradesCSV := flag.String("trades-csv", "", "Write every trade (all symbols, pre-cost PnL) to this CSV for offline analysis")
 	uptrend := flag.Bool("uptrend", false, "Engage the NIFTY-50 uptrend filter (gates long signals to days NIFTY is above EMA50/EMA200)")
 	configFile := flag.String("config", "config.local.toml", "TOML config file (e.g. config.local.toml); strategy/risk settings come from it, explicit flags still win")
-	// srlevels sweep knobs. The strategy is specified with two choices left
-	// open — which pivot formula, and what stop/target multiples — so they are
-	// swept from the command line rather than by editing a config per cell.
-	srPivot := flag.String("sr-pivot", "", "srlevels: pivot formula, traditional or fibonacci (overrides config)")
-	srSL := flag.Float64("sr-sl", 0, "srlevels: stop distance in ATR (overrides config)")
-	srTP := flag.Float64("sr-tp", -1, "srlevels: target distance in ATR; 0 disables the target (overrides config)")
-	srHTF := flag.String("sr-htf", "", "srlevels: higher-timeframe confirmation, on or off (overrides config)")
-	srRoom := flag.Float64("sr-room", -1, "srlevels: minimum ATR of room to the next opposing zone; 0 disables the gate")
-	srTrail := flag.Float64("sr-trail", -1, "srlevels: chandelier trail distance in ATR; 0 leaves the initial stop alone")
 	emaFast := flag.Int("ema-fast", 0, "emacross: fast EMA period (overrides config)")
 	emaSlow := flag.Int("ema-slow", 0, "emacross: slow EMA period (overrides config)")
 	emaProduct := flag.String("product", "", "emacross: MIS or CNC (overrides config)")
@@ -150,20 +140,6 @@ func main() {
 		fmt.Println("!! An option adds bid-ask, theta over the hold, and per-order charges, all")
 		fmt.Println("!! of which subtract. Read the per-trade return in bps, not the rupee PnL.")
 	}
-	if *strategyName == config.StrategySRLevels {
-		fmt.Println("!! SRLEVELS IS A SIGNAL TEST ONLY. It is intended for execution in weekly")
-		fmt.Println("!! index options (break -> PE, bounce -> CE), and this run prices the")
-		fmt.Println("!! SIGNAL INSTRUMENT — the index — not the option that would be traded.")
-		fmt.Println("!! An option adds bid-ask, theta over the hold and per-order charges, all")
-		fmt.Println("!! of which subtract. Read the per-trade return in bps, not the rupee PnL,")
-		fmt.Println("!! and price the trade list with cmd/optbt before believing any of it.")
-	}
-	if *strategyName == config.StrategyGapFade {
-		fmt.Println("!! GAPFADE IS UNGATED IN BACKTEST: the Upstox news/earnings check has no")
-		fmt.Println("!! as-of-date history, so this run fades EVERY qualifying gap, including the")
-		fmt.Println("!! informed ones the live strategy declines. Treat the result as the")
-		fmt.Println("!! no-information floor of the strategy, never as an estimate of it.")
-	}
 
 	// Store results for sorting
 	type Result struct {
@@ -205,54 +181,6 @@ func main() {
 	dcCfg := config.DefaultDonchianConfig()
 	if appCfg != nil {
 		dcCfg = appCfg.Donchian
-	}
-
-	// srlevels uses its timing knobs in the same three places, and its sweep
-	// flags are applied here so every symbol in the run sees one config.
-	srCfg := config.DefaultSRLevelsConfig()
-	if appCfg != nil {
-		srCfg = appCfg.SRLevels
-	}
-	if *srPivot != "" {
-		if *srPivot != string(indicators.PivotTraditional) && *srPivot != string(indicators.PivotFibonacci) {
-			log.Fatalf("-sr-pivot must be %q or %q, got %q", indicators.PivotTraditional, indicators.PivotFibonacci, *srPivot)
-		}
-		srCfg.PivotMethod = *srPivot
-	}
-	if *srSL > 0 {
-		srCfg.SLATRMult = *srSL
-	}
-	// -1 is the "flag absent" sentinel, so an explicit 0 reaches the config and
-	// genuinely disables the target — the trap tp_rr and trail_atr_mult each
-	// fell into, where a run configured to switch something off silently
-	// measured the default instead.
-	if *srTP >= 0 {
-		tp := *srTP
-		srCfg.TPATRMult = &tp
-	}
-	if *srRoom >= 0 {
-		room := *srRoom
-		srCfg.MinRoomATR = &room
-	}
-	if *srTrail >= 0 {
-		trail := *srTrail
-		srCfg.TrailATRMult = &trail
-	}
-	switch *srHTF {
-	case "":
-	case "on", "true":
-		on := true
-		srCfg.UseHTFConfirm = &on
-	case "off", "false":
-		off := false
-		srCfg.UseHTFConfirm = &off
-	default:
-		log.Fatalf("-sr-htf must be on or off, got %q", *srHTF)
-	}
-	if *strategyName == config.StrategySRLevels {
-		fmt.Printf("SRLevels: pivot=%s SL=%.2f ATR TP=%.2f ATR trail=%.2f ATR htf-confirm=%t room=%.2f ATR\n",
-			srCfg.PivotMethod, srCfg.SLATRMult, srCfg.TPMult(), srCfg.SRTrailMult(),
-			srCfg.UseHTFConfirm != nil && *srCfg.UseHTFConfirm, srCfg.RoomATR())
 	}
 
 	emaCfg := config.DefaultEMACrossConfig()
@@ -346,9 +274,6 @@ func main() {
 		if *strategyName == config.StrategyDonchian {
 			maxLoss = initialCapital.Mul(decimal.NewFromFloat(dcCfg.MaxDailyLossPct / 100))
 		}
-		if *strategyName == config.StrategySRLevels {
-			maxLoss = initialCapital.Mul(decimal.NewFromFloat(srCfg.MaxDailyLossPct / 100))
-		}
 		riskMgr := risk.NewManager(nil, maxLoss, maxTrades, maxPerStock)
 		if appCfg != nil {
 			// The monthly limit needs the trade journal and is live/paper only.
@@ -367,22 +292,8 @@ func main() {
 		}
 		var myStrategy core.Strategy = strategy.NewORBStrategy([]string{sym}, orbCfg)
 		switch *strategyName {
-		case config.StrategyDailyRev:
-			drCfg := config.DefaultDailyRevConfig()
-			if appCfg != nil {
-				drCfg = appCfg.DailyRev
-			}
-			myStrategy = strategy.NewDailyReversalStrategy([]string{sym}, drCfg)
 		case config.StrategyDonchian:
 			myStrategy = strategy.NewDonchianStrategy([]string{sym}, dcCfg)
-		case config.StrategySRLevels:
-			myStrategy = strategy.NewSRLevelsStrategy([]string{sym}, srCfg)
-		case config.StrategyGapFade:
-			gfCfg := config.DefaultGapFadeConfig()
-			if appCfg != nil {
-				gfCfg = appCfg.GapFade
-			}
-			myStrategy = strategy.NewGapFadeStrategy([]string{sym}, gfCfg, nil)
 		case config.StrategyEMACross:
 			myStrategy = strategy.NewEMACrossStrategy([]string{sym}, emaCfg)
 		}
@@ -402,13 +313,6 @@ func main() {
 			engine.MaxConcurrent = dcCfg.MaxConcurrent
 			if dcCfg.MaxCapitalPerTrade > 0 {
 				engine.MaxCapitalPerTrade = dcCfg.MaxCapitalPerTrade
-			}
-		}
-		if *strategyName == config.StrategySRLevels {
-			engine.TradeCutoffMin = srCfg.EntryCutoffMin + 1
-			engine.MaxConcurrent = srCfg.MaxConcurrent
-			if srCfg.MaxCapitalPerTrade > 0 {
-				engine.MaxCapitalPerTrade = srCfg.MaxCapitalPerTrade
 			}
 		}
 		if *strategyName == config.StrategyEMACross {
@@ -479,14 +383,11 @@ func main() {
 			if *strategyName == config.StrategyDonchian {
 				squareOffTime = dcCfg.SquareOffMin
 			}
-			if *strategyName == config.StrategySRLevels {
-				squareOffTime = srCfg.SquareOffMin
-			}
 			if *strategyName == config.StrategyEMACross {
 				squareOffTime = emaCfg.SquareOffMin
 			}
 
-			isCNC := *strategyName == config.StrategyDailyRev || (*strategyName == config.StrategyEMACross && strings.ToUpper(emaCfg.ProductType) == "CNC")
+			isCNC := *strategyName == config.StrategyEMACross && strings.ToUpper(emaCfg.ProductType) == "CNC"
 			if !isCNC && squareOffTime > 0 && timeInMinutes >= squareOffTime {
 				simBroker.SquareOffAll(candle)
 			}

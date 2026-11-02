@@ -31,7 +31,6 @@ import (
 	"zerobha/pkg/notify"
 	"zerobha/pkg/options"
 	"zerobha/pkg/strategy"
-	"zerobha/pkg/upstox"
 
 	"github.com/shopspring/decimal"
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
@@ -608,18 +607,6 @@ func logStrategyConfig(cfg *config.Config, name string) {
 	log.Printf("=== %s | TIMEFRAME: %s | CSV: %s | LIMIT: %d", strings.ToUpper(name), ss.Timeframe, ss.CSVFile, ss.Limit)
 
 	switch name {
-	case config.StrategyGapFade:
-		c := cfg.GapFade
-		log.Printf("--- GAPFADE CONFIG ---")
-		log.Printf("  Gap Band         : %.2f%% – %.2f%% down", c.MinGapDownPct, c.MaxGapDownPct)
-		log.Printf("  Observe Until    : %02d:%02d   Entry Until: %02d:%02d",
-			c.ObserveEndMin/60, c.ObserveEndMin%60, c.EntryWindowEnd/60, c.EntryWindowEnd%60)
-		log.Printf("  Stop / RR        : %.2f ATR (max %.2f%%) / 1:%.2f", c.SLATR, c.MaxStopPct, c.RewardRisk)
-		log.Printf("  Stop At Day Low  : %v  Require Above VWAP: %v", *c.StopAtDayLow, *c.RequireAboveVWAP)
-		log.Printf("  Max Concurrent   : %d  Gate Fail Open: %v", c.MaxConcurrent, *c.GateFailOpen)
-		log.Printf("  Gate             : news %dh lookback, max profit drop %.1f%%, ISIN map %s",
-			cfg.Upstox.NewsLookbackHours, cfg.Upstox.MaxProfitDropPct, cfg.Upstox.ISINCSV)
-
 	case config.StrategyDonchian:
 		c := cfg.Donchian
 		minDTE := 2
@@ -855,29 +842,6 @@ func loadSymbolsFromCSV(filename string) ([]string, error) {
 		}
 	}
 	return symbols, nil
-}
-
-// buildUpstoxGate assembles the news/earnings gate the gap-fade strategy
-// consults before fading a gap down. It is built at startup, not lazily, so a
-// missing token or an unreadable ISIN file stops the trader before the open
-// rather than blocking every signal at 09:35.
-func buildUpstoxGate(cfg *config.Config) (core.NewsGate, error) {
-	if cfg.UpstoxAccessToken == "" {
-		return nil, fmt.Errorf("upstox_access_token is empty (it must sit above the first [section] header in the TOML)")
-	}
-	lookup, err := upstox.LoadISINCSV(cfg.Upstox.ISINCSV)
-	if err != nil {
-		return nil, err
-	}
-	log.Printf("Upstox gate: loaded %d symbol→ISIN mappings from %s", lookup.Len(), cfg.Upstox.ISINCSV)
-
-	client := upstox.NewClient(cfg.UpstoxAccessToken, time.Duration(cfg.Upstox.TimeoutSeconds)*time.Second)
-	return upstox.NewGate(client, lookup, upstox.GateConfig{
-		NewsLookback:      time.Duration(cfg.Upstox.NewsLookbackHours) * time.Hour,
-		BlockKeywords:     cfg.Upstox.BlockKeywords,
-		MaxProfitDropPct:  cfg.Upstox.MaxProfitDropPct,
-		MaxResultsAgeDays: cfg.Upstox.MaxResultsAgeDays,
-	}), nil
 }
 
 // kiteTickFeed adds and removes instruments on a running Kite websocket.

@@ -79,8 +79,8 @@ type emaCrossState struct {
 
 // closeIfProtectiveHit reproduces the broker's own exit test on this bar and
 // drops the strategy's belief in the position when one of its resting orders
-// would have filled. It is the same mirror srlevels keeps, for the same
-// reason, and follows pkg/broker/sim.go's ordering: exits are evaluated
+// would have filled (no broker reports a fired stop back to a strategy).
+// It follows pkg/broker/sim.go's ordering: exits are evaluated
 // against the stop as it stood at the bar's OPEN, then the trail ratchets on
 // this bar's extreme, capped at the close (stopNoBetterThanMarket).
 //

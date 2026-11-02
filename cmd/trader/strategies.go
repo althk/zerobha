@@ -18,13 +18,9 @@ import (
 // defaultSquareOffMin is the account-wide MIS flatten, 15:13 IST.
 const defaultSquareOffMin = 15*60 + 13
 
-// liveStrategies are the strategies cmd/trader can run. dailyrev is CNC
-// research whose positions the square-off would close the same day, and
-// srlevels has nothing measured that justifies option execution; both are
-// backtest-only.
+// liveStrategies are the strategies cmd/trader can run.
 var liveStrategies = map[string]bool{
 	config.StrategyORB:      true,
-	config.StrategyGapFade:  true,
 	config.StrategyDonchian: true,
 	config.StrategyEMACross: true,
 }
@@ -34,8 +30,8 @@ var liveStrategies = map[string]bool{
 func checkLiveStrategies(cfg *config.Config) error {
 	for _, name := range cfg.ActiveStrategies() {
 		if !liveStrategies[name] {
-			return fmt.Errorf("live trading supports strategy %q, %q, %q or %q, got %q (backtest-only: go run ./cmd/backtest -strategy %s)",
-				config.StrategyORB, config.StrategyGapFade, config.StrategyDonchian, config.StrategyEMACross, name, name)
+			return fmt.Errorf("live trading supports strategy %q, %q or %q, got %q",
+				config.StrategyORB, config.StrategyDonchian, config.StrategyEMACross, name)
 		}
 		if _, err := time.ParseDuration(cfg.StrategySettingsFor(name).Timeframe); err != nil {
 			return fmt.Errorf("%s: invalid timeframe: %w", name, err)
@@ -95,14 +91,6 @@ func buildRunner(name string, d strategyDeps) (*liveRunner, error) {
 		orb.SetDB(d.store)
 		r.Strategy = orb
 		r.MaxConcurrent = cfg.ORB.MaxConcurrent
-
-	case config.StrategyGapFade:
-		gate, err := buildUpstoxGate(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("gapfade needs the Upstox news/earnings gate: %w", err)
-		}
-		r.Strategy = strategy.NewGapFadeStrategy(watchlist, cfg.GapFade, gate)
-		r.MaxConcurrent = cfg.GapFade.MaxConcurrent
 
 	case config.StrategyDonchian:
 		dc := strategy.NewDonchianStrategy(watchlist, cfg.Donchian)
